@@ -1,3 +1,3 @@
 pub mod types;
 
-pub use types::Uuid;
+pub use types::{process_uuid, Uuid};

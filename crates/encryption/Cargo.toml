@@ -7,5 +7,6 @@ edition.workspace = true
 aes-gcm.workspace = true
 chacha20poly1305.workspace = true
 blake3.workspace = true
-rand.workspace = true
+generic-array = "0.14"
+typenum = "1"
 thiserror.workspace = true

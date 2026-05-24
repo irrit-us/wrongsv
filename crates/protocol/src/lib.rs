@@ -3,7 +3,7 @@ pub mod id;
 pub mod types;
 pub mod user;
 
-pub use address_parser::AddressParser;
+pub use address_parser::{AddressParseError, AddressParser};
 pub use id::ID;
 pub use types::*;
 pub use user::MemoryUser;
