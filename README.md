@@ -52,22 +52,43 @@ flow = "xtls-rprx-vision"
 ### Run
 
 ```bash
+# With a config file
 cargo run --release -- --config config.toml
+
+# Zero-config mode (compile-time defaults from build.rs)
+cargo run --release
 ```
 
-Or with inline args:
+The binary embeds compile-time defaults (random UUID, port, X25519 keypair, Kyber keypair)
+via `build.rs`. Running without `--config` uses these defaults so no prior setup is needed.
+
+### Client config generation
+
+The server can generate a v2rayN/v2rayNG-compatible client config JSON:
 
 ```bash
-cargo run --release -- --listen 0.0.0.0:443
+# Print to stdout
+cargo run --release -- --print-client-config --server-host YOUR_IP --servername YOUR_SNI
+
+# Write to file
+cargo run --release -- --write-client-config client.json --server-host YOUR_IP --servername YOUR_SNI
 ```
 
 ## Testing
 
 ```bash
 cargo test                          # all unit + integration tests
-cargo test --test integration       # integration tests only
+cargo test --test integration       # integration tests only (16 tests, incl. 114 randomized scenarios)
 cargo bench                         # criterion benchmarks
 ```
+
+### Stress test
+
+```bash
+cargo run --example stress
+```
+
+Runs 480 connections across 3 rounds and monitors RSS for memory leaks.
 
 ## Config Reference
 
@@ -78,8 +99,8 @@ cargo bench                         # criterion benchmarks
 | `users[].id` | string | UUID in hex format |
 | `users[].email` | string | Optional email label |
 | `users[].flow` | string | `""` (raw) or `"xtls-rprx-vision"` |
-| `users[].encryption` | string | Optional per-user encryption key |
-| `decryption` | string | Optional server-wide decryption key |
+| `users[].encryption` | string | Per-user encryption key (not yet wired) |
+| `decryption` | string | Server-wide decryption key (not yet wired) |
 | `flow` | string | Default flow for all users |
 | `kyber_secret_key` | string | ML-KEM-512 64-byte seed (hex-encoded) |
 

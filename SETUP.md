@@ -97,7 +97,7 @@ kyber_secret_key = "..."
 id = "uuid-here"
 email = "user@example.com"     # optional
 flow = ""                      # optional, inherits from global if empty
-encryption = ""                # optional, per-user encryption key
+encryption = ""                # optional, per-user encryption key (not yet wired)
 ```
 
 ## Running the Server
@@ -105,6 +105,10 @@ encryption = ""                # optional, per-user encryption key
 ```bash
 # With config file
 cargo run --release -- --config config.toml
+
+# Zero-config mode (compile-time defaults from build.rs:
+# random UUID, port, X25519 keypair, Kyber keypair)
+cargo run --release
 
 # The binary directly
 ./target/release/wrongsv --config config.toml
@@ -115,6 +119,22 @@ Log level is controlled via `RUST_LOG` environment variable:
 ```bash
 RUST_LOG=debug ./target/release/wrongsv --config config.toml
 ```
+
+### Client config generation
+
+The server can generate a v2rayN/v2rayNG-compatible client config JSON:
+
+```bash
+# Print to stdout
+./target/release/wrongsv --print-client-config --server-host YOUR_IP --servername YOUR_SNI
+
+# Write to file, specifying a custom label
+./target/release/wrongsv --write-client-config client.json \
+    --server-host YOUR_IP --servername example.com --client-name "my-server"
+```
+
+This uses the same compile-time UUID, port, X25519 public key, short-id, and Kyber
+public key that `build.rs` embeds into the binary.
 
 ## Testing
 
@@ -127,11 +147,14 @@ cargo test -p wrongsv-kyber
 cargo test -p wrongsv-vless
 cargo test -p wrongsv-server
 
-# Integration tests (spawn real server + echo target)
+# Integration tests (spawn real server + echo target, 16 tests)
 cargo test --test integration
 
 # With output
 cargo test --test integration -- --nocapture
+
+# Memory stress test
+cargo run --example stress
 ```
 
 ## Benchmarks
@@ -149,12 +172,15 @@ Benchmarks cover:
 ```
 wrongsv/
 ├── Cargo.toml              # workspace root
+├── build.rs                # compile-time key generation (UUID, X25519, Kyber)
 ├── src/
-│   └── main.rs             # CLI binary
+│   └── main.rs             # CLI binary, client config generation
 ├── benches/
 │   └── throughput.rs       # criterion benchmarks
+├── examples/
+│   └── stress.rs           # memory stress test (RSS monitoring)
 ├── tests/
-│   └── integration.rs      # end-to-end integration tests
+│   └── integration.rs      # end-to-end integration tests (16 tests)
 └── crates/
     ├── uuid/               # UUID v4/v5, ProcessUUID
     ├── net-types/          # Address, Port, AddressFamily
