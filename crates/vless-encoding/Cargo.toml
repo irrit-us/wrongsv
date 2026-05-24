@@ -1,0 +1,14 @@
+[package]
+name = "wrongsv-vless-encoding"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+wrongsv-protocol.workspace = true
+wrongsv-net-types.workspace = true
+prost.workspace = true
+bytes.workspace = true
+thiserror.workspace = true
+
+[build-dependencies]
+prost-build = "0.14"

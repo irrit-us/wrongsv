@@ -1,0 +1,6 @@
+[package]
+name = "wrongsv-net-types"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

@@ -1,0 +1,11 @@
+[package]
+name = "wrongsv-protocol"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+wrongsv-uuid.workspace = true
+wrongsv-net-types.workspace = true
+md-5.workspace = true
+thiserror.workspace = true
+bytes.workspace = true

@@ -1,0 +1,17 @@
+[package]
+name = "wrongsv-server"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+wrongsv-protocol.workspace = true
+wrongsv-vless.workspace = true
+wrongsv-vless-encoding.workspace = true
+wrongsv-encryption.workspace = true
+wrongsv-net-types.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

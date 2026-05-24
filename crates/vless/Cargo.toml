@@ -1,0 +1,10 @@
+[package]
+name = "wrongsv-vless"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+wrongsv-protocol.workspace = true
+wrongsv-uuid.workspace = true
+rand.workspace = true
+thiserror.workspace = true
