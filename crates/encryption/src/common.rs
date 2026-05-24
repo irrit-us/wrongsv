@@ -18,6 +18,7 @@ pub struct CommonConn<S> {
     read_aead: AeadKey,
     read_buffer: Vec<u8>,
     read_pos: usize,
+    ct_buf: Vec<u8>,
 }
 
 impl<S: Read + Write> CommonConn<S> {
@@ -28,6 +29,7 @@ impl<S: Read + Write> CommonConn<S> {
             read_aead,
             read_buffer: Vec::new(),
             read_pos: 0,
+            ct_buf: Vec::with_capacity(16384),
         }
     }
 
@@ -81,12 +83,14 @@ impl<S: Read + Write> CommonConn<S> {
         let payload_len = header::decode_header(&hdr)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
-        let mut ciphertext = vec![0u8; payload_len];
-        self.inner.read_exact(&mut ciphertext)?;
+        if self.ct_buf.len() < payload_len {
+            self.ct_buf.resize(payload_len, 0);
+        }
+        self.inner.read_exact(&mut self.ct_buf[..payload_len])?;
 
         let plaintext = self
             .read_aead
-            .open(&ciphertext, &hdr)
+            .open(&self.ct_buf[..payload_len], &hdr)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
         let n = plaintext.len().min(buf.len());

@@ -141,7 +141,9 @@ pub fn xtls_padding(
     let max_content = 65536 - 21 - content_len;
     let padding_len = padding_len.min(max_content);
 
-    let mut frame = Vec::new();
+    let uuid_len = if user_uuid.is_some() { 16 } else { 0 };
+    let frame_size = uuid_len + 5 + content_len as usize + padding_len as usize;
+    let mut frame = Vec::with_capacity(frame_size);
 
     // Write user_uuid once
     if let Some(uuid) = user_uuid.take() {
@@ -184,7 +186,7 @@ pub fn xtls_unpadding(buf: &[u8], state: &mut TrafficState, is_uplink: bool) -> 
 }
 
 fn unpadding_loop(mut buf: &[u8], dir: &mut DirectionState) -> Vec<u8> {
-    let mut output = Vec::new();
+    let mut output = Vec::with_capacity(buf.len());
 
     while !buf.is_empty() {
         if dir.remaining_command > 0 {
@@ -349,6 +351,8 @@ pub struct VisionReader<R: Read> {
     is_uplink: bool,
     /// Whether to pass through directly (splice mode).
     pub direct: bool,
+    /// Reusable read buffer to avoid per-read allocations.
+    raw_buf: Vec<u8>,
 }
 
 impl<R: Read> VisionReader<R> {
@@ -358,36 +362,39 @@ impl<R: Read> VisionReader<R> {
             state,
             is_uplink,
             direct: false,
+            raw_buf: vec![0u8; 16384],
         }
     }
 
     /// Read data, applying unpadding and TLS filtering.
     pub fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let mut raw = vec![0u8; buf.len()];
-        let n = self.inner.read(&mut raw)?;
+        if self.raw_buf.len() < buf.len() {
+            self.raw_buf.resize(buf.len(), 0);
+        }
+        let n = self.inner.read(&mut self.raw_buf[..buf.len()])?;
         if n == 0 {
             return Ok(0);
         }
-        let raw = &raw[..n];
 
         if self.direct {
-            let copy_len = raw.len().min(buf.len());
-            buf[..copy_len].copy_from_slice(&raw[..copy_len]);
+            let copy_len = n.min(buf.len());
+            buf[..copy_len].copy_from_slice(&self.raw_buf[..copy_len]);
             return Ok(copy_len);
         }
 
+        // Check within-buffers state before borrowing raw_buf slice
         let within = {
             let dir = self.direction();
             dir.within_padding_buffers || self.state.number_of_packet_to_filter > 0
         };
         if !within {
-            let copy_len = raw.len().min(buf.len());
-            buf[..copy_len].copy_from_slice(&raw[..copy_len]);
+            let copy_len = n.min(buf.len());
+            buf[..copy_len].copy_from_slice(&self.raw_buf[..copy_len]);
             return Ok(copy_len);
         }
 
         let is_uplink = self.is_uplink;
-        let unpadded = xtls_unpadding(raw, &mut self.state, is_uplink);
+        let unpadded = xtls_unpadding(&self.raw_buf[..n], &mut self.state, is_uplink);
 
         {
             let dir = self.direction();
@@ -411,6 +418,7 @@ impl<R: Read> VisionReader<R> {
         Ok(copy_len)
     }
 
+    #[inline]
     fn direction(&mut self) -> &mut DirectionState {
         if self.is_uplink {
             &mut self.state.inbound

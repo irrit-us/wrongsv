@@ -59,11 +59,11 @@ impl AddressParser {
                 if domain_len > 256 {
                     return Err(AddressParseError::DomainTooLong(domain_len));
                 }
-                let mut domain = vec![0u8; domain_len];
-                reader.read_exact(&mut domain)?;
-                let domain_str =
-                    String::from_utf8(domain).map_err(|_| AddressParseError::InvalidType(2))?;
-                Address::Domain(domain_str)
+                let mut domain = [0u8; 256];
+                reader.read_exact(&mut domain[..domain_len])?;
+                let domain_str = std::str::from_utf8(&domain[..domain_len])
+                    .map_err(|_| AddressParseError::InvalidType(2))?;
+                Address::Domain(domain_str.to_string())
             }
             3 => {
                 // IPv6
