@@ -10,5 +10,8 @@ prost.workspace = true
 bytes.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+wrongsv-uuid.workspace = true
+
 [build-dependencies]
 prost-build = "0.14"

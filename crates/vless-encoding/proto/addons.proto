@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package vless_encoding;
+
+message Addons {
+  string Flow = 1;
+}
