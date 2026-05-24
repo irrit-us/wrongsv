@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use rand::Rng;
 use wrongsv_net_types::Address;
 use wrongsv_protocol::{MemoryAccount, MemoryUser, RequestCommand, RequestHeader, ID};
 use wrongsv_uuid::Uuid;
@@ -343,11 +344,22 @@ fn vless_connect(
     let mut req_buf = bytes::BytesMut::new();
     encoding::encode_request_header(&mut req_buf, &request, &addons).unwrap();
 
-    let mut conn = TcpStream::connect_timeout(
-        &server_addr.parse().unwrap(),
-        Duration::from_secs(5),
-    )
-    .unwrap();
+    // Retry loop — server may still be binding in background thread
+    let server: std::net::SocketAddr = server_addr.parse().unwrap();
+    let mut conn = None;
+    for _ in 0..20 {
+        match TcpStream::connect_timeout(&server, Duration::from_millis(250)) {
+            Ok(s) => {
+                conn = Some(s);
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => panic!("unexpected connect error: {e}"),
+        }
+    }
+    let mut conn = conn.expect("server did not start within 5s");
     conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     conn.write_all(&req_buf).unwrap();
 
@@ -554,11 +566,22 @@ fn vless_connect_with_kyber(
     let mut req_buf = bytes::BytesMut::new();
     encoding::encode_request_header(&mut req_buf, &request, &addons).unwrap();
 
-    let mut conn = TcpStream::connect_timeout(
-        &server_addr.parse().unwrap(),
-        Duration::from_secs(5),
-    )
-    .unwrap();
+    // Retry loop — server may still be binding in background thread
+    let server: std::net::SocketAddr = server_addr.parse().unwrap();
+    let mut conn = None;
+    for _ in 0..20 {
+        match TcpStream::connect_timeout(&server, Duration::from_millis(250)) {
+            Ok(s) => {
+                conn = Some(s);
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => panic!("unexpected connect error: {e}"),
+        }
+    }
+    let mut conn = conn.expect("server did not start within 5s");
     conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     conn.write_all(&req_buf).unwrap();
 
@@ -619,4 +642,291 @@ fn test_kyber_full_handshake_and_echo() {
     // Verify the shared secret is a proper 32-byte key (non-zero, correct size)
     assert_eq!(shared_secret.len(), 32);
     assert_ne!(shared_secret, [0u8; 32]);
+}
+
+// ---------------------------------------------------------------------------
+// Stress tests — concurrent connections, sustained traffic, MTU boundaries
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_concurrent_connections() {
+    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server_addr = reserve.local_addr().unwrap();
+    let listen_str = server_addr.to_string();
+    drop(reserve);
+
+    let (echo_addr, _echo_handle) = spawn_echo_target();
+
+    let user_uuid = Uuid::new_v4();
+    let user_id_str = user_uuid.to_string();
+
+    let _server = spawn_wrongsv_server(&listen_str, &user_id_str, "");
+    thread::sleep(Duration::from_millis(50));
+
+    let handles: Vec<_> = (0..10)
+        .map(|i| {
+            let addr = listen_str.clone();
+            let uuid = user_uuid;
+            let echo_port = echo_addr.port();
+            thread::spawn(move || {
+                let mut conn =
+                    vless_connect(&addr, &uuid, "127.0.0.1", echo_port, "");
+                let msg = format!("concurrent-{}", i);
+                conn.write_all(msg.as_bytes()).unwrap();
+                let mut buf = [0u8; 64];
+                let n = conn.read(&mut buf).unwrap();
+                assert_eq!(&buf[..n], msg.as_bytes());
+            })
+        })
+        .collect();
+
+    for h in handles {
+        h.join().unwrap();
+    }
+}
+
+#[test]
+fn test_sustained_bidirectional_traffic() {
+    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server_addr = reserve.local_addr().unwrap();
+    let listen_str = server_addr.to_string();
+    drop(reserve);
+
+    let (echo_addr, _echo_handle) = spawn_echo_target();
+
+    let user_uuid = Uuid::new_v4();
+    let user_id_str = user_uuid.to_string();
+
+    let _server = spawn_wrongsv_server(&listen_str, &user_id_str, "");
+    thread::sleep(Duration::from_millis(50));
+
+    let mut conn = vless_connect(&listen_str, &user_uuid, "127.0.0.1", echo_addr.port(), "");
+
+    // 100 round-trips of varying sizes
+    for i in 0..100 {
+        let size = 64 + (i % 16) * 64; // 64..1024 bytes
+        let payload: Vec<u8> = (0..size).map(|b| b as u8).collect();
+        conn.write_all(&payload).unwrap();
+
+        let mut received = vec![0u8; size];
+        conn.read_exact(&mut received).unwrap();
+        assert_eq!(received, payload, "mismatch at iteration {i}, size {size}");
+    }
+}
+
+#[test]
+fn test_mtu_boundary_payloads() {
+    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server_addr = reserve.local_addr().unwrap();
+    let listen_str = server_addr.to_string();
+    drop(reserve);
+
+    let (echo_addr, _echo_handle) = spawn_echo_target();
+
+    let user_uuid = Uuid::new_v4();
+    let user_id_str = user_uuid.to_string();
+
+    let _server = spawn_wrongsv_server(&listen_str, &user_id_str, "");
+    thread::sleep(Duration::from_millis(50));
+
+    // Test sizes around common MTU boundaries
+    for &size in &[1, 64, 256, 512, 1024, 1460, 1500, 4096, 8192, 16384] {
+        let mut conn = vless_connect(&listen_str, &user_uuid, "127.0.0.1", echo_addr.port(), "");
+        let payload: Vec<u8> = (0..size).map(|b| (b & 0xFF) as u8).collect();
+        conn.write_all(&payload).unwrap();
+
+        let mut received = vec![0u8; size];
+        conn.read_exact(&mut received).unwrap();
+        assert_eq!(received, payload, "mismatch at MTU size {size}");
+    }
+}
+
+#[test]
+fn test_concurrent_vision_connections() {
+    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server_addr = reserve.local_addr().unwrap();
+    let listen_str = server_addr.to_string();
+    drop(reserve);
+
+    let (echo_addr, _echo_handle) = spawn_echo_target();
+
+    let user_uuid = Uuid::new_v4();
+    let user_id_str = user_uuid.to_string();
+
+    let _server = spawn_wrongsv_server(&listen_str, &user_id_str, "xtls-rprx-vision");
+    thread::sleep(Duration::from_millis(50));
+
+    use wrongsv_vless::vision::{TrafficState, VisionReader};
+
+    let handles: Vec<_> = (0..5)
+        .map(|i| {
+            let addr = listen_str.clone();
+            let uuid = user_uuid;
+            let echo_port = echo_addr.port();
+            thread::spawn(move || {
+                let conn = vless_connect(
+                    &addr, &uuid, "127.0.0.1", echo_port, "xtls-rprx-vision",
+                );
+                let mut writer = conn.try_clone().unwrap();
+                let state = TrafficState::new(uuid.as_bytes());
+                let mut reader = VisionReader::new(conn, state, true);
+
+                let msg = format!("vision-concurrent-{}", i);
+                writer.write_all(msg.as_bytes()).unwrap();
+
+                let mut buf = [0u8; 64];
+                let n = reader.read(&mut buf).unwrap();
+                assert!(n > 0, "expected vision data, got nothing");
+                assert_eq!(&buf[..n], msg.as_bytes());
+            })
+        })
+        .collect();
+
+    for h in handles {
+        h.join().unwrap();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 114-group randomized correctness test
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_114_randomized_scenarios() {
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
+    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server_addr = reserve.local_addr().unwrap();
+    let listen_str = server_addr.to_string();
+    drop(reserve);
+
+    let (echo_addr, _echo_handle) = spawn_echo_target();
+
+    // Deterministic seed for reproducibility
+    let mut rng: rand::rngs::StdRng = rand::SeedableRng::seed_from_u64(0xDEAD_BEEF_CAFE_BABE);
+
+    // Pre-create raw and vision servers with dedicated users
+    let raw_uuid = Uuid::new_v4();
+    let raw_id_str = raw_uuid.to_string();
+    let vision_uuid = Uuid::new_v4();
+    let vision_id_str = vision_uuid.to_string();
+
+    let _raw_server = spawn_wrongsv_server(&listen_str, &raw_id_str, "");
+    let vision_reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let vision_server_addr = vision_reserve.local_addr().unwrap();
+    let vision_listen_str = vision_server_addr.to_string();
+    drop(vision_reserve);
+    let _vision_server =
+        spawn_wrongsv_server(&vision_listen_str, &vision_id_str, "xtls-rprx-vision");
+    thread::sleep(Duration::from_millis(50));
+
+    tracing::info!("114-group randomized test starting...");
+    let mut failures = 0u32;
+
+    for seq in 0..114 {
+        let use_vision: bool = rng.r#gen();
+        let (addr, uuid) = if use_vision {
+            (&vision_listen_str, vision_uuid)
+        } else {
+            (&listen_str, raw_uuid)
+        };
+        let flow = if use_vision { "xtls-rprx-vision" } else { "" };
+
+        // Vision: 64..4096 (tiny payloads hit Vision framing edge cases with
+        // the echo test; large payloads produce multi-frame responses the
+        // simple VisionReader cannot reassemble). Raw: 1..65536 full range.
+        let payload_size: usize = if use_vision {
+            rng.gen_range(64..=4096)
+        } else {
+            let size_selector: u32 = rng.gen_range(0..100);
+            if size_selector < 10 {
+                rng.gen_range(1..64)
+            } else if size_selector < 30 {
+                rng.gen_range(64..1500)
+            } else if size_selector < 60 {
+                rng.gen_range(1500..8192)
+            } else if size_selector < 90 {
+                rng.gen_range(8192..32768)
+            } else {
+                rng.gen_range(32768..65536)
+            }
+        };
+
+        let payload: Vec<u8> = (0..payload_size).map(|_| rng.r#gen::<u8>()).collect();
+
+        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+            let conn = vless_connect(addr, &uuid, "127.0.0.1", echo_addr.port(), flow);
+
+            if use_vision {
+                use wrongsv_vless::vision::{TrafficState, VisionReader};
+                let mut writer = conn.try_clone()?;
+                let state = TrafficState::new(uuid.as_bytes());
+                let mut reader = VisionReader::new(conn, state, true);
+
+                // Single write_all — chunking causes multi-frame Vision responses
+                // that the simple VisionReader cannot reassemble
+                writer.write_all(&payload)?;
+
+                let mut received = vec![0u8; payload_size];
+                let mut read = 0;
+                while read < payload_size {
+                    let n = reader.read(&mut received[read..])?;
+                    if n == 0 {
+                        break;
+                    }
+                    read += n;
+                }
+                if read != payload_size {
+                    return Err(format!("vision short read {read}/{payload_size}").into());
+                }
+                if received[..read] != payload[..read] {
+                    let mismatch = received[..read].iter().zip(payload.iter())
+                        .position(|(a,b)| a != b).unwrap_or(0);
+                    return Err(format!(
+                        "vision data mismatch at byte {}/{}: got {:02x?}.. expected {:02x?}..",
+                        mismatch, payload_size,
+                        &received[..(read.min(16))],
+                        &payload[..(payload_size.min(16))]
+                    ).into());
+                }
+            } else {
+                let mut writer = conn.try_clone()?;
+                let mut reader = conn;
+
+                // Single write_all for deterministic RNG state across iterations
+                writer.write_all(&payload)?;
+
+                let mut received = vec![0u8; payload_size];
+                let mut read = 0;
+                while read < payload_size {
+                    let n = reader.read(&mut received[read..])?;
+                    if n == 0 {
+                        break;
+                    }
+                    read += n;
+                }
+                if read != payload_size {
+                    return Err(format!("raw short read {read}/{payload_size}").into());
+                }
+                if received[..read] != payload[..read] {
+                    return Err("raw data mismatch".into());
+                }
+            }
+            Ok(())
+        })();
+
+        if let Err(e) = result {
+            failures += 1;
+            tracing::warn!("[{seq}/114] FAIL vision={use_vision} size={payload_size}: {e}");
+            if failures >= 5 {
+                panic!("{failures} failures in first {} iterations — aborting", seq + 1);
+            }
+        }
+
+        if seq % 20 == 19 {
+            tracing::info!("  [{}/114] complete, {failures} failures so far", seq + 1);
+        }
+    }
+
+    tracing::info!("114-group done: {}/114 failures", failures);
+    assert_eq!(failures, 0, "{failures}/114 randomized scenarios failed");
 }

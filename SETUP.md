@@ -86,7 +86,7 @@ listen = "0.0.0.0:443"
 # Optional: default flow for all users (overridden by per-user flow)
 flow = "xtls-rprx-vision"
 
-# Optional: server-wide encryption key (base64)
+# Optional: server-wide decryption key (not yet wired into relay path)
 decryption = "..."
 
 # Optional: ML-KEM-512 secret key seed (64 bytes, hex-encoded)

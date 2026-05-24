@@ -1,9 +1,10 @@
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 use wrongsv_protocol::{MemoryAccount, MemoryUser, RequestCommand, ID};
 use wrongsv_uuid::Uuid;
 use wrongsv_vless::{MemoryValidator, Validator, XRV};
@@ -80,26 +81,56 @@ impl InboundServer {
         })
     }
 
-    /// Run the server loop. Blocks until error.
+    /// Run the server loop. Returns on fatal error or graceful shutdown (SIGINT/SIGTERM).
     pub fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
         let listener = TcpListener::bind(&self.config.listen)?;
+        listener.set_nonblocking(true)?;
         info!("VLESS server listening on {}", self.config.listen);
+
+        let running = Arc::new(AtomicBool::new(true));
+        let r = running.clone();
+        if let Err(e) = ctrlc::set_handler(move || {
+            if r.load(Ordering::SeqCst) {
+                eprintln!("received interrupt signal, shutting down gracefully...");
+                info!("received interrupt signal, shutting down gracefully...");
+                r.store(false, Ordering::SeqCst);
+            } else {
+                eprintln!("second interrupt — forcing exit");
+                std::process::exit(1);
+            }
+        }) {
+            // MultipleHandlers is non-fatal (multi-instance tests, hot-reload)
+            if !matches!(e, ctrlc::Error::MultipleHandlers) {
+                return Err(format!("failed to set Ctrl-C handler: {e}").into());
+            }
+        }
 
         let validator = Arc::clone(&self.validator);
         let kyber_sk = self.kyber_sk;
 
-        for stream in listener.incoming() {
-            match stream {
-                Ok(stream) => {
+        loop {
+            if !running.load(Ordering::SeqCst) {
+                info!("server stopped");
+                break;
+            }
+            match listener.accept() {
+                Ok((stream, addr)) => {
+                    debug!("accepted connection from {}", addr);
                     let v = Arc::clone(&validator);
                     thread::spawn(move || {
                         if let Err(e) = handle_connection(stream, v, kyber_sk) {
                             warn!("connection error: {}", e);
                         }
+                        trace!("connection thread finished");
                     });
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(200));
+                    continue;
                 }
                 Err(e) => {
                     error!("accept error: {}", e);
+                    break;
                 }
             }
         }
@@ -113,14 +144,17 @@ fn handle_connection(
     kyber_sk: Option<[u8; 64]>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let peer = stream.peer_addr()?;
+    trace!("{peer} new connection");
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
 
     // Read first chunk from connection
     let mut first = vec![0u8; 8192];
     let n = stream.read(&mut first)?;
     first.truncate(n);
+    trace!("{peer} read {n} bytes");
 
     if n < 18 {
+        debug!("{peer} connection too short ({n} bytes), dropping");
         return Err("connection too short for VLESS header".into());
     }
 
@@ -145,6 +179,7 @@ fn handle_connection(
 
     // Check flow
     let use_vision = decoded.addons.flow == XRV && account.flow == XRV;
+    trace!("{peer} flow={} use_vision={use_vision}", decoded.addons.flow);
 
     // Kyber session-key decapsulation
     if !decoded.addons.kyber_ct.is_empty() {
@@ -178,20 +213,25 @@ fn handle_connection(
 
     // Connect to target
     let target_addr = format!("{}:{}", request.address, request.port);
+    debug!("{peer} connecting to target {target_addr}");
     let target = TcpStream::connect_timeout(
         &target_addr.parse()?,
         Duration::from_secs(10),
     )?;
     target.set_read_timeout(Some(Duration::from_secs(300)))?;
+    trace!("{peer} connected to target");
 
     // Clear read timeout for the rest of the connection
     stream.set_read_timeout(None)?;
 
     if use_vision {
+        trace!("{peer} starting vision relay");
         relay_vision(stream, target, &decoded.user_sent_id, &account.testseed)?;
     } else {
+        trace!("{peer} starting raw relay");
         relay_raw(stream, target)?;
     }
+    debug!("{peer} relay finished");
 
     Ok(())
 }
@@ -217,6 +257,7 @@ fn relay_raw(mut client: TcpStream, mut target: TcpStream) -> Result<(), Box<dyn
                 }
             }
         }
+        let _ = t2.shutdown(Shutdown::Write);
     });
 
     let t2 = thread::spawn(move || {
@@ -236,6 +277,7 @@ fn relay_raw(mut client: TcpStream, mut target: TcpStream) -> Result<(), Box<dyn
                 }
             }
         }
+        let _ = client.shutdown(Shutdown::Write);
     });
 
     t1.join().ok();
@@ -281,6 +323,7 @@ fn relay_vision(
                 }
             }
         }
+        let _ = tgt.shutdown(Shutdown::Write);
     });
 
     // Target → Client (downlink): read from target raw, write to client with Vision
@@ -305,6 +348,7 @@ fn relay_vision(
             }
         }
         writer.flush().ok();
+        let _ = tgt.shutdown(Shutdown::Write);
     });
 
     t1.join().ok();
