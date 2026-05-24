@@ -250,3 +250,229 @@ fn test_invalid_user_rejected() {
 
     assert!(result.is_err(), "should reject unknown user");
 }
+
+// ---------------------------------------------------------------------------
+// Full proxy tests — spin up the real InboundServer and push traffic through it
+// ---------------------------------------------------------------------------
+
+fn spawn_echo_target() -> (std::net::SocketAddr, thread::JoinHandle<()>) {
+    let echo = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = echo.local_addr().unwrap();
+    let handle = thread::spawn(move || {
+        for stream in echo.incoming().flatten() {
+            thread::spawn(move || {
+                let mut s = stream;
+                let mut buf = [0u8; 8192];
+                loop {
+                    match s.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if s.write_all(&buf[..n]).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+    (addr, handle)
+}
+
+fn spawn_wrongsv_server(listen_addr: &str, user_id: &str, flow: &str) -> thread::JoinHandle<()> {
+    let config_toml = format!(
+        r#"
+listen = "{}"
+
+[[users]]
+id = "{}"
+email = "test@e2e.test"
+flow = "{}"
+"#,
+        listen_addr, user_id, flow
+    );
+    let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
+    let server = wrongsv_server::InboundServer::new(config).unwrap();
+    thread::spawn(move || {
+        server.run().ok();
+    })
+}
+
+fn vless_connect(
+    server_addr: &str,
+    user_uuid: &Uuid,
+    target_addr: &str,
+    target_port: u16,
+    flow: &str,
+) -> TcpStream {
+    let validator = Arc::new(MemoryValidator::new());
+    let user = MemoryUser {
+        account: MemoryAccount {
+            id: ID::new(*user_uuid),
+            flow: flow.to_string(),
+            encryption: String::new(),
+            xor_mode: 0,
+            seconds: 0,
+            padding: String::new(),
+            testpre: 0,
+            testseed: vec![],
+        },
+        email: "test@e2e.test".into(),
+        level: 0,
+    };
+    validator.add(user).unwrap();
+
+    let request = RequestHeader {
+        version: 0,
+        command: RequestCommand::Tcp,
+        address: Address::parse(target_addr),
+        port: wrongsv_net_types::Port(target_port),
+        user: validator.get(user_uuid.as_bytes()).unwrap(),
+    };
+
+    let addons = Addons {
+        flow: flow.to_string(),
+    };
+
+    let mut req_buf = bytes::BytesMut::new();
+    encoding::encode_request_header(&mut req_buf, &request, &addons).unwrap();
+
+    let mut conn = TcpStream::connect_timeout(
+        &server_addr.parse().unwrap(),
+        Duration::from_secs(5),
+    )
+    .unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    conn.write_all(&req_buf).unwrap();
+
+    // Read response header: version(1) + addons_len(1) + [addons_payload]
+    let mut version_buf = [0u8; 1];
+    conn.read_exact(&mut version_buf).unwrap();
+    assert_eq!(version_buf[0], 0, "response version mismatch");
+
+    let mut addons_len_buf = [0u8; 1];
+    conn.read_exact(&mut addons_len_buf).unwrap();
+    let addons_len = addons_len_buf[0] as usize;
+    if addons_len > 0 {
+        let mut proto_payload = vec![0u8; addons_len];
+        conn.read_exact(&mut proto_payload).unwrap();
+    }
+
+    conn
+}
+
+#[test]
+fn test_full_proxy_raw_echo() {
+    // Reserve a port
+    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server_addr = reserve.local_addr().unwrap();
+    let listen_str = server_addr.to_string();
+    drop(reserve);
+
+    let (echo_addr, _echo_handle) = spawn_echo_target();
+
+    let user_uuid = Uuid::new_v4();
+    let user_id_str = user_uuid.to_string();
+
+    let _server = spawn_wrongsv_server(&listen_str, &user_id_str, "");
+
+    // Give the server a moment to start
+    thread::sleep(Duration::from_millis(50));
+
+    let mut conn = vless_connect(&listen_str, &user_uuid, "127.0.0.1", echo_addr.port(), "");
+
+    // Send data through proxy
+    conn.write_all(b"hello via proxy").unwrap();
+
+    // Read echo back
+    let mut buf = [0u8; 64];
+    let n = conn.read(&mut buf).unwrap();
+    assert_eq!(&buf[..n], b"hello via proxy");
+}
+
+#[test]
+fn test_full_proxy_vision_echo() {
+    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server_addr = reserve.local_addr().unwrap();
+    let listen_str = server_addr.to_string();
+    drop(reserve);
+
+    let (echo_addr, _echo_handle) = spawn_echo_target();
+
+    let user_uuid = Uuid::new_v4();
+    let user_id_str = user_uuid.to_string();
+
+    let _server = spawn_wrongsv_server(&listen_str, &user_id_str, "xtls-rprx-vision");
+
+    thread::sleep(Duration::from_millis(50));
+
+    let mut conn =
+        vless_connect(&listen_str, &user_uuid, "127.0.0.1", echo_addr.port(), "xtls-rprx-vision");
+
+    // Response header has been consumed. Now send data through the proxy.
+    conn.write_all(b"vision proxied data").unwrap();
+
+    // Vision flow adds TLS-disguise padding on the downlink; use VisionReader to unwrap.
+    use wrongsv_vless::vision::{TrafficState, VisionReader};
+    let state = TrafficState::new(user_uuid.as_bytes());
+    let mut reader = VisionReader::new(conn, state, true);
+    let mut buf = [0u8; 128];
+    let n = reader.read(&mut buf).unwrap();
+    assert!(n > 0, "expected data, got nothing");
+    assert_eq!(&buf[..n], b"vision proxied data");
+}
+
+#[test]
+fn test_full_proxy_large_payload() {
+    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server_addr = reserve.local_addr().unwrap();
+    let listen_str = server_addr.to_string();
+    drop(reserve);
+
+    let (echo_addr, _echo_handle) = spawn_echo_target();
+
+    let user_uuid = Uuid::new_v4();
+    let user_id_str = user_uuid.to_string();
+
+    let _server = spawn_wrongsv_server(&listen_str, &user_id_str, "");
+
+    thread::sleep(Duration::from_millis(50));
+
+    let mut conn = vless_connect(&listen_str, &user_uuid, "127.0.0.1", echo_addr.port(), "");
+
+    // Send 64KB of data
+    let payload = vec![0xAB; 65536];
+    conn.write_all(&payload).unwrap();
+
+    // Read back
+    let mut received = vec![0u8; payload.len()];
+    conn.read_exact(&mut received).unwrap();
+    assert_eq!(received, payload);
+}
+
+#[test]
+fn test_full_proxy_multiple_requests() {
+    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server_addr = reserve.local_addr().unwrap();
+    let listen_str = server_addr.to_string();
+    drop(reserve);
+
+    let (echo_addr, _echo_handle) = spawn_echo_target();
+
+    let user_uuid = Uuid::new_v4();
+    let user_id_str = user_uuid.to_string();
+
+    let _server = spawn_wrongsv_server(&listen_str, &user_id_str, "");
+
+    thread::sleep(Duration::from_millis(50));
+
+    let mut conn = vless_connect(&listen_str, &user_uuid, "127.0.0.1", echo_addr.port(), "");
+
+    for i in 0u8..5 {
+        let msg = format!("request {}", i);
+        conn.write_all(msg.as_bytes()).unwrap();
+        let mut buf = [0u8; 64];
+        let n = conn.read(&mut buf).unwrap();
+        assert_eq!(&buf[..n], msg.as_bytes());
+    }
+}

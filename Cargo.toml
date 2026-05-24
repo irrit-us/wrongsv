@@ -57,6 +57,7 @@ wrongsv-uuid.workspace = true
 wrongsv-vless-encoding.workspace = true
 wrongsv-vless.workspace = true
 wrongsv-net-types.workspace = true
+wrongsv-server.workspace = true
 bytes.workspace = true
 criterion = "0.5"
 
