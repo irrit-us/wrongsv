@@ -141,23 +141,21 @@ fn test_end_to_end_echo() {
     let echo = TcpListener::bind("127.0.0.1:0").unwrap();
     let echo_addr = echo.local_addr().unwrap();
     thread::spawn(move || {
-        for stream in echo.incoming() {
-            if let Ok(stream) = stream {
-                thread::spawn(move || {
-                    let mut s = stream;
-                    let mut buf = [0u8; 4096];
-                    loop {
-                        match s.read(&mut buf) {
-                            Ok(0) | Err(_) => break,
-                            Ok(n) => {
-                                if s.write_all(&buf[..n]).is_err() {
-                                    break;
-                                }
+        for stream in echo.incoming().flatten() {
+            thread::spawn(move || {
+                let mut s = stream;
+                let mut buf = [0u8; 4096];
+                loop {
+                    match s.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if s.write_all(&buf[..n]).is_err() {
+                                break;
                             }
                         }
                     }
-                });
-            }
+                }
+            });
         }
     });
 

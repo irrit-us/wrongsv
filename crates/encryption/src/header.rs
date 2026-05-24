@@ -1,10 +1,10 @@
-/// TLS 1.3 record header handling for encrypted transport disguise.
-///
-/// The encryption layer wraps payload in TLS 1.3 application data records:
-///   0x17 0x03 0x03 len_hi len_lo
-///
-/// This has nothing to do with actual TLS — it's purely a disguise to make
-/// the encrypted bytes look like TLS traffic to passive observers.
+//! TLS 1.3 record header handling for encrypted transport disguise.
+//!
+//! The encryption layer wraps payload in TLS 1.3 application data records:
+//!   0x17 0x03 0x03 len_hi len_lo
+//!
+//! This has nothing to do with actual TLS — it's purely a disguise to make
+//! the encrypted bytes look like TLS traffic to passive observers.
 
 /// Write a 5-byte TLS 1.3 application data record header.
 pub fn encode_header(hdr: &mut [u8; 5], payload_len: usize) {
@@ -21,7 +21,7 @@ pub fn decode_header(hdr: &[u8; 5]) -> Result<usize, HeaderError> {
         return Err(HeaderError::InvalidMagic(hdr[0], hdr[1], hdr[2]));
     }
     let len = ((hdr[3] as usize) << 8) | (hdr[4] as usize);
-    if len < 17 || len > 16640 {
+    if !(17..=16640).contains(&len) {
         return Err(HeaderError::InvalidLength(len));
     }
     Ok(len)

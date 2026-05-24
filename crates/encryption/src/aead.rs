@@ -6,7 +6,7 @@ use typenum::U12;
 
 /// AEAD wrapper supporting AES-256-GCM and ChaCha20-Poly1305.
 pub enum Cipher {
-    AesGcm(Aes256Gcm),
+    AesGcm(Box<Aes256Gcm>),
     ChaCha(ChaCha20Poly1305),
 }
 
@@ -25,7 +25,7 @@ impl AeadKey {
         let derived = derive_key(context, key);
         let cipher = if use_aes {
             let aes_key = aes_gcm::Key::<Aes256Gcm>::from_slice(&derived);
-            Cipher::AesGcm(Aes256Gcm::new(aes_key))
+            Cipher::AesGcm(Box::new(Aes256Gcm::new(aes_key)))
         } else {
             let chacha_key = chacha20poly1305::Key::from_slice(&derived);
             Cipher::ChaCha(ChaCha20Poly1305::new(chacha_key))
