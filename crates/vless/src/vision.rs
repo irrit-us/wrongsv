@@ -43,9 +43,9 @@ pub const TLS13_CIPHER_SUITES: &[(u16, &str)] = &[
 
 // ── Traffic State ──────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct TrafficState {
-    pub user_uuid: Vec<u8>,
+    pub user_uuid: [u8; 16],
     /// How many initial packets to filter for TLS detection.
     pub number_of_packet_to_filter: i32,
     /// Whether XTLS direct-copy (splice) mode is enabled.
@@ -77,8 +77,11 @@ pub struct DirectionState {
 
 impl TrafficState {
     pub fn new(user_uuid: &[u8]) -> Self {
+        let mut uuid = [0u8; 16];
+        let len = user_uuid.len().min(16);
+        uuid[..len].copy_from_slice(&user_uuid[..len]);
         TrafficState {
-            user_uuid: user_uuid.to_vec(),
+            user_uuid: uuid,
             number_of_packet_to_filter: 8,
             enable_xtls: false,
             is_tls12_or_above: false,
@@ -118,7 +121,7 @@ impl TrafficState {
 pub fn xtls_padding(
     buf: &[u8],
     command: u8,
-    user_uuid: &mut Option<Vec<u8>>,
+    user_uuid: &mut Option<[u8; 16]>,
     long_padding: bool,
     testseed: &[u32],
 ) -> Vec<u8> {
@@ -156,7 +159,9 @@ pub fn xtls_padding(
     if !buf.is_empty() {
         frame.extend_from_slice(buf);
     }
-    frame.resize(frame.len() + padding_len as usize, 0);
+    let pad_start = frame.len();
+    frame.resize(pad_start + padding_len as usize, 0);
+    rng.fill(&mut frame[pad_start..]);
 
     frame
 }
@@ -173,7 +178,7 @@ pub fn xtls_unpadding(buf: &[u8], state: &mut TrafficState, is_uplink: bool) -> 
 
     // Initial state: check for user_uuid prefix
     if dir.remaining_command == -1 && dir.remaining_content == -1 && dir.remaining_padding == -1 {
-        if buf.len() >= 21 && state.user_uuid == &buf[..16] {
+        if buf.len() >= 21 && state.user_uuid[..] == buf[..16] {
             let buf = &buf[16..]; // consume uuid, process rest below
             dir.remaining_command = 5;
             return unpadding_loop(buf, dir);
@@ -287,9 +292,6 @@ pub fn xtls_filter_tls(buf: &[u8], state: &mut TrafficState) {
         }
     }
 
-    if state.number_of_packet_to_filter <= 0 {
-        // done filtering
-    }
 }
 
 // ── TLS Record Validation ──────────────────────────────────────────────────
@@ -435,7 +437,7 @@ pub struct VisionWriter<W: Write> {
     inner: W,
     state: TrafficState,
     is_uplink: bool,
-    user_uuid: Option<Vec<u8>>,
+    user_uuid: Option<[u8; 16]>,
     testseed: Vec<u32>,
     /// Whether to pass through directly.
     pub direct: bool,
@@ -443,7 +445,7 @@ pub struct VisionWriter<W: Write> {
 
 impl<W: Write> VisionWriter<W> {
     pub fn new(inner: W, state: TrafficState, is_uplink: bool, testseed: Vec<u32>) -> Self {
-        let user_uuid = Some(state.user_uuid.clone());
+        let user_uuid = Some(state.user_uuid);
         VisionWriter {
             inner,
             state,
@@ -544,7 +546,7 @@ mod tests {
     #[test]
     fn test_padding_unpadding_roundtrip() {
         let content = b"hello this is test content for vision padding";
-        let mut uuid = Some(vec![0xAAu8; 16]);
+        let mut uuid = Some([0xAAu8; 16]);
         let mut state = TrafficState::new(&[0xAAu8; 16]);
 
         let frame = xtls_padding(content, CMD_PADDING_END, &mut uuid, false, &[900, 500, 900, 256]);
@@ -557,7 +559,7 @@ mod tests {
 
     #[test]
     fn test_padding_continue_sequence() {
-        let mut uuid = Some(vec![0xBBu8; 16]);
+        let mut uuid = Some([0xBBu8; 16]);
         let mut state = TrafficState::new(&[0xBBu8; 16]);
 
         let f1 = xtls_padding(b"first", CMD_PADDING_CONTINUE, &mut uuid, false, &[900, 500, 900, 256]);
@@ -577,6 +579,21 @@ mod tests {
         let data = b"some random data without uuid prefix";
         let result = xtls_unpadding(data, &mut state, true);
         assert_eq!(result, data.to_vec());
+    }
+
+    #[test]
+    fn test_padding_uses_random_bytes() {
+        let mut uuid = Some([0xDDu8; 16]);
+        let frame = xtls_padding(b"test", CMD_PADDING_END, &mut uuid, false, &[900, 500, 900, 256]);
+        // Content is 4 bytes. Frame has: UUID(16) + cmd(1) + len(2) + padlen(2) + content(4) + padding.
+        // Find the padding section after the content
+        let content_start = 21; // 16 + 1 + 2 + 2
+        let padding_start = content_start + 4;
+        assert!(frame.len() > padding_start, "frame should have padding");
+        // The padding bytes should NOT all be zero (they're random)
+        let padding = &frame[padding_start..];
+        let sum: u32 = padding.iter().map(|b| *b as u32).sum();
+        assert!(sum > 0 || padding.is_empty(), "padding should contain non-zero bytes");
     }
 
     #[test]

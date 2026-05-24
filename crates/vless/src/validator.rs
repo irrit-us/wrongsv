@@ -8,6 +8,8 @@ use wrongsv_uuid::process_uuid;
 pub enum ValidatorError {
     #[error("user {0} already exists")]
     DuplicateEmail(String),
+    #[error("user {0} not found")]
+    NotFound(String),
 }
 
 /// Thread-safe in-memory VLESS user registry.
@@ -69,7 +71,7 @@ impl Validator for MemoryValidator {
                 self.users.write().unwrap().remove(&uid_key);
                 Ok(())
             }
-            None => Err(ValidatorError::DuplicateEmail(format!(
+            None => Err(ValidatorError::NotFound(format!(
                 "user {} not found",
                 email
             ))),
@@ -157,6 +159,13 @@ mod tests {
         let u2 = make_user("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "test@example.com");
         v.add(u1).unwrap();
         assert!(v.add(u2).is_err());
+    }
+
+    #[test]
+    fn test_delete_nonexistent_returns_not_found() {
+        let v = MemoryValidator::new();
+        let err = v.del("nobody@example.com").unwrap_err();
+        assert!(matches!(err, ValidatorError::NotFound(_)));
     }
 
     #[test]
