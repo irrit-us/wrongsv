@@ -31,7 +31,7 @@ impl Uuid {
     pub fn parse_string(s: &str) -> Result<Self, ParseUuidError> {
         let text = s.as_bytes();
         if text.len() < 32 || text.len() > 36 {
-            if text.len() > 0 && text.len() <= 30 {
+            if !text.is_empty() && text.len() <= 30 {
                 return Self::from_short_name(s);
             }
             return Err(ParseUuidError::InvalidFormat(s.to_string()));
@@ -61,7 +61,7 @@ impl Uuid {
 
     fn from_short_name(name: &str) -> Result<Self, ParseUuidError> {
         let mut hasher = Sha256::new();
-        hasher.update(&[0u8; 16]); // null uuid as salt
+        hasher.update([0u8; 16]); // null uuid as salt
         hasher.update(name.as_bytes());
         let hash = hasher.finalize();
         let mut bytes = [0u8; 16];

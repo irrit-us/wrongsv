@@ -69,6 +69,7 @@ mod tests {
     fn test_roundtrip_flow() {
         let addons = Addons {
             flow: "xtls-rprx-vision".to_string(),
+            ..Default::default()
         };
         let mut buf = BytesMut::new();
         encode_header_addons(&mut buf, &addons).unwrap();

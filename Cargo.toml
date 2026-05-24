@@ -13,6 +13,7 @@ members = [
     "crates/vless",
     "crates/encryption",
     "crates/server",
+    "crates/kyber",
 ]
 
 [workspace.package]
@@ -28,6 +29,7 @@ wrongsv-vless-encoding = { path = "crates/vless-encoding" }
 wrongsv-vless = { path = "crates/vless" }
 wrongsv-encryption = { path = "crates/encryption" }
 wrongsv-server = { path = "crates/server" }
+wrongsv-kyber = { path = "crates/kyber" }
 
 bytes = "1"
 thiserror = "2"
@@ -58,6 +60,7 @@ wrongsv-vless-encoding.workspace = true
 wrongsv-vless.workspace = true
 wrongsv-net-types.workspace = true
 wrongsv-server.workspace = true
+wrongsv-kyber.workspace = true
 bytes.workspace = true
 criterion = "0.5"
 

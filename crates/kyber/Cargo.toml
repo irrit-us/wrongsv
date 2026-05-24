@@ -1,0 +1,9 @@
+[package]
+name = "wrongsv-kyber"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ml-kem = { version = "0.3", features = ["getrandom"] }
+thiserror.workspace = true

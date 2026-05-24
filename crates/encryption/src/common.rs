@@ -3,7 +3,6 @@
 /// Every write is split into AES-GCM/ChaCha20-Poly1305 records, each prefixed
 /// with a 5-byte TLS application data header (0x17 0x03 0x03 ...).
 /// Every read expects the same format and decrypts the payload.
-
 use crate::aead::AeadKey;
 use crate::header;
 use std::io::{Read, Write};

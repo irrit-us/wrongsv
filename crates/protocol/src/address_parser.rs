@@ -22,9 +22,15 @@ pub struct AddressParser {
     port_first: bool,
 }
 
+impl Default for AddressParser {
+    fn default() -> Self {
+        AddressParser { port_first: true }
+    }
+}
+
 impl AddressParser {
     pub fn new() -> Self {
-        AddressParser { port_first: true }
+        Self::default()
     }
 
     /// Read an address and port from a byte stream (port-first ordering).

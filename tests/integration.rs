@@ -50,6 +50,7 @@ fn test_vless_handshake_encode_decode() {
 
     let addons = Addons {
         flow: String::new(),
+        ..Default::default()
     };
 
     let mut buf = bytes::BytesMut::new();
@@ -97,6 +98,7 @@ fn test_vless_handshake_with_vision_flow() {
 
     let addons = Addons {
         flow: "xtls-rprx-vision".into(),
+        ..Default::default()
     };
 
     let mut buf = bytes::BytesMut::new();
@@ -124,6 +126,7 @@ fn test_response_header_roundtrip() {
 
     let addons = Addons {
         flow: String::new(),
+        ..Default::default()
     };
 
     let mut buf = bytes::BytesMut::new();
@@ -171,6 +174,7 @@ fn test_end_to_end_echo() {
 
     let addons = Addons {
         flow: String::new(),
+        ..Default::default()
     };
 
     let mut req_buf = bytes::BytesMut::new();
@@ -239,6 +243,7 @@ fn test_invalid_user_rejected() {
 
     let addons = Addons {
         flow: String::new(),
+        ..Default::default()
     };
 
     let mut buf = bytes::BytesMut::new();
@@ -332,6 +337,7 @@ fn vless_connect(
 
     let addons = Addons {
         flow: flow.to_string(),
+        ..Default::default()
     };
 
     let mut req_buf = bytes::BytesMut::new();
@@ -475,4 +481,142 @@ fn test_full_proxy_multiple_requests() {
         let n = conn.read(&mut buf).unwrap();
         assert_eq!(&buf[..n], msg.as_bytes());
     }
+}
+
+// ---------------------------------------------------------------------------
+// Kyber post-quantum handshake tests
+// ---------------------------------------------------------------------------
+
+fn spawn_wrongsv_server_with_kyber(
+    listen_addr: &str,
+    user_id: &str,
+    flow: &str,
+    kyber_sk_hex: &str,
+) -> thread::JoinHandle<()> {
+    let config_toml = format!(
+        r#"
+listen = "{}"
+
+[[users]]
+id = "{}"
+email = "test@e2e.test"
+flow = "{}"
+
+kyber_secret_key = "{}"
+"#,
+        listen_addr, user_id, flow, kyber_sk_hex
+    );
+    let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
+    let server = wrongsv_server::InboundServer::new(config).unwrap();
+    thread::spawn(move || {
+        server.run().ok();
+    })
+}
+
+fn vless_connect_with_kyber(
+    server_addr: &str,
+    user_uuid: &Uuid,
+    target_addr: &str,
+    target_port: u16,
+    flow: &str,
+    kyber_ct: Vec<u8>,
+) -> TcpStream {
+    let validator = Arc::new(MemoryValidator::new());
+    let user = MemoryUser {
+        account: MemoryAccount {
+            id: ID::new(*user_uuid),
+            flow: flow.to_string(),
+            encryption: String::new(),
+            xor_mode: 0,
+            seconds: 0,
+            padding: String::new(),
+            testpre: 0,
+            testseed: vec![],
+        },
+        email: "test@e2e.test".into(),
+        level: 0,
+    };
+    validator.add(user).unwrap();
+
+    let request = RequestHeader {
+        version: 0,
+        command: RequestCommand::Tcp,
+        address: Address::parse(target_addr),
+        port: wrongsv_net_types::Port(target_port),
+        user: validator.get(user_uuid.as_bytes()).unwrap(),
+    };
+
+    let addons = Addons {
+        flow: flow.to_string(),
+        kyber_ct,
+    };
+
+    let mut req_buf = bytes::BytesMut::new();
+    encoding::encode_request_header(&mut req_buf, &request, &addons).unwrap();
+
+    let mut conn = TcpStream::connect_timeout(
+        &server_addr.parse().unwrap(),
+        Duration::from_secs(5),
+    )
+    .unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    conn.write_all(&req_buf).unwrap();
+
+    // Read response header
+    let mut version_buf = [0u8; 1];
+    conn.read_exact(&mut version_buf).unwrap();
+    assert_eq!(version_buf[0], 0, "response version mismatch");
+
+    let mut addons_len_buf = [0u8; 1];
+    conn.read_exact(&mut addons_len_buf).unwrap();
+    let addons_len = addons_len_buf[0] as usize;
+    if addons_len > 0 {
+        let mut proto_payload = vec![0u8; addons_len];
+        conn.read_exact(&mut proto_payload).unwrap();
+    }
+
+    conn
+}
+
+#[test]
+fn test_kyber_full_handshake_and_echo() {
+    // Generate server keypair
+    let kp = wrongsv_kyber::generate_keypair();
+    let sk_hex: String = kp.sk.iter().map(|b| format!("{:02x}", b)).collect();
+
+    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server_addr = reserve.local_addr().unwrap();
+    let listen_str = server_addr.to_string();
+    drop(reserve);
+
+    let (echo_addr, _echo_handle) = spawn_echo_target();
+
+    let user_uuid = Uuid::new_v4();
+    let user_id_str = user_uuid.to_string();
+
+    let _server = spawn_wrongsv_server_with_kyber(&listen_str, &user_id_str, "", &sk_hex);
+    thread::sleep(Duration::from_millis(50));
+
+    // Client encapsulates against server's public key
+    let (kyber_ct, shared_secret) = wrongsv_kyber::encapsulate(&kp.pk).unwrap();
+
+    let mut conn = vless_connect_with_kyber(
+        &listen_str,
+        &user_uuid,
+        "127.0.0.1",
+        echo_addr.port(),
+        "",
+        kyber_ct,
+    );
+
+    // Send data through proxy — should work since Kyber handshake doesn't break relay
+    conn.write_all(b"kyber-secured echo").unwrap();
+
+    let mut buf = [0u8; 64];
+    let n = conn.read(&mut buf).unwrap();
+    assert_eq!(&buf[..n], b"kyber-secured echo");
+
+    // Verify the shared secret is a proper 32-byte key (non-zero, correct size)
+    assert_eq!(shared_secret.len(), 32);
+    assert_ne!(shared_secret, [0u8; 32]);
 }

@@ -13,6 +13,11 @@ pub struct Config {
     /// Global default flow
     #[serde(default)]
     pub flow: Option<String>,
+    /// ML-KEM-512 secret key seed (64 bytes, hex-encoded).
+    /// When set, the server can decapsulate Kyber-encrypted session keys
+    /// carried in client addons.
+    #[serde(default)]
+    pub kyber_secret_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -87,6 +92,7 @@ flow = "xtls-rprx-vision"
             }],
             decryption: None,
             flow: None,
+            kyber_secret_key: None,
         };
         assert!(config.validate().is_err());
     }
@@ -103,6 +109,7 @@ flow = "xtls-rprx-vision"
             }],
             decryption: None,
             flow: None,
+            kyber_secret_key: None,
         };
         assert!(config.validate().is_err());
     }

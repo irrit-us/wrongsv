@@ -29,12 +29,18 @@ pub struct MemoryValidator {
     emails: RwLock<HashMap<String, MemoryUser>>,
 }
 
-impl MemoryValidator {
-    pub fn new() -> Self {
+impl Default for MemoryValidator {
+    fn default() -> Self {
         MemoryValidator {
             users: RwLock::new(HashMap::new()),
             emails: RwLock::new(HashMap::new()),
         }
+    }
+}
+
+impl MemoryValidator {
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 

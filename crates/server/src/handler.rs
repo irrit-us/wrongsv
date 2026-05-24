@@ -12,14 +12,43 @@ use wrongsv_vless_encoding::{self as encoding, Addons};
 
 use crate::config::Config;
 
+/// Decode a hex string into a fixed-size byte array.
+fn decode_hex<const N: usize>(hex: &str) -> Result<[u8; N], String> {
+    let hex = hex.trim();
+    if hex.len() != N * 2 {
+        return Err(format!("expected {} hex chars, got {}", N * 2, hex.len()));
+    }
+    let mut bytes = [0u8; N];
+    for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
+        let hi = hex_val(chunk[0]).ok_or_else(|| format!("invalid hex at position {}", i * 2))?;
+        let lo = hex_val(chunk[1]).ok_or_else(|| format!("invalid hex at position {}", i * 2 + 1))?;
+        bytes[i] = hi << 4 | lo;
+    }
+    Ok(bytes)
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
 pub struct InboundServer {
     config: Config,
     validator: Arc<MemoryValidator>,
+    kyber_sk: Option<[u8; 64]>,
 }
 
 impl InboundServer {
     pub fn new(config: Config) -> Result<Self, Box<dyn std::error::Error>> {
         config.validate()?;
+        let kyber_sk = match &config.kyber_secret_key {
+            Some(hex) => Some(decode_hex::<64>(hex).map_err(|e| format!("kyber_secret_key: {e}"))?),
+            None => None,
+        };
         let validator = Arc::new(MemoryValidator::new());
         for user in &config.users {
             let uuid = Uuid::parse_string(&user.id)?;
@@ -44,7 +73,11 @@ impl InboundServer {
             };
             validator.add(mu)?;
         }
-        Ok(InboundServer { config, validator })
+        Ok(InboundServer {
+            config,
+            validator,
+            kyber_sk,
+        })
     }
 
     /// Run the server loop. Blocks until error.
@@ -53,13 +86,14 @@ impl InboundServer {
         info!("VLESS server listening on {}", self.config.listen);
 
         let validator = Arc::clone(&self.validator);
+        let kyber_sk = self.kyber_sk;
 
         for stream in listener.incoming() {
             match stream {
                 Ok(stream) => {
                     let v = Arc::clone(&validator);
                     thread::spawn(move || {
-                        if let Err(e) = handle_connection(stream, v) {
+                        if let Err(e) = handle_connection(stream, v, kyber_sk) {
                             warn!("connection error: {}", e);
                         }
                     });
@@ -76,6 +110,7 @@ impl InboundServer {
 fn handle_connection(
     mut stream: TcpStream,
     validator: Arc<MemoryValidator>,
+    kyber_sk: Option<[u8; 64]>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let peer = stream.peer_addr()?;
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
@@ -111,9 +146,31 @@ fn handle_connection(
     // Check flow
     let use_vision = decoded.addons.flow == XRV && account.flow == XRV;
 
+    // Kyber session-key decapsulation
+    if !decoded.addons.kyber_ct.is_empty() {
+        if let Some(sk) = kyber_sk {
+            match wrongsv_kyber::decapsulate(&sk, &decoded.addons.kyber_ct) {
+                Ok(_shared_secret) => {
+                    info!(
+                        "{} Kyber session established (ML-KEM-512, ss={} bytes)",
+                        peer,
+                        wrongsv_kyber::SS_SIZE,
+                    );
+                    // TODO: derive AeadKey from shared_secret, wrap streams in CommonConn
+                }
+                Err(e) => {
+                    warn!("{} Kyber decapsulation failed: {}", peer, e);
+                }
+            }
+        } else {
+            debug!("{} client sent kyber_ct but server has no kyber_secret_key configured", peer);
+        }
+    }
+
     // Send response header
     let response_addons = Addons {
         flow: String::new(),
+        ..Default::default()
     };
     let mut resp_buf = bytes::BytesMut::new();
     encoding::encode_response_header(&mut resp_buf, request, &response_addons)?;

@@ -9,7 +9,6 @@
 ///   [user_uuid(16)] command(1) content_len(2) padding_len(2) content(var) padding(var)
 ///
 /// The user_uuid is only written on the very first frame per direction.
-
 use rand::Rng;
 use std::io::{Read, Write};
 
@@ -200,10 +199,10 @@ fn unpadding_loop(mut buf: &[u8], dir: &mut DirectionState) -> Vec<u8> {
             match dir.remaining_command {
                 5 => dir.current_command = byte[0] as i32,
                 4 => dir.remaining_content = (byte[0] as i32) << 8,
-                3 => dir.remaining_content = dir.remaining_content | (byte[0] as i32),
+                3 => dir.remaining_content |= byte[0] as i32,
                 2 => dir.remaining_padding = (byte[0] as i32) << 8,
                 1 => {
-                    dir.remaining_padding = dir.remaining_padding | (byte[0] as i32);
+                    dir.remaining_padding |= byte[0] as i32;
                 }
                 _ => {}
             }
@@ -285,10 +284,8 @@ pub fn xtls_filter_tls(buf: &[u8], state: &mut TrafficState) {
                 state.enable_xtls = true;
             }
             state.number_of_packet_to_filter = 0;
-            return;
         } else if state.remaining_server_hello <= 0 {
             state.number_of_packet_to_filter = 0;
-            return;
         }
     }
 
@@ -608,7 +605,7 @@ mod tests {
     #[test]
     fn test_is_complete_record_truncated() {
         let mut record = vec![0x17, 0x03, 0x03, 0x00, 100];
-        record.extend_from_slice(&vec![0u8; 50]); // only 50 bytes, should be 100
+        record.extend_from_slice(&[0u8; 50]); // only 50 bytes, should be 100
         assert!(!is_complete_record(&record));
     }
 
@@ -637,7 +634,7 @@ mod tests {
         buf[43] = 0x00; // session_id_len = 0
         // cipher_suite at offset 44-45
         // Insert TLS 1.3 supported_versions extension later in the buffer
-        let sv_start = 5 + 1 + 3 + 2 + 32 + 1 + 0 + 2 + 1 + 2; // after all fixed fields
+        let sv_start = 5 + 1 + 3 + 2 + 32 + 1 + 2 + 1 + 2; // after all fixed fields (session_id_len=0 omitted)
         buf[sv_start] = 0x00;
         buf[sv_start + 1] = 0x04; // 4 bytes extension
         buf[sv_start + 2] = 0x00;
