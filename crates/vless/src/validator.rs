@@ -47,7 +47,11 @@ impl MemoryValidator {
 impl Validator for MemoryValidator {
     fn get(&self, id: &[u8; 16]) -> Option<MemoryUser> {
         let key = process_uuid(id);
-        self.users.read().unwrap_or_else(|e| e.into_inner()).get(&key).cloned()
+        self.users
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+            .cloned()
     }
 
     fn add(&self, user: MemoryUser) -> Result<(), ValidatorError> {
@@ -60,7 +64,10 @@ impl Validator for MemoryValidator {
             emails.insert(key, user.clone());
         }
         let uid_key = process_uuid(user.account.id.uuid().as_bytes());
-        self.users.write().unwrap_or_else(|e| e.into_inner()).insert(uid_key, user);
+        self.users
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(uid_key, user);
         Ok(())
     }
 
@@ -72,9 +79,15 @@ impl Validator for MemoryValidator {
         };
         match user {
             Some(u) => {
-                self.emails.write().unwrap_or_else(|e| e.into_inner()).remove(&key);
+                self.emails
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&key);
                 let uid_key = process_uuid(u.account.id.uuid().as_bytes());
-                self.users.write().unwrap_or_else(|e| e.into_inner()).remove(&uid_key);
+                self.users
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&uid_key);
                 Ok(())
             }
             None => Err(ValidatorError::NotFound(format!(
@@ -86,7 +99,11 @@ impl Validator for MemoryValidator {
 
     fn get_by_email(&self, email: &str) -> Option<MemoryUser> {
         let key = email.to_lowercase();
-        self.emails.read().unwrap_or_else(|e| e.into_inner()).get(&key).cloned()
+        self.emails
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+            .cloned()
     }
 
     fn get_all(&self) -> Vec<MemoryUser> {
@@ -106,7 +123,7 @@ impl Validator for MemoryValidator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wrongsv_protocol::{MemoryAccount, ID};
+    use wrongsv_protocol::{ID, MemoryAccount};
     use wrongsv_uuid::Uuid;
 
     fn make_user(id_str: &str, email: &str) -> MemoryUser {

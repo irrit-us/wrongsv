@@ -33,9 +33,7 @@ pub fn encode_header_addons(buf: &mut BytesMut, addons: &Addons) -> Result<(), A
 }
 
 /// Decode addons from a reader. Reads 1 byte length, then that many bytes of proto.
-pub fn decode_header_addons<R: std::io::Read>(
-    reader: &mut R,
-) -> Result<Addons, AddonsError> {
+pub fn decode_header_addons<R: std::io::Read>(reader: &mut R) -> Result<Addons, AddonsError> {
     let mut len_buf = [0u8; 1];
     reader.read_exact(&mut len_buf)?;
     let length = len_buf[0] as usize;

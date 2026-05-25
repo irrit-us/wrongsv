@@ -288,7 +288,6 @@ pub fn xtls_filter_tls(buf: &[u8], state: &mut TrafficState) {
             state.number_of_packet_to_filter = 0;
         }
     }
-
 }
 
 // ── TLS Record Validation ──────────────────────────────────────────────────
@@ -482,10 +481,7 @@ impl<W: Write> VisionWriter<W> {
             let is_complete = is_complete_record(buf);
             let long_padding = self.state.is_tls;
 
-            if self.state.is_tls
-                && buf.len() >= 6
-                && buf[..3] == TLS_APP_DATA_START
-                && is_complete
+            if self.state.is_tls && buf.len() >= 6 && buf[..3] == TLS_APP_DATA_START && is_complete
             {
                 let command = if self.state.enable_xtls {
                     CMD_PADDING_DIRECT
@@ -496,13 +492,7 @@ impl<W: Write> VisionWriter<W> {
                     self.writer_direction().direct_copy = true;
                     self.direct = true;
                 }
-                let frame = xtls_padding(
-                    buf,
-                    command,
-                    &mut self.user_uuid,
-                    false,
-                    &self.testseed,
-                );
+                let frame = xtls_padding(buf, command, &mut self.user_uuid, false, &self.testseed);
                 self.writer_direction().is_padding = false;
                 self.inner.write_all(&frame)?;
             } else {
@@ -546,7 +536,13 @@ mod tests {
         let mut uuid = Some([0xAAu8; 16]);
         let mut state = TrafficState::new(&[0xAAu8; 16]);
 
-        let frame = xtls_padding(content, CMD_PADDING_END, &mut uuid, false, &[900, 500, 900, 256]);
+        let frame = xtls_padding(
+            content,
+            CMD_PADDING_END,
+            &mut uuid,
+            false,
+            &[900, 500, 900, 256],
+        );
         assert!(frame.len() > content.len(), "frame should have padding");
 
         let recovered = xtls_unpadding(&frame, &mut state, true);
@@ -559,8 +555,20 @@ mod tests {
         let mut uuid = Some([0xBBu8; 16]);
         let mut state = TrafficState::new(&[0xBBu8; 16]);
 
-        let f1 = xtls_padding(b"first", CMD_PADDING_CONTINUE, &mut uuid, false, &[900, 500, 900, 256]);
-        let f2 = xtls_padding(b"second", CMD_PADDING_END, &mut uuid, false, &[900, 500, 900, 256]);
+        let f1 = xtls_padding(
+            b"first",
+            CMD_PADDING_CONTINUE,
+            &mut uuid,
+            false,
+            &[900, 500, 900, 256],
+        );
+        let f2 = xtls_padding(
+            b"second",
+            CMD_PADDING_END,
+            &mut uuid,
+            false,
+            &[900, 500, 900, 256],
+        );
 
         let mut combined = Vec::new();
         combined.extend_from_slice(&f1);
@@ -581,7 +589,13 @@ mod tests {
     #[test]
     fn test_padding_uses_random_bytes() {
         let mut uuid = Some([0xDDu8; 16]);
-        let frame = xtls_padding(b"test", CMD_PADDING_END, &mut uuid, false, &[900, 500, 900, 256]);
+        let frame = xtls_padding(
+            b"test",
+            CMD_PADDING_END,
+            &mut uuid,
+            false,
+            &[900, 500, 900, 256],
+        );
         // Content is 4 bytes. Frame has: UUID(16) + cmd(1) + len(2) + padlen(2) + content(4) + padding.
         // Find the padding section after the content
         let content_start = 21; // 16 + 1 + 2 + 2
@@ -590,7 +604,10 @@ mod tests {
         // The padding bytes should NOT all be zero (they're random)
         let padding = &frame[padding_start..];
         let sum: u32 = padding.iter().map(|b| *b as u32).sum();
-        assert!(sum > 0 || padding.is_empty(), "padding should contain non-zero bytes");
+        assert!(
+            sum > 0 || padding.is_empty(),
+            "padding should contain non-zero bytes"
+        );
     }
 
     #[test]
@@ -647,6 +664,9 @@ mod tests {
         xtls_filter_tls(&buf, &mut state);
         assert!(state.is_tls, "should detect TLS");
         assert!(state.is_tls12_or_above, "should detect TLS 1.2+");
-        assert_eq!(state.number_of_packet_to_filter, 0, "filtering should be done");
+        assert_eq!(
+            state.number_of_packet_to_filter, 0,
+            "filtering should be done"
+        );
     }
 }

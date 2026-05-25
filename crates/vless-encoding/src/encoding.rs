@@ -1,4 +1,4 @@
-use crate::addons::{decode_header_addons, encode_header_addons, Addons};
+use crate::addons::{Addons, decode_header_addons, encode_header_addons};
 use bytes::{BufMut, BytesMut};
 use thiserror::Error;
 use wrongsv_net_types::{Address, Port};
@@ -86,22 +86,14 @@ pub fn decode_request_header<R: std::io::Read>(
 
     let mut cmd_buf = [0u8; 1];
     reader.read_exact(&mut cmd_buf)?;
-    let command = RequestCommand::from_byte(cmd_buf[0])
-        .ok_or(DecodeError::InvalidCommand(cmd_buf[0]))?;
+    let command =
+        RequestCommand::from_byte(cmd_buf[0]).ok_or(DecodeError::InvalidCommand(cmd_buf[0]))?;
 
     let addr_parser = AddressParser::new();
     let (address, port) = match command {
-        RequestCommand::Mux => (
-            Address::Domain("v1.mux.cool".to_string()),
-            Port(0),
-        ),
-        RequestCommand::Rvs => (
-            Address::Domain("v1.rvs.cool".to_string()),
-            Port(0),
-        ),
-        RequestCommand::Tcp | RequestCommand::Udp => {
-            addr_parser.read_address_port(reader)?
-        }
+        RequestCommand::Mux => (Address::Domain("v1.mux.cool".to_string()), Port(0)),
+        RequestCommand::Rvs => (Address::Domain("v1.rvs.cool".to_string()), Port(0)),
+        RequestCommand::Tcp | RequestCommand::Udp => addr_parser.read_address_port(reader)?,
     };
 
     Ok(DecodedRequest {
@@ -147,7 +139,7 @@ pub fn decode_response_header<R: std::io::Read>(
 mod tests {
     use super::*;
     use std::io::Cursor;
-    use wrongsv_protocol::{MemoryAccount, MemoryUser, ID};
+    use wrongsv_protocol::{ID, MemoryAccount, MemoryUser};
     use wrongsv_uuid::Uuid;
 
     fn make_test_user() -> MemoryUser {
@@ -203,7 +195,10 @@ mod tests {
 
         assert_eq!(decoded.header.version, 0);
         assert_eq!(decoded.header.command, RequestCommand::Tcp);
-        assert_eq!(decoded.header.address, Address::Domain("example.com".into()));
+        assert_eq!(
+            decoded.header.address,
+            Address::Domain("example.com".into())
+        );
         assert_eq!(decoded.header.port, Port(443));
         assert_eq!(decoded.addons.flow, "");
     }
@@ -235,7 +230,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(decoded.header.command, RequestCommand::Mux);
-        assert_eq!(decoded.header.address, Address::Domain("v1.mux.cool".into()));
+        assert_eq!(
+            decoded.header.address,
+            Address::Domain("v1.mux.cool".into())
+        );
     }
 
     #[test]

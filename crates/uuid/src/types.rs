@@ -48,10 +48,10 @@ impl Uuid {
             if text.len() < hex_len {
                 return Err(ParseUuidError::InvalidFormat(s.to_string()));
             }
-            let hex_str =
-                std::str::from_utf8(&text[..hex_len]).map_err(|_| ParseUuidError::InvalidFormat(s.to_string()))?;
-            let decoded = hex::decode(hex_str)
+            let hex_str = std::str::from_utf8(&text[..hex_len])
                 .map_err(|_| ParseUuidError::InvalidFormat(s.to_string()))?;
+            let decoded =
+                hex::decode(hex_str).map_err(|_| ParseUuidError::InvalidFormat(s.to_string()))?;
             bytes[pos..pos + byte_len].copy_from_slice(&decoded);
             pos += byte_len;
             text = &text[hex_len..];
@@ -90,11 +90,22 @@ impl fmt::Display for Uuid {
         write!(
             f,
             "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-            self.0[0], self.0[1], self.0[2], self.0[3],
-            self.0[4], self.0[5],
-            self.0[6], self.0[7],
-            self.0[8], self.0[9],
-            self.0[10], self.0[11], self.0[12], self.0[13], self.0[14], self.0[15],
+            self.0[0],
+            self.0[1],
+            self.0[2],
+            self.0[3],
+            self.0[4],
+            self.0[5],
+            self.0[6],
+            self.0[7],
+            self.0[8],
+            self.0[9],
+            self.0[10],
+            self.0[11],
+            self.0[12],
+            self.0[13],
+            self.0[14],
+            self.0[15],
         )
     }
 }
@@ -148,8 +159,10 @@ mod tests {
 
     #[test]
     fn test_parse_bytes_roundtrip() {
-        let bytes = [0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0,
-                     0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+        let bytes = [
+            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+            0x77, 0x88,
+        ];
         let u = Uuid::parse_bytes(&bytes).unwrap();
         assert_eq!(u.as_bytes(), &bytes);
     }
@@ -180,8 +193,10 @@ mod tests {
 
     #[test]
     fn test_display_format() {
-        let u = Uuid([0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
-                      0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]);
+        let u = Uuid([
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+            0xee, 0xff,
+        ]);
         assert_eq!(u.to_string(), "00112233-4455-6677-8899-aabbccddeeff");
     }
 }

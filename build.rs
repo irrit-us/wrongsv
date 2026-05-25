@@ -5,8 +5,8 @@
 //! so the server binary runs with zero arguments.
 
 use base64::Engine;
-use ml_kem::kem::KeyExport;
 use ml_kem::Kem;
+use ml_kem::kem::KeyExport;
 use rand::RngCore;
 
 fn main() {
@@ -19,10 +19,22 @@ fn main() {
     uuid_bytes[8] = (uuid_bytes[8] & 0x3f) | 0x80; // variant 10
     let uuid = format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        uuid_bytes[0], uuid_bytes[1], uuid_bytes[2], uuid_bytes[3],
-        uuid_bytes[4], uuid_bytes[5], uuid_bytes[6], uuid_bytes[7],
-        uuid_bytes[8], uuid_bytes[9], uuid_bytes[10], uuid_bytes[11],
-        uuid_bytes[12], uuid_bytes[13], uuid_bytes[14], uuid_bytes[15],
+        uuid_bytes[0],
+        uuid_bytes[1],
+        uuid_bytes[2],
+        uuid_bytes[3],
+        uuid_bytes[4],
+        uuid_bytes[5],
+        uuid_bytes[6],
+        uuid_bytes[7],
+        uuid_bytes[8],
+        uuid_bytes[9],
+        uuid_bytes[10],
+        uuid_bytes[11],
+        uuid_bytes[12],
+        uuid_bytes[13],
+        uuid_bytes[14],
+        uuid_bytes[15],
     );
     println!("cargo:rustc-env=BUILD_UUID={uuid}");
     println!("cargo:rustc-env=BUILD_UUID_SHORT={}", &uuid[..8]);
@@ -44,7 +56,11 @@ fn main() {
     let x25519_pk = x25519_dalek::PublicKey::from(&x25519_sk);
     let x25519_pk_b64 =
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(x25519_pk.as_bytes());
-    let x25519_sk_hex: String = x25519_sk.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+    let x25519_sk_hex: String = x25519_sk
+        .as_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     println!("cargo:rustc-env=BUILD_X25519_PK={x25519_pk_b64}");
     println!("cargo:rustc-env=BUILD_X25519_SK={x25519_sk_hex}");
 
@@ -56,8 +72,12 @@ fn main() {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
-    let kyber_pk_hex: String =
-        ek.to_bytes().as_slice().iter().map(|b| format!("{b:02x}")).collect();
+    let kyber_pk_hex: String = ek
+        .to_bytes()
+        .as_slice()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     println!("cargo:rustc-env=BUILD_KYBER_SK_HEX={kyber_sk_hex}");
     println!("cargo:rustc-env=BUILD_KYBER_PK_HEX={kyber_pk_hex}");
 

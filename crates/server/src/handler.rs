@@ -5,10 +5,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 use tracing::{debug, error, info, trace, warn};
-use wrongsv_protocol::{MemoryAccount, MemoryUser, RequestCommand, ID};
+use wrongsv_protocol::{ID, MemoryAccount, MemoryUser, RequestCommand};
 use wrongsv_uuid::Uuid;
-use wrongsv_vless::{MemoryValidator, Validator, XRV};
 use wrongsv_vless::vision::{TrafficState, VisionReader, VisionWriter};
+use wrongsv_vless::{MemoryValidator, Validator, XRV};
 use wrongsv_vless_encoding::{self as encoding, Addons};
 
 use crate::config::{Config, RealityServerConfig};
@@ -22,7 +22,8 @@ fn decode_hex<const N: usize>(hex: &str) -> Result<[u8; N], String> {
     let mut bytes = [0u8; N];
     for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
         let hi = hex_val(chunk[0]).ok_or_else(|| format!("invalid hex at position {}", i * 2))?;
-        let lo = hex_val(chunk[1]).ok_or_else(|| format!("invalid hex at position {}", i * 2 + 1))?;
+        let lo =
+            hex_val(chunk[1]).ok_or_else(|| format!("invalid hex at position {}", i * 2 + 1))?;
         bytes[i] = hi << 4 | lo;
     }
     Ok(bytes)
@@ -37,14 +38,13 @@ fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
-fn parse_reality_config(rc: &RealityServerConfig) -> Result<wrongsv_reality::RealityConfig, String> {
-    let private_key = decode_hex::<32>(&rc.private_key)
-        .map_err(|e| format!("reality.private_key: {e}"))?;
-    let short_ids: Result<Vec<[u8; 8]>, _> = rc
-        .short_ids
-        .iter()
-        .map(|s| decode_hex::<8>(s))
-        .collect();
+fn parse_reality_config(
+    rc: &RealityServerConfig,
+) -> Result<wrongsv_reality::RealityConfig, String> {
+    let private_key =
+        decode_hex::<32>(&rc.private_key).map_err(|e| format!("reality.private_key: {e}"))?;
+    let short_ids: Result<Vec<[u8; 8]>, _> =
+        rc.short_ids.iter().map(|s| decode_hex::<8>(s)).collect();
     let short_ids = short_ids.map_err(|e| format!("reality.short_ids: {e}"))?;
     Ok(wrongsv_reality::RealityConfig {
         private_key,
@@ -200,7 +200,11 @@ fn handle_connection(
     info!(
         "{} {} {} -> {}:{}",
         peer,
-        if request.command == RequestCommand::Tcp { "TCP" } else { "UDP" },
+        if request.command == RequestCommand::Tcp {
+            "TCP"
+        } else {
+            "UDP"
+        },
         request.user.email,
         request.address,
         request.port,
@@ -208,7 +212,10 @@ fn handle_connection(
 
     // Check flow
     let use_vision = decoded.addons.flow == XRV && account.flow == XRV;
-    trace!("{peer} flow={} use_vision={use_vision}", decoded.addons.flow);
+    trace!(
+        "{peer} flow={} use_vision={use_vision}",
+        decoded.addons.flow
+    );
 
     // Kyber session-key decapsulation
     if !decoded.addons.kyber_ct.is_empty() {
@@ -227,7 +234,10 @@ fn handle_connection(
                 }
             }
         } else {
-            debug!("{} client sent kyber_ct but server has no kyber_secret_key configured", peer);
+            debug!(
+                "{} client sent kyber_ct but server has no kyber_secret_key configured",
+                peer
+            );
         }
     }
 
@@ -243,10 +253,7 @@ fn handle_connection(
     // Connect to target
     let target_addr = format!("{}:{}", request.address, request.port);
     debug!("{peer} connecting to target {target_addr}");
-    let target = TcpStream::connect_timeout(
-        &target_addr.parse()?,
-        Duration::from_secs(10),
-    )?;
+    let target = TcpStream::connect_timeout(&target_addr.parse()?, Duration::from_secs(10))?;
     target.set_read_timeout(Some(Duration::from_secs(300)))?;
     trace!("{peer} connected to target");
 
@@ -290,9 +297,9 @@ fn handle_reality_connection(
                 if n == 0 {
                     return Err("connection closed before VLESS header".into());
                 }
-                read_conn.process_new_packets().map_err(|e| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-                })?;
+                read_conn
+                    .process_new_packets()
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
             }
             Ok(n) => {
                 first.truncate(n);
@@ -326,21 +333,31 @@ fn handle_reality_connection(
     info!(
         "{} {} {} -> {}:{}",
         peer,
-        if request.command == RequestCommand::Tcp { "TCP" } else { "UDP" },
+        if request.command == RequestCommand::Tcp {
+            "TCP"
+        } else {
+            "UDP"
+        },
         request.user.email,
         request.address,
         request.port,
     );
 
     let use_vision = decoded.addons.flow == XRV && account.flow == XRV;
-    trace!("{peer} flow={} use_vision={use_vision}", decoded.addons.flow);
+    trace!(
+        "{peer} flow={} use_vision={use_vision}",
+        decoded.addons.flow
+    );
 
     // Kyber decapsulation
     if !decoded.addons.kyber_ct.is_empty() {
         if let Some(sk) = kyber_sk {
             match wrongsv_kyber::decapsulate(&sk, &decoded.addons.kyber_ct) {
                 Ok(_shared_secret) => {
-                    info!("{peer} Kyber session established (ML-KEM-512, ss={} bytes)", wrongsv_kyber::SS_SIZE);
+                    info!(
+                        "{peer} Kyber session established (ML-KEM-512, ss={} bytes)",
+                        wrongsv_kyber::SS_SIZE
+                    );
                 }
                 Err(e) => {
                     warn!("{peer} Kyber decapsulation failed: {}", e);
@@ -367,10 +384,7 @@ fn handle_reality_connection(
     // Connect to target
     let target_addr = format!("{}:{}", request.address, request.port);
     debug!("{peer} connecting to target {target_addr}");
-    let target = TcpStream::connect_timeout(
-        &target_addr.parse()?,
-        Duration::from_secs(10),
-    )?;
+    let target = TcpStream::connect_timeout(&target_addr.parse()?, Duration::from_secs(10))?;
     target.set_read_timeout(Some(Duration::from_secs(300)))?;
     trace!("{peer} connected to target");
 
@@ -441,7 +455,10 @@ fn relay_reality(
     Ok(())
 }
 
-fn relay_raw(mut client: TcpStream, mut target: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
+fn relay_raw(
+    mut client: TcpStream,
+    mut target: TcpStream,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut c2 = client.try_clone()?;
     let mut t2 = target.try_clone()?;
 

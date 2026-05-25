@@ -69,8 +69,11 @@ pub enum ConfigError {
 impl Config {
     pub fn validate(&self) -> Result<(), ConfigError> {
         for user in &self.users {
-            wrongsv_uuid::Uuid::parse_string(&user.id)
-                .map_err(|e: wrongsv_uuid::ParseUuidError| ConfigError::InvalidUuid(user.email.clone(), e.to_string()))?;
+            wrongsv_uuid::Uuid::parse_string(&user.id).map_err(
+                |e: wrongsv_uuid::ParseUuidError| {
+                    ConfigError::InvalidUuid(user.email.clone(), e.to_string())
+                },
+            )?;
             if !user.flow.is_empty() && user.flow != "xtls-rprx-vision" {
                 return Err(ConfigError::UnknownFlow(
                     user.flow.clone(),

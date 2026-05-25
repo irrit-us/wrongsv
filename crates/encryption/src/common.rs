@@ -54,7 +54,9 @@ impl<S: Read + Write> CommonConn<S> {
             let mut hdr = [0u8; 5];
             header::encode_header(&mut hdr, payload_len);
 
-            let ct = self.write_aead.seal(chunk, &hdr)
+            let ct = self
+                .write_aead
+                .seal(chunk, &hdr)
                 .map_err(std::io::Error::other)?;
 
             self.inner.write_all(&hdr)?;

@@ -5,7 +5,7 @@ pub mod vision;
 pub use account::MemoryAccount;
 pub use validator::{MemoryValidator, Validator};
 pub use vision::{
-    is_complete_record, TrafficState, VisionReader, VisionWriter, xtls_filter_tls, xtls_padding,
+    TrafficState, VisionReader, VisionWriter, is_complete_record, xtls_filter_tls, xtls_padding,
     xtls_unpadding,
 };
 

@@ -2,15 +2,15 @@
 //! Run with: cargo run --example stress
 
 use std::io::{Read, Write};
-use tracing::info;
 use std::net::{TcpListener, TcpStream};
-use std::process::{Command, Child};
+use std::process::{Child, Command};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use tracing::info;
 
 use wrongsv_net_types::Address;
-use wrongsv_protocol::{MemoryAccount, MemoryUser, RequestCommand, RequestHeader, ID};
+use wrongsv_protocol::{ID, MemoryAccount, MemoryUser, RequestCommand, RequestHeader};
 use wrongsv_uuid::Uuid;
 use wrongsv_vless::{MemoryValidator, Validator};
 use wrongsv_vless_encoding::{self as encoding, Addons};
@@ -75,11 +75,13 @@ flow = ""
     std::fs::write(&config_path, config_toml).unwrap();
 
     // Build release binary
-    assert!(Command::new("cargo")
-        .args(["build", "--release"])
-        .status()
-        .unwrap()
-        .success());
+    assert!(
+        Command::new("cargo")
+            .args(["build", "--release"])
+            .status()
+            .unwrap()
+            .success()
+    );
 
     // Start server
     let mut server: Child = Command::new("./target/release/wrongsv")
@@ -154,11 +156,9 @@ flow = ""
             let srv = server_str.clone();
             let _mid = Arc::clone(&mid_rss);
             handles.push(thread::spawn(move || {
-                let mut conn = TcpStream::connect_timeout(
-                    &srv.parse().unwrap(),
-                    Duration::from_secs(5),
-                )
-                .unwrap();
+                let mut conn =
+                    TcpStream::connect_timeout(&srv.parse().unwrap(), Duration::from_secs(5))
+                        .unwrap();
                 conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
                 conn.write_all(&req).unwrap();
 
@@ -184,7 +184,10 @@ flow = ""
             h.join().unwrap();
         }
         if batch == batches / 2 {
-            mid_rss.store(rss_kb(pid).unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
+            mid_rss.store(
+                rss_kb(pid).unwrap_or(0),
+                std::sync::atomic::Ordering::Relaxed,
+            );
         }
     }
 
@@ -197,7 +200,10 @@ flow = ""
     info!("mid-batch  RSS: {mid} kB threads={mid_threads}");
     let post_r1_threads = thread_count();
     info!("post-r1 RSS:   {final_rss} kB threads={post_r1_threads}");
-    info!("r1 delta:      {} kB", final_rss as i64 - initial_rss as i64);
+    info!(
+        "r1 delta:      {} kB",
+        final_rss as i64 - initial_rss as i64
+    );
 
     // Round 2: same load again. If memory is leaking, it'll grow further.
     info!("\nround 2...");
@@ -207,11 +213,9 @@ flow = ""
             let req = req_buf.clone();
             let srv = server_str.clone();
             handles.push(thread::spawn(move || {
-                let mut conn = TcpStream::connect_timeout(
-                    &srv.parse().unwrap(),
-                    Duration::from_secs(5),
-                )
-                .unwrap();
+                let mut conn =
+                    TcpStream::connect_timeout(&srv.parse().unwrap(), Duration::from_secs(5))
+                        .unwrap();
                 conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
                 conn.write_all(&req).unwrap();
                 let mut hdr = [0u8; 2];
@@ -258,11 +262,9 @@ flow = ""
             let req = req_buf.clone();
             let srv = server_str.clone();
             handles.push(thread::spawn(move || {
-                let mut conn = TcpStream::connect_timeout(
-                    &srv.parse().unwrap(),
-                    Duration::from_secs(5),
-                )
-                .unwrap();
+                let mut conn =
+                    TcpStream::connect_timeout(&srv.parse().unwrap(), Duration::from_secs(5))
+                        .unwrap();
                 conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
                 conn.write_all(&req).unwrap();
                 let mut hdr = [0u8; 2];
@@ -305,7 +307,10 @@ flow = ""
     } else {
         info!("NOTE: continued growth but within thread-stack + arena margin");
     }
-    info!("all {total}×3 = {} connections processed correctly", total * 3);
+    info!(
+        "all {total}×3 = {} connections processed correctly",
+        total * 3
+    );
 
     server.kill().ok();
     server.wait().ok();

@@ -13,11 +13,11 @@ use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 use rustls::{ServerConfig, ServerConnection};
 
+use crate::RealityConfig;
 use crate::RealityError;
-use crate::hello::parse_client_hello;
 use crate::auth::authenticate;
 use crate::cert::generate_reality_cert;
-use crate::RealityConfig;
+use crate::hello::parse_client_hello;
 
 /// A TLS stream produced by accepting a REALITY connection.
 pub struct RealityTlsStream {
@@ -41,9 +41,9 @@ impl Read for RealityTlsStream {
                 if n == 0 {
                     return Ok(0);
                 }
-                self.conn.process_new_packets().map_err(|e| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-                })?;
+                self.conn
+                    .process_new_packets()
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
                 self.conn.reader().read(buf)
             }
             other => other,

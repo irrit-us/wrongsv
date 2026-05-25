@@ -106,10 +106,7 @@ mod tests {
 
     #[test]
     fn test_multi_length_writer() {
-        let payloads = vec![
-            BytesMut::from(&b"hello"[..]),
-            BytesMut::from(&b"world"[..]),
-        ];
+        let payloads = vec![BytesMut::from(&b"hello"[..]), BytesMut::from(&b"world"[..])];
         let mut buf = Vec::new();
         {
             let mut writer = MultiLengthPacketWriter::new(&mut buf);

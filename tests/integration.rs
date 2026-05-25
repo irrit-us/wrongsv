@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use rand::Rng;
 use wrongsv_net_types::Address;
-use wrongsv_protocol::{MemoryAccount, MemoryUser, RequestCommand, RequestHeader, ID};
+use wrongsv_protocol::{ID, MemoryAccount, MemoryUser, RequestCommand, RequestHeader};
 use wrongsv_uuid::Uuid;
 use wrongsv_vless::{MemoryValidator, Validator};
 use wrongsv_vless_encoding::{self as encoding, Addons};
@@ -63,7 +63,10 @@ fn test_vless_handshake_encode_decode() {
 
     assert_eq!(decoded.header.version, request.version);
     assert_eq!(decoded.header.command, request.command);
-    assert_eq!(decoded.header.address.to_string(), request.address.to_string());
+    assert_eq!(
+        decoded.header.address.to_string(),
+        request.address.to_string()
+    );
     assert_eq!(decoded.header.port, request.port);
     assert_eq!(decoded.header.user.email, request.user.email);
     assert_eq!(decoded.addons.flow, "");
@@ -424,8 +427,13 @@ fn test_full_proxy_vision_echo() {
 
     thread::sleep(Duration::from_millis(50));
 
-    let mut conn =
-        vless_connect(&listen_str, &user_uuid, "127.0.0.1", echo_addr.port(), "xtls-rprx-vision");
+    let mut conn = vless_connect(
+        &listen_str,
+        &user_uuid,
+        "127.0.0.1",
+        echo_addr.port(),
+        "xtls-rprx-vision",
+    );
 
     // Response header has been consumed. Now send data through the proxy.
     conn.write_all(b"vision proxied data").unwrap();
@@ -669,8 +677,7 @@ fn test_concurrent_connections() {
             let uuid = user_uuid;
             let echo_port = echo_addr.port();
             thread::spawn(move || {
-                let mut conn =
-                    vless_connect(&addr, &uuid, "127.0.0.1", echo_port, "");
+                let mut conn = vless_connect(&addr, &uuid, "127.0.0.1", echo_port, "");
                 let msg = format!("concurrent-{}", i);
                 conn.write_all(msg.as_bytes()).unwrap();
                 let mut buf = [0u8; 64];
@@ -764,9 +771,7 @@ fn test_concurrent_vision_connections() {
             let uuid = user_uuid;
             let echo_port = echo_addr.port();
             thread::spawn(move || {
-                let conn = vless_connect(
-                    &addr, &uuid, "127.0.0.1", echo_port, "xtls-rprx-vision",
-                );
+                let conn = vless_connect(&addr, &uuid, "127.0.0.1", echo_port, "xtls-rprx-vision");
                 let mut writer = conn.try_clone().unwrap();
                 let state = TrafficState::new(uuid.as_bytes());
                 let mut reader = VisionReader::new(conn, state, true);
@@ -879,14 +884,19 @@ fn test_114_randomized_scenarios() {
                     return Err(format!("vision short read {read}/{payload_size}").into());
                 }
                 if received[..read] != payload[..read] {
-                    let mismatch = received[..read].iter().zip(payload.iter())
-                        .position(|(a,b)| a != b).unwrap_or(0);
+                    let mismatch = received[..read]
+                        .iter()
+                        .zip(payload.iter())
+                        .position(|(a, b)| a != b)
+                        .unwrap_or(0);
                     return Err(format!(
                         "vision data mismatch at byte {}/{}: got {:02x?}.. expected {:02x?}..",
-                        mismatch, payload_size,
+                        mismatch,
+                        payload_size,
                         &received[..(read.min(16))],
                         &payload[..(payload_size.min(16))]
-                    ).into());
+                    )
+                    .into());
                 }
             } else {
                 let mut writer = conn.try_clone()?;
@@ -918,7 +928,10 @@ fn test_114_randomized_scenarios() {
             failures += 1;
             tracing::warn!("[{seq}/114] FAIL vision={use_vision} size={payload_size}: {e}");
             if failures >= 5 {
-                panic!("{failures} failures in first {} iterations — aborting", seq + 1);
+                panic!(
+                    "{failures} failures in first {} iterations — aborting",
+                    seq + 1
+                );
             }
         }
 
@@ -943,7 +956,11 @@ use sha2::Sha256;
 use x25519_dalek::{PublicKey, StaticSecret};
 
 /// Build a minimal TLS 1.3 ClientHello with a 32-byte session_id and X25519 key_share.
-fn build_reality_client_hello(random: [u8; 32], session_id: [u8; 32], key_share: [u8; 32]) -> Vec<u8> {
+fn build_reality_client_hello(
+    random: [u8; 32],
+    session_id: [u8; 32],
+    key_share: [u8; 32],
+) -> Vec<u8> {
     let mut body = Vec::new();
     body.push(0x01);
     body.extend_from_slice(&[0x00, 0x00, 0x00]); // length placeholder
@@ -1047,10 +1064,7 @@ max_time_diff = 300
 
 /// Build a REALITY ClientHello for the given server public key and short_id.
 /// Returns the wire-format ClientHello bytes.
-fn build_reality_hello(
-    server_pk_bytes: &[u8; 32],
-    short_id: &[u8; 8],
-) -> Vec<u8> {
+fn build_reality_hello(server_pk_bytes: &[u8; 32], short_id: &[u8; 8]) -> Vec<u8> {
     let client_sk = StaticSecret::random_from_rng(rand::rngs::OsRng);
     let client_pk = PublicKey::from(&client_sk);
     let server_pk = PublicKey::from(*server_pk_bytes);
@@ -1080,7 +1094,13 @@ fn build_reality_hello(
     let cipher = Aes256Gcm::new(key);
     let nonce = Nonce::from_slice(&client_random[20..32]);
     let ct = cipher
-        .encrypt(nonce, Payload { msg: plaintext.as_slice(), aad })
+        .encrypt(
+            nonce,
+            Payload {
+                msg: plaintext.as_slice(),
+                aad,
+            },
+        )
         .unwrap();
 
     let mut session_id = [0u8; 32];
@@ -1108,7 +1128,10 @@ max_time_diff = 120
     let config: wrongsv_server::Config = toml::from_str(toml).unwrap();
     config.validate().unwrap();
     let reality = config.reality.unwrap();
-    assert_eq!(reality.private_key, "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff");
+    assert_eq!(
+        reality.private_key,
+        "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+    );
     assert_eq!(reality.short_ids.len(), 2);
     assert_eq!(reality.short_ids[0], "abcdef0123456789");
     assert_eq!(reality.dest.unwrap(), "www.microsoft.com:443");
@@ -1176,7 +1199,11 @@ fn test_reality_server_startup() {
     drop(reserve);
 
     let server_sk = StaticSecret::random_from_rng(rand::rngs::OsRng);
-    let sk_hex: String = server_sk.to_bytes().iter().map(|b| format!("{:02x}", b)).collect();
+    let sk_hex: String = server_sk
+        .to_bytes()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect();
     let short_id_hex = "abcdef0123456789";
     let user_uuid = Uuid::new_v4();
 
@@ -1203,7 +1230,11 @@ fn test_reality_invalid_hello_rejected() {
     drop(reserve);
 
     let server_sk = StaticSecret::random_from_rng(rand::rngs::OsRng);
-    let sk_hex: String = server_sk.to_bytes().iter().map(|b| format!("{:02x}", b)).collect();
+    let sk_hex: String = server_sk
+        .to_bytes()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect();
     let short_id_hex = "abcdef0123456789";
     let user_uuid = Uuid::new_v4();
 
@@ -1236,7 +1267,11 @@ fn test_reality_valid_hello_accepted() {
 
     let server_sk = StaticSecret::random_from_rng(rand::rngs::OsRng);
     let server_pk = PublicKey::from(&server_sk);
-    let sk_hex: String = server_sk.to_bytes().iter().map(|b| format!("{:02x}", b)).collect();
+    let sk_hex: String = server_sk
+        .to_bytes()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect();
 
     let short_id = *b"test4321";
     let short_id_hex: String = short_id.iter().map(|b| format!("{:02x}", b)).collect();
@@ -1263,11 +1298,15 @@ fn test_reality_valid_hello_accepted() {
     // not close the connection. Read the response — it should be a TLS record.
     let mut buf = [0u8; 4096];
     let n = conn.read(&mut buf).unwrap();
-    assert!(n > 0, "server should respond after valid REALITY ClientHello");
+    assert!(
+        n > 0,
+        "server should respond after valid REALITY ClientHello"
+    );
     // TLS handshake records start with 0x16
     assert_eq!(
         buf[0], 0x16,
-        "expected TLS handshake response from server, got 0x{:02x}", buf[0]
+        "expected TLS handshake response from server, got 0x{:02x}",
+        buf[0]
     );
 }
 
@@ -1282,10 +1321,17 @@ fn test_reality_wrong_short_id_rejected() {
 
     let server_sk = StaticSecret::random_from_rng(rand::rngs::OsRng);
     let server_pk = PublicKey::from(&server_sk);
-    let sk_hex: String = server_sk.to_bytes().iter().map(|b| format!("{:02x}", b)).collect();
+    let sk_hex: String = server_sk
+        .to_bytes()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect();
 
     let allowed_short_id = *b"test4321";
-    let allowed_short_id_hex: String = allowed_short_id.iter().map(|b| format!("{:02x}", b)).collect();
+    let allowed_short_id_hex: String = allowed_short_id
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect();
     let wrong_short_id = *b"nope5678";
 
     let user_uuid = Uuid::new_v4();
@@ -1314,7 +1360,9 @@ fn test_reality_wrong_short_id_rejected() {
     let connection_closed = matches!(result, Err(_) | Ok(0));
     if !connection_closed {
         // If we got data, it must not be a TLS handshake (0x16)
-        assert_ne!(buf[0], 0x16, "server should not complete handshake with wrong short_id");
+        assert_ne!(
+            buf[0], 0x16,
+            "server should not complete handshake with wrong short_id"
+        );
     }
 }
-

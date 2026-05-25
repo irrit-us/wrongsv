@@ -49,7 +49,11 @@ pub fn generate_keypair() -> KyberKeypair {
     let (dk, ek) = MlKem512::generate_keypair();
     KyberKeypair {
         pk: ek.to_bytes().as_slice().to_vec(),
-        sk: dk.to_seed().expect("key generated from seed").as_slice().to_vec(),
+        sk: dk
+            .to_seed()
+            .expect("key generated from seed")
+            .as_slice()
+            .to_vec(),
     }
 }
 
@@ -90,7 +94,8 @@ pub fn decapsulate(sk_seed: &[u8], ct: &[u8]) -> Result<[u8; SS_SIZE], KyberErro
     }
     #[allow(deprecated)]
     let seed = ml_kem::Seed::from_slice(sk_seed);
-    let ct_arr = ml_kem::kem::Ciphertext::<MlKem512>::try_from(ct).map_err(|_| KyberError::DecapsFailed)?;
+    let ct_arr =
+        ml_kem::kem::Ciphertext::<MlKem512>::try_from(ct).map_err(|_| KyberError::DecapsFailed)?;
     let dk = DecapsulationKey::<MlKem512>::from_seed(*seed);
     let ss = dk.decapsulate(&ct_arr);
     let mut ss_arr = [0u8; SS_SIZE];

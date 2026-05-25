@@ -126,7 +126,8 @@ fn client_config_json(cli: &Cli) -> String {
     let uuid = option_env!("BUILD_UUID").unwrap_or("00000000-0000-4000-8000-000000000000");
     let port = option_env!("BUILD_PORT").unwrap_or("443");
     let short_id = option_env!("BUILD_SHORT_ID").unwrap_or("00000000");
-    let x25519_pk = option_env!("BUILD_X25519_PK").unwrap_or("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    let x25519_pk =
+        option_env!("BUILD_X25519_PK").unwrap_or("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
 
     format!(
         r#"{{

@@ -30,36 +30,46 @@ pub struct ParsedClientHello {
 /// (typically the first ~512–2048 bytes of the connection).
 pub fn parse_client_hello(buf: &[u8]) -> Result<ParsedClientHello, RealityError> {
     if buf.len() < 5 {
-        return Err(RealityError::TlsParse("buffer too short for TLS record header".into()));
+        return Err(RealityError::TlsParse(
+            "buffer too short for TLS record header".into(),
+        ));
     }
     if buf[0] != TLS_HANDSHAKE {
         return Err(RealityError::TlsParse(format!(
-            "expected TLS handshake (0x16), got 0x{:02x}", buf[0]
+            "expected TLS handshake (0x16), got 0x{:02x}",
+            buf[0]
         )));
     }
 
     let record_len = u16::from_be_bytes([buf[3], buf[4]]) as usize;
     if buf.len() < 5 + record_len {
         return Err(RealityError::TlsParse(format!(
-            "buffer too short for TLS record: need {}, got {}", 5 + record_len, buf.len()
+            "buffer too short for TLS record: need {}, got {}",
+            5 + record_len,
+            buf.len()
         )));
     }
 
     // Handshake header starts at buf[5]
     let hs = &buf[5..];
     if hs.len() < 4 {
-        return Err(RealityError::TlsParse("buffer too short for handshake header".into()));
+        return Err(RealityError::TlsParse(
+            "buffer too short for handshake header".into(),
+        ));
     }
     if hs[0] != TLS_CLIENT_HELLO {
         return Err(RealityError::TlsParse(format!(
-            "expected ClientHello (0x01), got 0x{:02x}", hs[0]
+            "expected ClientHello (0x01), got 0x{:02x}",
+            hs[0]
         )));
     }
     let hs_len = u24_be(&hs[1..4]) as usize;
     let body_end = 4 + hs_len;
     if hs.len() < body_end {
         return Err(RealityError::TlsParse(format!(
-            "buffer too short for handshake body: need {}, got {}", body_end, hs.len()
+            "buffer too short for handshake body: need {}, got {}",
+            body_end,
+            hs.len()
         )));
     }
 
@@ -151,7 +161,9 @@ fn parse_key_share_ext(ext_data: &[u8], ext_end: usize) -> Result<[u8; 32], Real
         }
         pos += ext_len;
     }
-    Err(RealityError::TlsParse("key_share extension (0x0033) not found".into()))
+    Err(RealityError::TlsParse(
+        "key_share extension (0x0033) not found".into(),
+    ))
 }
 
 fn u24_be(bytes: &[u8]) -> u32 {

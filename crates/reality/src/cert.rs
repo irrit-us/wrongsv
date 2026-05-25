@@ -17,9 +17,7 @@ use crate::RealityError;
 /// HMAC-SHA512(auth_key, cert_pubkey_der). The raw public key DER is
 /// returned so the server can include the HMAC in the cert signature field
 /// (or the client can verify independently).
-pub fn generate_reality_cert(
-    auth_key: &[u8],
-) -> Result<(CertifiedKey, Vec<u8>), RealityError> {
+pub fn generate_reality_cert(auth_key: &[u8]) -> Result<(CertifiedKey, Vec<u8>), RealityError> {
     // Generate fresh Ed25519 keypair for this connection
     let key_pair = KeyPair::generate_for(&rcgen::PKCS_ED25519)
         .map_err(|e| RealityError::CertError(format!("key generation failed: {e}")))?;
@@ -37,9 +35,7 @@ pub fn generate_reality_cert(
     params
         .distinguished_name
         .push(DnType::OrganizationName, "Microsoft Corporation");
-    params
-        .distinguished_name
-        .push(DnType::CountryName, "US");
+    params.distinguished_name.push(DnType::CountryName, "US");
 
     // Generate self-signed cert
     let cert = params
@@ -49,9 +45,9 @@ pub fn generate_reality_cert(
     let cert_der = cert.der().clone();
     let priv_key_der = key_pair.serialize_der();
 
-    let signing_key = rustls::crypto::aws_lc_rs::sign::any_supported_type(
-        &PrivateKeyDer::Pkcs8(priv_key_der.into()),
-    )
+    let signing_key = rustls::crypto::aws_lc_rs::sign::any_supported_type(&PrivateKeyDer::Pkcs8(
+        priv_key_der.into(),
+    ))
     .map_err(|e| RealityError::CertError(format!("key loading: {e}")))?;
 
     let certified_key = CertifiedKey::new(vec![cert_der], signing_key);

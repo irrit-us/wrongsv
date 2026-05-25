@@ -41,10 +41,22 @@ impl AeadKey {
         let nonce_array = GenericArray::<u8, U12>::from_slice(&nonce);
         match &self.cipher {
             Cipher::AesGcm(aes) => aes
-                .encrypt(nonce_array, Payload { msg: plaintext, aad })
+                .encrypt(
+                    nonce_array,
+                    Payload {
+                        msg: plaintext,
+                        aad,
+                    },
+                )
                 .map_err(|_| AeadError::EncryptFailed),
             Cipher::ChaCha(chacha) => chacha
-                .encrypt(nonce_array, Payload { msg: plaintext, aad })
+                .encrypt(
+                    nonce_array,
+                    Payload {
+                        msg: plaintext,
+                        aad,
+                    },
+                )
                 .map_err(|_| AeadError::EncryptFailed),
         }
     }
@@ -54,10 +66,22 @@ impl AeadKey {
         let nonce_array = GenericArray::<u8, U12>::from_slice(&nonce);
         match &self.cipher {
             Cipher::AesGcm(aes) => aes
-                .decrypt(nonce_array, Payload { msg: ciphertext, aad })
+                .decrypt(
+                    nonce_array,
+                    Payload {
+                        msg: ciphertext,
+                        aad,
+                    },
+                )
                 .map_err(|_| AeadError::DecryptFailed),
             Cipher::ChaCha(chacha) => chacha
-                .decrypt(nonce_array, Payload { msg: ciphertext, aad })
+                .decrypt(
+                    nonce_array,
+                    Payload {
+                        msg: ciphertext,
+                        aad,
+                    },
+                )
                 .map_err(|_| AeadError::DecryptFailed),
         }
     }

@@ -1,13 +1,13 @@
-use criterion::{black_box, Criterion, criterion_group, criterion_main};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use std::io::Cursor;
 
 use wrongsv_net_types::Address;
-use wrongsv_protocol::{MemoryAccount, MemoryUser, RequestCommand, RequestHeader, ID};
+use wrongsv_protocol::{ID, MemoryAccount, MemoryUser, RequestCommand, RequestHeader};
 use wrongsv_uuid::Uuid;
 use wrongsv_vless::MemoryValidator;
+use wrongsv_vless::Validator;
 use wrongsv_vless::vision::{TrafficState, VisionReader, VisionWriter};
 use wrongsv_vless_encoding::{self as encoding, Addons};
-use wrongsv_vless::Validator;
 
 fn bench_encode_request(c: &mut Criterion) {
     let uuid = Uuid::new_v4();
@@ -137,5 +137,11 @@ fn bench_xtls_unpadding(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_encode_request, bench_decode_request, bench_xtls_padding, bench_xtls_unpadding);
+criterion_group!(
+    benches,
+    bench_encode_request,
+    bench_decode_request,
+    bench_xtls_padding,
+    bench_xtls_unpadding
+);
 criterion_main!(benches);

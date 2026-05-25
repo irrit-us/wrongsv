@@ -14,7 +14,7 @@ mod tls;
 pub use auth::compute_cert_hmac;
 pub use cert::generate_reality_cert;
 pub use hello::ParsedClientHello;
-pub use tls::{accept_reality, complete_handshake, BufferedStream, RealityTlsStream};
+pub use tls::{BufferedStream, RealityTlsStream, accept_reality, complete_handshake};
 
 use thiserror::Error;
 

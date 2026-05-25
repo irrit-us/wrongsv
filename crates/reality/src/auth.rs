@@ -48,11 +48,19 @@ fn decrypt_session_id(
 
     // The full 32-byte session_id is ciphertext (16) + tag (16)
     let plaintext = cipher
-        .decrypt(nonce, Payload { msg: session_id as &[u8], aad })
+        .decrypt(
+            nonce,
+            Payload {
+                msg: session_id as &[u8],
+                aad,
+            },
+        )
         .map_err(|_| RealityError::AuthFailed("AES-GCM decryption failed".into()))?;
 
     if plaintext.len() < 16 {
-        return Err(RealityError::AuthFailed("decrypted payload too short".into()));
+        return Err(RealityError::AuthFailed(
+            "decrypted payload too short".into(),
+        ));
     }
 
     let mut version = [0u8; 3];
@@ -91,7 +99,9 @@ fn verify_short_id(short_id: &[u8; 8], short_ids: &[[u8; 8]]) -> Result<(), Real
     if short_ids.iter().any(|id| id == short_id) {
         Ok(())
     } else {
-        Err(RealityError::AuthFailed("short_id not in allow-list".into()))
+        Err(RealityError::AuthFailed(
+            "short_id not in allow-list".into(),
+        ))
     }
 }
 
@@ -157,7 +167,15 @@ mod tests {
         let key = Key::<Aes256Gcm>::from_slice(auth_key);
         let cipher = Aes256Gcm::new(key);
         let nonce = Nonce::from_slice(&client_random[20..32]);
-        let ct = cipher.encrypt(nonce, Payload { msg: plaintext.as_slice(), aad }).unwrap();
+        let ct = cipher
+            .encrypt(
+                nonce,
+                Payload {
+                    msg: plaintext.as_slice(),
+                    aad,
+                },
+            )
+            .unwrap();
 
         let mut sid = [0u8; 32];
         sid.copy_from_slice(&ct); // ct is 32 bytes (16 msg + 16 tag)
