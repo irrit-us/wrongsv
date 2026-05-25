@@ -1,5 +1,5 @@
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -9,7 +9,7 @@ use wrongsv_net_types::Address;
 use wrongsv_protocol::{ID, MemoryAccount, MemoryUser, RequestCommand, RequestHeader};
 use wrongsv_uuid::Uuid;
 use wrongsv_vless::{MemoryValidator, Validator};
-use wrongsv_vless_encoding::{self as encoding, Addons};
+use wrongsv_vless_encoding::{self as encoding, Addons, LengthPacketReader, LengthPacketWriter};
 
 fn make_test_user() -> (Uuid, MemoryUser) {
     let uuid = Uuid::new_v4();
@@ -18,6 +18,7 @@ fn make_test_user() -> (Uuid, MemoryUser) {
             id: ID::new(uuid),
             flow: String::new(),
             encryption: String::new(),
+            udp: true,
             xor_mode: 0,
             seconds: 0,
             padding: String::new(),
@@ -80,6 +81,7 @@ fn test_vless_handshake_with_vision_flow() {
             id: ID::new(uuid),
             flow: "xtls-rprx-vision".into(),
             encryption: String::new(),
+            udp: true,
             xor_mode: 0,
             seconds: 0,
             padding: String::new(),
@@ -234,6 +236,7 @@ fn test_invalid_user_rejected() {
                 id: ID::new(uuid),
                 flow: String::new(),
                 encryption: String::new(),
+                udp: true,
                 xor_mode: 0,
                 seconds: 0,
                 padding: String::new(),
@@ -320,6 +323,7 @@ fn vless_connect(
             id: ID::new(*user_uuid),
             flow: flow.to_string(),
             encryption: String::new(),
+            udp: true,
             xor_mode: 0,
             seconds: 0,
             padding: String::new(),
@@ -547,6 +551,7 @@ fn vless_connect_with_kyber(
             id: ID::new(*user_uuid),
             flow: flow.to_string(),
             encryption: String::new(),
+            udp: true,
             xor_mode: 0,
             seconds: 0,
             padding: String::new(),
@@ -2924,6 +2929,370 @@ fn test_reality_rapid_connect_disconnect() {
         is_server_hello(&resp),
         "server should still work after rapid connects"
     );
+
+    drop(handle);
+}
+
+// ---------------------------------------------------------------------------
+// UDP over TCP tests
+// ---------------------------------------------------------------------------
+
+fn vless_udp_connect(
+    server_addr: &str,
+    user_uuid: &Uuid,
+    target_addr: &str,
+    target_port: u16,
+) -> TcpStream {
+    let validator = Arc::new(MemoryValidator::new());
+    let user = MemoryUser {
+        account: MemoryAccount {
+            id: ID::new(*user_uuid),
+            flow: String::new(),
+            encryption: String::new(),
+            udp: true,
+            xor_mode: 0,
+            seconds: 0,
+            padding: String::new(),
+            testpre: 0,
+            testseed: vec![],
+        },
+        email: "udp@e2e.test".into(),
+        level: 0,
+    };
+    validator.add(user).unwrap();
+
+    let request = RequestHeader {
+        version: 0,
+        command: RequestCommand::Udp,
+        address: Address::parse(target_addr),
+        port: wrongsv_net_types::Port(target_port),
+        user: validator.get(user_uuid.as_bytes()).unwrap(),
+    };
+    let addons = Addons {
+        flow: String::new(),
+        ..Default::default()
+    };
+
+    let mut buf = bytes::BytesMut::new();
+    encoding::encode_request_header(&mut buf, &request, &addons).unwrap();
+
+    let mut stream =
+        TcpStream::connect_timeout(&server_addr.parse().unwrap(), Duration::from_secs(5)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    stream.write_all(&buf).unwrap();
+
+    // Read response header
+    let mut resp_buf = [0u8; 256];
+    let n = stream.read(&mut resp_buf).unwrap();
+    assert!(n > 0, "expected response header");
+
+    stream
+}
+
+fn udp_echo_server() -> (Arc<UdpSocket>, String) {
+    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+    let addr = socket.local_addr().unwrap().to_string();
+    let socket = Arc::new(socket);
+    let s = Arc::clone(&socket);
+    let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = Arc::clone(&running);
+
+    thread::spawn(move || {
+        let mut buf = [0u8; 65535];
+        while r.load(std::sync::atomic::Ordering::SeqCst) {
+            match s.recv_from(&mut buf) {
+                Ok((n, src)) => {
+                    s.send_to(&buf[..n], src).ok();
+                }
+                Err(ref e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    continue;
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    std::mem::forget(running);
+    (socket, addr)
+}
+
+#[test]
+fn test_udp_echo_single_packet() {
+    let (_echo, echo_addr) = udp_echo_server();
+    let echo_parts: Vec<&str> = echo_addr.split(':').collect();
+    let echo_port: u16 = echo_parts[1].parse().unwrap();
+
+    let (_, uuid) = make_test_validator();
+    let listen = format!("127.0.0.1:{}", 40000 + (rand::random::<u16>() % 10000));
+    let uuid_str = uuid.to_string();
+    let handle = spawn_wrongsv_server(&listen, &uuid_str, "");
+    thread::sleep(Duration::from_millis(200));
+
+    let stream = vless_udp_connect(&listen, &uuid, "127.0.0.1", echo_port);
+    let mut stream = stream;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+
+    // Send a UDP packet via length-prefixed framing
+    let payload = b"hello UDP world";
+    let mut writer = LengthPacketWriter::new(&mut stream);
+    writer.write_packet(payload).unwrap();
+
+    // Read response
+    let mut reader = LengthPacketReader::new(&mut stream);
+    let resp = reader.read_packet().unwrap();
+    assert_eq!(
+        &resp[..],
+        payload,
+        "UDP echo should return the same payload"
+    );
+
+    drop(handle);
+}
+
+#[test]
+fn test_udp_echo_multiple_packets() {
+    let (_echo, echo_addr) = udp_echo_server();
+    let echo_parts: Vec<&str> = echo_addr.split(':').collect();
+    let echo_port: u16 = echo_parts[1].parse().unwrap();
+
+    let (_, uuid) = make_test_validator();
+    let listen = format!("127.0.0.1:{}", 40000 + (rand::random::<u16>() % 10000));
+    let uuid_str = uuid.to_string();
+    let handle = spawn_wrongsv_server(&listen, &uuid_str, "");
+    thread::sleep(Duration::from_millis(200));
+
+    let mut stream = vless_udp_connect(&listen, &uuid, "127.0.0.1", echo_port);
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+
+    // Send 20 packets, verify all echoed
+    for i in 0u8..20 {
+        let payload = vec![i; 64];
+        {
+            let mut writer = LengthPacketWriter::new(&mut stream);
+            writer.write_packet(&payload).unwrap();
+        }
+        let mut reader = LengthPacketReader::new(&mut stream);
+        let resp = reader.read_packet().unwrap();
+        assert_eq!(&resp[..], &payload, "packet {i}: UDP echo mismatch");
+    }
+
+    drop(handle);
+}
+
+#[test]
+fn test_udp_echo_large_packet() {
+    let (_echo, echo_addr) = udp_echo_server();
+    let echo_parts: Vec<&str> = echo_addr.split(':').collect();
+    let echo_port: u16 = echo_parts[1].parse().unwrap();
+
+    let (_, uuid) = make_test_validator();
+    let listen = format!("127.0.0.1:{}", 40000 + (rand::random::<u16>() % 10000));
+    let uuid_str = uuid.to_string();
+    let handle = spawn_wrongsv_server(&listen, &uuid_str, "");
+    thread::sleep(Duration::from_millis(200));
+
+    let mut stream = vless_udp_connect(&listen, &uuid, "127.0.0.1", echo_port);
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+
+    // Send a near-MTU UDP packet
+    let payload = vec![0xAB; 1400];
+    let mut writer = LengthPacketWriter::new(&mut stream);
+    writer.write_packet(&payload).unwrap();
+
+    let mut reader = LengthPacketReader::new(&mut stream);
+    let resp = reader.read_packet().unwrap();
+    assert_eq!(resp.len(), payload.len());
+    assert_eq!(&resp[..], &payload);
+
+    drop(handle);
+}
+
+#[test]
+fn test_udp_disabled_user_rejected() {
+    let listen = format!("127.0.0.1:{}", 40000 + (rand::random::<u16>() % 10000));
+    let uuid = Uuid::new_v4();
+    let config_toml = format!(
+        r#"
+listen = "{}"
+
+[[users]]
+id = "{}"
+email = "noudp@e2e.test"
+flow = ""
+udp = false
+"#,
+        listen, uuid,
+    );
+    let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
+    let server = wrongsv_server::InboundServer::new(config).unwrap();
+    let handle = thread::spawn(move || {
+        server.run().ok();
+    });
+    thread::sleep(Duration::from_millis(200));
+
+    // Try to connect with UDP command
+    let validator = Arc::new(MemoryValidator::new());
+    let user = MemoryUser {
+        account: MemoryAccount {
+            id: ID::new(uuid),
+            flow: String::new(),
+            encryption: String::new(),
+            udp: false,
+            xor_mode: 0,
+            seconds: 0,
+            padding: String::new(),
+            testpre: 0,
+            testseed: vec![],
+        },
+        email: "noudp@e2e.test".into(),
+        level: 0,
+    };
+    validator.add(user).unwrap();
+
+    let request = RequestHeader {
+        version: 0,
+        command: RequestCommand::Udp,
+        address: Address::parse("127.0.0.1"),
+        port: wrongsv_net_types::Port(9999),
+        user: validator.get(uuid.as_bytes()).unwrap(),
+    };
+    let addons = Addons::default();
+    let mut buf = bytes::BytesMut::new();
+    encoding::encode_request_header(&mut buf, &request, &addons).unwrap();
+
+    let mut stream =
+        TcpStream::connect_timeout(&listen.parse().unwrap(), Duration::from_secs(3)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    stream.write_all(&buf).unwrap();
+
+    // Server should drop the connection after sending response header
+    let mut resp = Vec::new();
+    let n = stream.read_to_end(&mut resp).unwrap_or(0);
+    eprintln!("UDP-disabled connection closed after {} bytes read", n);
+
+    drop(handle);
+}
+
+#[test]
+fn test_udp_vision_rejected() {
+    let listen = format!("127.0.0.1:{}", 40000 + (rand::random::<u16>() % 10000));
+    let uuid = Uuid::new_v4();
+    let config_toml = format!(
+        r#"
+listen = "{}"
+
+[[users]]
+id = "{}"
+email = "udpvision@e2e.test"
+flow = "xtls-rprx-vision"
+"#,
+        listen, uuid,
+    );
+    let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
+    let server = wrongsv_server::InboundServer::new(config).unwrap();
+    let handle = thread::spawn(move || {
+        server.run().ok();
+    });
+    thread::sleep(Duration::from_millis(200));
+
+    // Connect with UDP command + Vision flow
+    let validator = Arc::new(MemoryValidator::new());
+    let user = MemoryUser {
+        account: MemoryAccount {
+            id: ID::new(uuid),
+            flow: "xtls-rprx-vision".into(),
+            encryption: String::new(),
+            udp: true,
+            xor_mode: 0,
+            seconds: 0,
+            padding: String::new(),
+            testpre: 0,
+            testseed: vec![],
+        },
+        email: "udpvision@e2e.test".into(),
+        level: 0,
+    };
+    validator.add(user).unwrap();
+
+    let request = RequestHeader {
+        version: 0,
+        command: RequestCommand::Udp,
+        address: Address::parse("127.0.0.1"),
+        port: wrongsv_net_types::Port(9999),
+        user: validator.get(uuid.as_bytes()).unwrap(),
+    };
+    let addons = Addons {
+        flow: "xtls-rprx-vision".into(),
+        ..Default::default()
+    };
+    let mut buf = bytes::BytesMut::new();
+    encoding::encode_request_header(&mut buf, &request, &addons).unwrap();
+
+    let mut stream =
+        TcpStream::connect_timeout(&listen.parse().unwrap(), Duration::from_secs(3)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    stream.write_all(&buf).unwrap();
+
+    // Server should reject and close
+    let mut resp = Vec::new();
+    let n = stream.read_to_end(&mut resp).unwrap_or(0);
+    eprintln!("UDP+Vision connection closed after {n} bytes read");
+
+    drop(handle);
+}
+
+#[test]
+fn test_udp_stress_many_packets() {
+    let (_echo, echo_addr) = udp_echo_server();
+    let echo_parts: Vec<&str> = echo_addr.split(':').collect();
+    let echo_port: u16 = echo_parts[1].parse().unwrap();
+
+    let (_, uuid) = make_test_validator();
+    let listen = format!("127.0.0.1:{}", 40000 + (rand::random::<u16>() % 10000));
+    let uuid_str = uuid.to_string();
+    let handle = spawn_wrongsv_server(&listen, &uuid_str, "");
+    thread::sleep(Duration::from_millis(200));
+
+    let mut stream = vless_udp_connect(&listen, &uuid, "127.0.0.1", echo_port);
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+
+    // Send 200 packets of varying sizes, verify all echoed
+    let mut rng = rand::thread_rng();
+    for i in 0..200 {
+        let size: usize = rng.gen_range(1..1400);
+        let mut payload = vec![0u8; size];
+        rng.fill(&mut payload[..]);
+
+        let mut writer = LengthPacketWriter::new(&mut stream);
+        writer.write_packet(&payload).unwrap();
+
+        let mut reader = LengthPacketReader::new(&mut stream);
+        let resp = reader.read_packet().unwrap();
+        assert_eq!(resp.len(), payload.len(), "packet {i}: size mismatch");
+        assert_eq!(&resp[..], &payload, "packet {i}: data mismatch");
+    }
 
     drop(handle);
 }

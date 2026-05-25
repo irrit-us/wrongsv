@@ -56,6 +56,13 @@ pub struct UserConfig {
     /// Optional per-user encryption
     #[serde(default)]
     pub encryption: String,
+    /// Allow UDP command (default true). When false, UDP requests are rejected.
+    #[serde(default = "default_udp")]
+    pub udp: bool,
+}
+
+fn default_udp() -> bool {
+    true
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -115,6 +122,7 @@ flow = "xtls-rprx-vision"
                 email: "bad@test.com".into(),
                 flow: String::new(),
                 encryption: String::new(),
+                udp: true,
             }],
             decryption: None,
             flow: None,
@@ -133,6 +141,7 @@ flow = "xtls-rprx-vision"
                 email: "bad@test.com".into(),
                 flow: "xtls-rprx-vision-udp443".into(), // not valid for standalone server
                 encryption: String::new(),
+                udp: true,
             }],
             decryption: None,
             flow: None,

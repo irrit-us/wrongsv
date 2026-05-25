@@ -1,15 +1,17 @@
 use std::io::{Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream, UdpSocket};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 use tracing::{debug, error, info, trace, warn};
-use wrongsv_protocol::{ID, MemoryAccount, MemoryUser, RequestCommand};
+use wrongsv_protocol::{ID, MemoryAccount, MemoryUser, RequestCommand, RequestHeader};
 use wrongsv_uuid::Uuid;
 use wrongsv_vless::vision::{TrafficState, VisionReader, VisionWriter};
 use wrongsv_vless::{MemoryValidator, Validator, XRV};
-use wrongsv_vless_encoding::{self as encoding, Addons};
+use wrongsv_vless_encoding::{
+    self as encoding, Addons, LengthPacketReader, LengthPacketWriter, PacketReadError,
+};
 
 use crate::config::{Config, RealityServerConfig};
 
@@ -88,6 +90,7 @@ impl InboundServer {
                     id: ID::new(uuid),
                     flow,
                     encryption: user.encryption.clone(),
+                    udp: user.udp,
                     xor_mode: 0,
                     seconds: 0,
                     padding: String::new(),
@@ -191,11 +194,19 @@ fn handle_connection(
         return Err("connection too short for VLESS header".into());
     }
 
-    // Decode the VLESS request header
-    let decoded = {
+    // Decode the VLESS request header, capturing any remaining body bytes
+    let (decoded, remaining_body) = {
         let v = validator.clone();
         let mut cursor = std::io::Cursor::new(first);
-        encoding::decode_request_header(&mut cursor, move |id| v.get(id))?
+        let decoded = encoding::decode_request_header(&mut cursor, move |id| v.get(id))?;
+        let pos = cursor.position() as usize;
+        let inner = cursor.into_inner();
+        let remaining = if pos < inner.len() {
+            inner[pos..].to_vec()
+        } else {
+            Vec::new()
+        };
+        (decoded, remaining)
     };
 
     let request = &decoded.header;
@@ -245,6 +256,11 @@ fn handle_connection(
         }
     }
 
+    // UDP+Vision is unsupported (xray-core also rejects this combination)
+    if request.command == RequestCommand::Udp && use_vision {
+        return Err("XTLS Vision does not support UDP".into());
+    }
+
     // Send response header
     let response_addons = Addons {
         flow: String::new(),
@@ -253,6 +269,16 @@ fn handle_connection(
     let mut resp_buf = bytes::BytesMut::new();
     encoding::encode_response_header(&mut resp_buf, request, &response_addons)?;
     stream.write_all(&resp_buf)?;
+
+    // UDP relay
+    if request.command == RequestCommand::Udp {
+        if !account.udp {
+            return Err("UDP not enabled for this user".into());
+        }
+        relay_udp(stream, request, remaining_body)?;
+        debug!("{peer} UDP relay finished");
+        return Ok(());
+    }
 
     // Connect to target
     let target_addr = format!("{}:{}", request.address, request.port);
@@ -338,11 +364,19 @@ fn handle_reality_connection(
         return Err("connection too short for VLESS header".into());
     }
 
-    // Decode VLESS header
-    let decoded = {
+    // Decode VLESS header, capturing remaining body bytes
+    let (decoded, remaining_body) = {
         let v = validator.clone();
         let mut cursor = std::io::Cursor::new(first);
-        encoding::decode_request_header(&mut cursor, move |id| v.get(id))?
+        let decoded = encoding::decode_request_header(&mut cursor, move |id| v.get(id))?;
+        let pos = cursor.position() as usize;
+        let inner = cursor.into_inner();
+        let remaining = if pos < inner.len() {
+            inner[pos..].to_vec()
+        } else {
+            Vec::new()
+        };
+        (decoded, remaining)
     };
 
     let request = &decoded.header;
@@ -386,6 +420,11 @@ fn handle_reality_connection(
         }
     }
 
+    // UDP+Vision is unsupported
+    if request.command == RequestCommand::Udp && use_vision {
+        return Err("XTLS Vision does not support UDP".into());
+    }
+
     // Send response header
     let response_addons = Addons {
         flow: String::new(),
@@ -397,6 +436,16 @@ fn handle_reality_connection(
     // Flush TLS
     while read_conn.wants_write() {
         read_conn.write_tls(write_conn)?;
+    }
+
+    // UDP relay (REALITY)
+    if request.command == RequestCommand::Udp {
+        if !account.udp {
+            return Err("UDP not enabled for this user".into());
+        }
+        relay_reality_udp(tls_stream, request, remaining_body)?;
+        debug!("{peer} REALITY UDP relay finished");
+        return Ok(());
     }
 
     // Connect to target
@@ -473,6 +522,81 @@ fn relay_reality(
     Ok(())
 }
 
+fn relay_reality_udp(
+    mut tls: wrongsv_reality::RealityTlsStream,
+    request: &RequestHeader,
+    remaining: Vec<u8>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let target_addr = format!("{}:{}", request.address, request.port);
+    debug!("REALITY UDP relay to {target_addr}");
+
+    let socket = UdpSocket::bind("0.0.0.0:0")?;
+    socket.connect(&target_addr)?;
+    socket.set_read_timeout(Some(Duration::from_millis(200)))?;
+
+    // Accumulate TLS plaintext here, starting with any pipelined bytes from
+    // the initial header read. Complete length-prefixed packets are drained
+    // and forwarded to the UDP target.
+    let mut tls_buf = remaining;
+    let mut udp_buf = [0u8; 65535];
+
+    loop {
+        let mut did_work = false;
+
+        // Try to read more plaintext from TLS (non-blocking via WouldBlock)
+        let mut tmp = [0u8; 8192];
+        match tls.read(&mut tmp) {
+            Ok(n) => {
+                if n > 0 {
+                    tls_buf.extend_from_slice(&tmp[..n]);
+                    did_work = true;
+                } else {
+                    break; // TLS EOF
+                }
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(_) => break,
+        }
+
+        // Drain complete length-prefixed packets from the buffer
+        while tls_buf.len() >= 2 {
+            let len = u16::from_be_bytes([tls_buf[0], tls_buf[1]]) as usize;
+            if tls_buf.len() < 2 + len {
+                break;
+            }
+            let pkt = tls_buf[2..2 + len].to_vec();
+            tls_buf.drain(..2 + len);
+            socket.send(&pkt)?;
+            did_work = true;
+        }
+
+        // UDP → Client: read response, write length-prefixed to TLS
+        match socket.recv(&mut udp_buf) {
+            Ok(n) => {
+                if n > 0 {
+                    tls.write_all(&(n as u16).to_be_bytes())?;
+                    tls.write_all(&udp_buf[..n])?;
+                    tls.flush()?;
+                    did_work = true;
+                } else {
+                    break;
+                }
+            }
+            Err(ref e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(_) => break,
+        }
+
+        if !did_work {
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+    Ok(())
+}
+
 fn relay_raw(
     mut client: TcpStream,
     mut target: TcpStream,
@@ -518,6 +642,86 @@ fn relay_raw(
             }
         }
         let _ = client.shutdown(Shutdown::Write);
+    });
+
+    t1.join().ok();
+    t2.join().ok();
+    Ok(())
+}
+
+fn relay_udp(
+    client: TcpStream,
+    request: &RequestHeader,
+    remaining: Vec<u8>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let target_addr = format!("{}:{}", request.address, request.port);
+    debug!(
+        "UDP relay to {target_addr}, {} remaining bytes",
+        remaining.len()
+    );
+
+    let socket = Arc::new(UdpSocket::bind("0.0.0.0:0")?);
+    socket.connect(&target_addr)?;
+    socket.set_read_timeout(Some(Duration::from_secs(5)))?;
+
+    let c_read = client.try_clone()?;
+    c_read.set_read_timeout(Some(Duration::from_secs(30)))?;
+    let c_write = client;
+
+    let done = Arc::new(AtomicBool::new(false));
+    let done1 = Arc::clone(&done);
+    let done2 = Arc::clone(&done);
+
+    let udp_send = Arc::clone(&socket);
+    let t1 = thread::spawn(move || {
+        let chained = std::io::Cursor::new(remaining).chain(c_read);
+        let mut reader = LengthPacketReader::new(chained);
+        loop {
+            if done1.load(Ordering::SeqCst) {
+                break;
+            }
+            match reader.read_packet() {
+                Ok(pkt) => {
+                    if udp_send.send(&pkt).is_err() {
+                        break;
+                    }
+                }
+                Err(PacketReadError::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    break;
+                }
+                Err(_) => break,
+            }
+        }
+        done1.store(true, Ordering::SeqCst);
+    });
+
+    let udp_recv = Arc::clone(&socket);
+    let t2 = thread::spawn(move || {
+        let mut writer = LengthPacketWriter::new(c_write);
+        let mut buf = [0u8; 65535];
+        loop {
+            if done2.load(Ordering::SeqCst) {
+                break;
+            }
+            match udp_recv.recv(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if writer.write_packet(&buf[..n]).is_err() {
+                        break;
+                    }
+                }
+                Err(ref e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    continue;
+                }
+                Err(_) => break,
+            }
+        }
+        done2.store(true, Ordering::SeqCst);
     });
 
     t1.join().ok();

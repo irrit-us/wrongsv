@@ -133,6 +133,7 @@ mod tests {
                 id: ID::new(uuid),
                 flow: String::new(),
                 encryption: String::new(),
+                udp: true,
                 xor_mode: 0,
                 seconds: 0,
                 padding: String::new(),

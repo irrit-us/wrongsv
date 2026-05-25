@@ -104,6 +104,7 @@ fn build_default_config() -> Config {
             email: String::new(),
             flow: "xtls-rprx-vision".into(),
             encryption: String::new(),
+            udp: true,
         }],
         decryption: None,
         flow: Some("xtls-rprx-vision".into()),
@@ -210,6 +211,7 @@ fn client_config_json(cli: &Cli) -> String {
   "uuid": "{uuid}",
   "encryption": "none",
   "flow": "xtls-rprx-vision",
+  "udp": true,
   "fingerprint": "chrome",
   "servername": "{sni}",
   "reality-opts": {{

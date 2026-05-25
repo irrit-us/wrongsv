@@ -90,6 +90,7 @@ pub struct MemoryAccount {
     pub id: crate::id::ID,
     pub flow: String,
     pub encryption: String,
+    pub udp: bool,
     pub xor_mode: u32,
     pub seconds: u32,
     pub padding: String,
