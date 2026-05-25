@@ -47,12 +47,12 @@ impl MemoryValidator {
 impl Validator for MemoryValidator {
     fn get(&self, id: &[u8; 16]) -> Option<MemoryUser> {
         let key = process_uuid(id);
-        self.users.read().unwrap().get(&key).cloned()
+        self.users.read().unwrap_or_else(|e| e.into_inner()).get(&key).cloned()
     }
 
     fn add(&self, user: MemoryUser) -> Result<(), ValidatorError> {
         if !user.email.is_empty() {
-            let mut emails = self.emails.write().unwrap();
+            let mut emails = self.emails.write().unwrap_or_else(|e| e.into_inner());
             let key = user.email.to_lowercase();
             if emails.contains_key(&key) {
                 return Err(ValidatorError::DuplicateEmail(user.email));
@@ -60,21 +60,21 @@ impl Validator for MemoryValidator {
             emails.insert(key, user.clone());
         }
         let uid_key = process_uuid(user.account.id.uuid().as_bytes());
-        self.users.write().unwrap().insert(uid_key, user);
+        self.users.write().unwrap_or_else(|e| e.into_inner()).insert(uid_key, user);
         Ok(())
     }
 
     fn del(&self, email: &str) -> Result<(), ValidatorError> {
         let key = email.to_lowercase();
         let user = {
-            let emails = self.emails.read().unwrap();
+            let emails = self.emails.read().unwrap_or_else(|e| e.into_inner());
             emails.get(&key).cloned()
         };
         match user {
             Some(u) => {
-                self.emails.write().unwrap().remove(&key);
+                self.emails.write().unwrap_or_else(|e| e.into_inner()).remove(&key);
                 let uid_key = process_uuid(u.account.id.uuid().as_bytes());
-                self.users.write().unwrap().remove(&uid_key);
+                self.users.write().unwrap_or_else(|e| e.into_inner()).remove(&uid_key);
                 Ok(())
             }
             None => Err(ValidatorError::NotFound(format!(
@@ -86,20 +86,20 @@ impl Validator for MemoryValidator {
 
     fn get_by_email(&self, email: &str) -> Option<MemoryUser> {
         let key = email.to_lowercase();
-        self.emails.read().unwrap().get(&key).cloned()
+        self.emails.read().unwrap_or_else(|e| e.into_inner()).get(&key).cloned()
     }
 
     fn get_all(&self) -> Vec<MemoryUser> {
         self.emails
             .read()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .values()
             .cloned()
             .collect()
     }
 
     fn get_count(&self) -> usize {
-        self.emails.read().unwrap().len()
+        self.emails.read().unwrap_or_else(|e| e.into_inner()).len()
     }
 }
 

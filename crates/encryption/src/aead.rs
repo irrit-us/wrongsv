@@ -36,12 +36,16 @@ impl AeadKey {
         }
     }
 
-    pub fn seal(&mut self, plaintext: &[u8], aad: &[u8]) -> Vec<u8> {
+    pub fn seal(&mut self, plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>, AeadError> {
         let nonce = self.increment_nonce();
         let nonce_array = GenericArray::<u8, U12>::from_slice(&nonce);
         match &self.cipher {
-            Cipher::AesGcm(aes) => aes.encrypt(nonce_array, Payload { msg: plaintext, aad }).unwrap(),
-            Cipher::ChaCha(chacha) => chacha.encrypt(nonce_array, Payload { msg: plaintext, aad }).unwrap(),
+            Cipher::AesGcm(aes) => aes
+                .encrypt(nonce_array, Payload { msg: plaintext, aad })
+                .map_err(|_| AeadError::EncryptFailed),
+            Cipher::ChaCha(chacha) => chacha
+                .encrypt(nonce_array, Payload { msg: plaintext, aad })
+                .map_err(|_| AeadError::EncryptFailed),
         }
     }
 
@@ -80,6 +84,8 @@ pub const MAX_NONCE: [u8; 12] = [0xff; 12];
 pub enum AeadError {
     #[error("decryption failed")]
     DecryptFailed,
+    #[error("encryption failed")]
+    EncryptFailed,
 }
 
 #[cfg(test)]
@@ -94,7 +100,7 @@ mod tests {
         let mut dec = AeadKey::new("test", key, true);
 
         let plaintext = b"hello world, this is a test message";
-        let ct = enc.seal(plaintext, b"");
+        let ct = enc.seal(plaintext, b"").unwrap();
         let recovered = dec.open(&ct, b"").unwrap();
         assert_eq!(recovered, plaintext);
     }
@@ -105,7 +111,7 @@ mod tests {
         let mut aead = AeadKey::new("test", key, true);
 
         let n0 = *aead.nonce();
-        aead.seal(b"msg1", b"");
+        aead.seal(b"msg1", b"").unwrap();
         let n1 = *aead.nonce();
         assert_ne!(n0, n1);
     }
@@ -117,7 +123,7 @@ mod tests {
         let mut enc = AeadKey::new("test", key1, true);
         let mut dec = AeadKey::new("test", key2, true);
 
-        let ct = enc.seal(b"hello", b"");
+        let ct = enc.seal(b"hello", b"").unwrap();
         assert!(dec.open(&ct, b"").is_err());
     }
 }

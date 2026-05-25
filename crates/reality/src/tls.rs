@@ -160,7 +160,7 @@ pub fn accept_reality(
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     let rustls_config = ServerConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
-        .unwrap()
+        .map_err(|e| RealityError::TlsHandshake(format!("protocol versions: {e}")))?
         .with_no_client_auth()
         .with_cert_resolver(Arc::new(RealityCertResolver {
             cert_key: Arc::new(certified_key),
