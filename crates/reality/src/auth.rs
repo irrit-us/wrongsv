@@ -23,6 +23,7 @@ fn derive_auth_key(
     client_key_share: &[u8; 32],
     client_random: &[u8; 32],
 ) -> Result<Vec<u8>, RealityError> {
+    let server_pk = x25519_dalek::PublicKey::from(server_sk);
     let client_pub = PublicKey::from(*client_key_share);
     let shared_secret = server_sk.diffie_hellman(&client_pub);
 
@@ -30,6 +31,12 @@ fn derive_auth_key(
     let mut auth_key = vec![0u8; 32];
     hkdf.expand(b"REALITY", &mut auth_key)
         .map_err(|e| RealityError::AuthFailed(format!("HKDF expand: {e}")))?;
+    tracing::debug!(
+        "REALITY auth: server_pk={} client_ks={} auth_key={}",
+        server_pk.as_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>(),
+        client_key_share.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+        auth_key.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+    );
     Ok(auth_key)
 }
 

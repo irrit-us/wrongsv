@@ -5,11 +5,44 @@
 //! and its trailing 64-byte Ed25519 signature is overwritten with
 //! HMAC-SHA512(auth_key, raw_pubkey) so the client can verify the server.
 
+use std::sync::Arc;
+
 use rcgen::{CertificateParams, KeyPair};
-use rustls::pki_types::PrivateKeyDer;
-use rustls::sign::CertifiedKey;
+use rustls::pki_types::{PrivateKeyDer, SubjectPublicKeyInfoDer};
+use rustls::sign::{CertifiedKey, Signer, SigningKey};
+use rustls::{SignatureAlgorithm, SignatureScheme};
 
 use crate::{RealityCertMaterial, RealityError};
+
+/// A `SigningKey` wrapper that forces Ed25519 signature scheme selection
+/// even when the client didn't advertise it.
+///
+/// This matches xray-core's behavior: their forked TLS stack hardcodes
+/// `hs.sigAlg = Ed25519` regardless of the client's advertised schemes.
+/// Chrome fingerprints don't include Ed25519, but xray-core's
+/// `VerifyPeerCertificate` expects an Ed25519 cert for HMAC verification.
+#[derive(Debug)]
+struct RealitySigningKey {
+    inner: Arc<dyn SigningKey>,
+}
+
+impl SigningKey for RealitySigningKey {
+    fn choose_scheme(&self, offered: &[SignatureScheme]) -> Option<Box<dyn Signer>> {
+        if let Some(signer) = self.inner.choose_scheme(offered) {
+            return Some(signer);
+        }
+        // Force Ed25519 — same as xray-core hardcoding hs.sigAlg = Ed25519
+        self.inner.choose_scheme(&[SignatureScheme::ED25519])
+    }
+
+    fn public_key(&self) -> Option<SubjectPublicKeyInfoDer<'_>> {
+        self.inner.public_key()
+    }
+
+    fn algorithm(&self) -> SignatureAlgorithm {
+        self.inner.algorithm()
+    }
+}
 
 /// Build the shared cert material once at server startup.
 ///
@@ -70,7 +103,10 @@ pub fn generate_reality_cert(
     ))
     .map_err(|e| RealityError::CertError(format!("key loading: {e}")))?;
 
-    Ok(CertifiedKey::new(vec![cert_der.into()], signing_key))
+    Ok(CertifiedKey::new(
+        vec![cert_der.into()],
+        Arc::new(RealitySigningKey { inner: signing_key }),
+    ))
 }
 
 #[cfg(test)]
