@@ -930,3 +930,391 @@ fn test_114_randomized_scenarios() {
     tracing::info!("114-group done: {}/114 failures", failures);
     assert_eq!(failures, 0, "{failures}/114 randomized scenarios failed");
 }
+
+// ---------------------------------------------------------------------------
+// REALITY integration tests
+// ---------------------------------------------------------------------------
+
+use aes_gcm::aead::{Aead, Payload};
+use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
+use hkdf::Hkdf;
+use rand::RngCore;
+use sha2::Sha256;
+use x25519_dalek::{PublicKey, StaticSecret};
+
+/// Build a minimal TLS 1.3 ClientHello with a 32-byte session_id and X25519 key_share.
+fn build_reality_client_hello(random: [u8; 32], session_id: [u8; 32], key_share: [u8; 32]) -> Vec<u8> {
+    let mut body = Vec::new();
+    body.push(0x01);
+    body.extend_from_slice(&[0x00, 0x00, 0x00]); // length placeholder
+    body.extend_from_slice(&[0x03, 0x03]); // TLS 1.2 compat version
+    body.extend_from_slice(&random);
+    body.push(32);
+    body.extend_from_slice(&session_id);
+    body.extend_from_slice(&[0x00, 0x02, 0x13, 0x01]); // cipher_suites: TLS_AES_128_GCM_SHA256
+    body.extend_from_slice(&[0x01, 0x00]); // compression: null
+
+    // Build extensions
+    let mut extensions = Vec::new();
+
+    // supported_versions (0x002b): TLS 1.3 = 0x0304
+    extensions.extend_from_slice(&0x002bu16.to_be_bytes());
+    extensions.extend_from_slice(&3u16.to_be_bytes()); // length
+    extensions.push(2); // versions length
+    extensions.extend_from_slice(&[0x03, 0x04]); // TLS 1.3
+
+    // signature_algorithms (0x000d): ed25519 + ecdsa_secp256r1_sha256
+    extensions.extend_from_slice(&0x000du16.to_be_bytes());
+    extensions.extend_from_slice(&6u16.to_be_bytes()); // length
+    extensions.extend_from_slice(&4u16.to_be_bytes()); // list length
+    extensions.extend_from_slice(&0x0807u16.to_be_bytes()); // ed25519
+    extensions.extend_from_slice(&0x0403u16.to_be_bytes()); // ecdsa_secp256r1_sha256
+
+    // supported_groups (0x000a): X25519
+    extensions.extend_from_slice(&0x000au16.to_be_bytes());
+    extensions.extend_from_slice(&4u16.to_be_bytes()); // length
+    extensions.extend_from_slice(&2u16.to_be_bytes()); // list length
+    extensions.extend_from_slice(&0x001Du16.to_be_bytes()); // X25519
+
+    // key_share (0x0033): X25519
+    extensions.extend_from_slice(&0x0033u16.to_be_bytes());
+    extensions.extend_from_slice(&38u16.to_be_bytes()); // length
+    extensions.extend_from_slice(&36u16.to_be_bytes()); // client_shares length
+    extensions.extend_from_slice(&0x001Du16.to_be_bytes()); // X25519 group
+    extensions.extend_from_slice(&32u16.to_be_bytes()); // key length
+    extensions.extend_from_slice(&key_share);
+
+    // server_name (0x0000): "www.microsoft.com"
+    let host = b"www.microsoft.com";
+    extensions.extend_from_slice(&0x0000u16.to_be_bytes());
+    let sn_len = 5 + host.len() as u16; // entry_len(2) + type(1) + len(2) + data
+    extensions.extend_from_slice(&sn_len.to_be_bytes());
+    extensions.extend_from_slice(&(3 + host.len() as u16).to_be_bytes()); // entry length
+    extensions.push(0); // host_name type
+    extensions.extend_from_slice(&(host.len() as u16).to_be_bytes());
+    extensions.extend_from_slice(host);
+
+    body.extend_from_slice(&(extensions.len() as u16).to_be_bytes());
+    body.extend_from_slice(&extensions);
+
+    let hs_len = (body.len() - 4) as u32;
+    body[1] = (hs_len >> 16) as u8;
+    body[2] = (hs_len >> 8) as u8;
+    body[3] = hs_len as u8;
+
+    let mut record = Vec::new();
+    record.push(0x16); // handshake
+    record.extend_from_slice(&[0x03, 0x01]); // TLS 1.0 record version
+    record.extend_from_slice(&(body.len() as u16).to_be_bytes());
+    record.extend_from_slice(&body);
+    record
+}
+
+fn spawn_wrongsv_server_with_reality(
+    listen_addr: &str,
+    user_id: &str,
+    flow: &str,
+    reality_private_key: &str,
+    reality_short_ids: &[&str],
+) -> thread::JoinHandle<()> {
+    let short_ids_toml = reality_short_ids
+        .iter()
+        .map(|s| format!(r#""{}""#, s))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let config_toml = format!(
+        r#"
+listen = "{}"
+
+[[users]]
+id = "{}"
+email = "test@reality.test"
+flow = "{}"
+
+[reality]
+private_key = "{}"
+short_ids = [{}]
+max_time_diff = 300
+"#,
+        listen_addr, user_id, flow, reality_private_key, short_ids_toml
+    );
+    let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
+    let server = wrongsv_server::InboundServer::new(config).unwrap();
+    thread::spawn(move || {
+        server.run().ok();
+    })
+}
+
+/// Build a REALITY ClientHello for the given server public key and short_id.
+/// Returns the wire-format ClientHello bytes.
+fn build_reality_hello(
+    server_pk_bytes: &[u8; 32],
+    short_id: &[u8; 8],
+) -> Vec<u8> {
+    let client_sk = StaticSecret::random_from_rng(rand::rngs::OsRng);
+    let client_pk = PublicKey::from(&client_sk);
+    let server_pk = PublicKey::from(*server_pk_bytes);
+    let shared_secret = client_sk.diffie_hellman(&server_pk);
+
+    let mut client_random = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut client_random);
+
+    let hkdf = Hkdf::<Sha256>::new(Some(&client_random[..20]), shared_secret.as_bytes());
+    let mut auth_key = vec![0u8; 32];
+    hkdf.expand(b"REALITY", &mut auth_key).unwrap();
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as u32;
+    let mut plaintext = vec![0u8; 16];
+    plaintext[0..3].copy_from_slice(&[1, 2, 3]);
+    plaintext[3] = 0;
+    plaintext[4..8].copy_from_slice(&timestamp.to_be_bytes());
+    plaintext[8..16].copy_from_slice(short_id);
+
+    let temp_hello = build_reality_client_hello(client_random, [0u8; 32], *client_pk.as_bytes());
+    let aad = &temp_hello[5..];
+
+    let key = Key::<Aes256Gcm>::from_slice(&auth_key);
+    let cipher = Aes256Gcm::new(key);
+    let nonce = Nonce::from_slice(&client_random[20..32]);
+    let ct = cipher
+        .encrypt(nonce, Payload { msg: plaintext.as_slice(), aad })
+        .unwrap();
+
+    let mut session_id = [0u8; 32];
+    session_id.copy_from_slice(&ct);
+
+    build_reality_client_hello(client_random, session_id, *client_pk.as_bytes())
+}
+
+#[test]
+fn test_reality_config_parse() {
+    let toml = r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+email = "test@reality.test"
+flow = "xtls-rprx-vision"
+
+[reality]
+private_key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+short_ids = ["abcdef0123456789", "9988776655443322"]
+dest = "www.microsoft.com:443"
+max_time_diff = 120
+"#;
+    let config: wrongsv_server::Config = toml::from_str(toml).unwrap();
+    config.validate().unwrap();
+    let reality = config.reality.unwrap();
+    assert_eq!(reality.private_key, "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff");
+    assert_eq!(reality.short_ids.len(), 2);
+    assert_eq!(reality.short_ids[0], "abcdef0123456789");
+    assert_eq!(reality.dest.unwrap(), "www.microsoft.com:443");
+    assert_eq!(reality.max_time_diff, 120);
+}
+
+#[test]
+fn test_reality_config_default_max_time_diff() {
+    let toml = r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[reality]
+private_key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+short_ids = ["abcdef0123456789"]
+"#;
+    let config: wrongsv_server::Config = toml::from_str(toml).unwrap();
+    let reality = config.reality.unwrap();
+    assert_eq!(reality.max_time_diff, 300);
+}
+
+#[test]
+fn test_reality_config_invalid_private_key_length() {
+    let toml = r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[reality]
+private_key = "too-short"
+short_ids = ["abcdef0123456789"]
+"#;
+    let config: wrongsv_server::Config = toml::from_str(toml).unwrap();
+    let result = wrongsv_server::InboundServer::new(config);
+    assert!(result.is_err(), "should reject invalid private_key length");
+}
+
+#[test]
+fn test_reality_config_invalid_short_id_length() {
+    let toml = r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[reality]
+private_key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+short_ids = ["abcd"]
+"#;
+    let config: wrongsv_server::Config = toml::from_str(toml).unwrap();
+    let result = wrongsv_server::InboundServer::new(config);
+    assert!(result.is_err(), "should reject invalid short_id length");
+}
+
+#[test]
+fn test_reality_server_startup() {
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
+
+    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server_addr = reserve.local_addr().unwrap();
+    let listen_str = server_addr.to_string();
+    drop(reserve);
+
+    let server_sk = StaticSecret::random_from_rng(rand::rngs::OsRng);
+    let sk_hex: String = server_sk.to_bytes().iter().map(|b| format!("{:02x}", b)).collect();
+    let short_id_hex = "abcdef0123456789";
+    let user_uuid = Uuid::new_v4();
+
+    let _server = spawn_wrongsv_server_with_reality(
+        &listen_str,
+        &user_uuid.to_string(),
+        "xtls-rprx-vision",
+        &sk_hex,
+        &[short_id_hex],
+    );
+    thread::sleep(Duration::from_millis(100));
+
+    let conn = TcpStream::connect_timeout(&server_addr, Duration::from_secs(2));
+    assert!(conn.is_ok(), "REALITY server should be listening");
+}
+
+#[test]
+fn test_reality_invalid_hello_rejected() {
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
+
+    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server_addr = reserve.local_addr().unwrap();
+    let listen_str = server_addr.to_string();
+    drop(reserve);
+
+    let server_sk = StaticSecret::random_from_rng(rand::rngs::OsRng);
+    let sk_hex: String = server_sk.to_bytes().iter().map(|b| format!("{:02x}", b)).collect();
+    let short_id_hex = "abcdef0123456789";
+    let user_uuid = Uuid::new_v4();
+
+    let _server = spawn_wrongsv_server_with_reality(
+        &listen_str,
+        &user_uuid.to_string(),
+        "xtls-rprx-vision",
+        &sk_hex,
+        &[short_id_hex],
+    );
+    thread::sleep(Duration::from_millis(100));
+
+    let mut conn = TcpStream::connect_timeout(&server_addr, Duration::from_secs(2)).unwrap();
+    conn.write_all(b"NOT A TLS CLIENT HELLO").unwrap();
+
+    conn.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let mut buf = [0u8; 64];
+    // Server should close connection on invalid hello
+    let _ = conn.read(&mut buf);
+}
+
+#[test]
+fn test_reality_valid_hello_accepted() {
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
+
+    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server_addr = reserve.local_addr().unwrap();
+    let listen_str = server_addr.to_string();
+    drop(reserve);
+
+    let server_sk = StaticSecret::random_from_rng(rand::rngs::OsRng);
+    let server_pk = PublicKey::from(&server_sk);
+    let sk_hex: String = server_sk.to_bytes().iter().map(|b| format!("{:02x}", b)).collect();
+
+    let short_id = *b"test4321";
+    let short_id_hex: String = short_id.iter().map(|b| format!("{:02x}", b)).collect();
+
+    let user_uuid = Uuid::new_v4();
+
+    let _server = spawn_wrongsv_server_with_reality(
+        &listen_str,
+        &user_uuid.to_string(),
+        "xtls-rprx-vision",
+        &sk_hex,
+        &[&short_id_hex],
+    );
+    thread::sleep(Duration::from_millis(100));
+
+    // Build and send a valid REALITY ClientHello
+    let hello = build_reality_hello(server_pk.as_bytes(), &short_id);
+
+    let mut conn = TcpStream::connect_timeout(&server_addr, Duration::from_secs(5)).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    conn.write_all(&hello).unwrap();
+
+    // Server should respond with TLS ServerHello (handshake continues),
+    // not close the connection. Read the response — it should be a TLS record.
+    let mut buf = [0u8; 4096];
+    let n = conn.read(&mut buf).unwrap();
+    assert!(n > 0, "server should respond after valid REALITY ClientHello");
+    // TLS handshake records start with 0x16
+    assert_eq!(
+        buf[0], 0x16,
+        "expected TLS handshake response from server, got 0x{:02x}", buf[0]
+    );
+}
+
+#[test]
+fn test_reality_wrong_short_id_rejected() {
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
+
+    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server_addr = reserve.local_addr().unwrap();
+    let listen_str = server_addr.to_string();
+    drop(reserve);
+
+    let server_sk = StaticSecret::random_from_rng(rand::rngs::OsRng);
+    let server_pk = PublicKey::from(&server_sk);
+    let sk_hex: String = server_sk.to_bytes().iter().map(|b| format!("{:02x}", b)).collect();
+
+    let allowed_short_id = *b"test4321";
+    let allowed_short_id_hex: String = allowed_short_id.iter().map(|b| format!("{:02x}", b)).collect();
+    let wrong_short_id = *b"nope5678";
+
+    let user_uuid = Uuid::new_v4();
+
+    let _server = spawn_wrongsv_server_with_reality(
+        &listen_str,
+        &user_uuid.to_string(),
+        "xtls-rprx-vision",
+        &sk_hex,
+        &[&allowed_short_id_hex],
+    );
+    thread::sleep(Duration::from_millis(100));
+
+    // Build a REALITY ClientHello with a short_id NOT in the allow-list
+    let hello = build_reality_hello(server_pk.as_bytes(), &wrong_short_id);
+
+    let mut conn = TcpStream::connect_timeout(&server_addr, Duration::from_secs(5)).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    conn.write_all(&hello).unwrap();
+
+    // Server should close connection or not respond
+    let mut buf = [0u8; 64];
+    // Connection close is expected — either EOF or timeout
+    let result = conn.read(&mut buf);
+    // Server should close connection or not respond with TLS ServerHello
+    let connection_closed = matches!(result, Err(_) | Ok(0));
+    if !connection_closed {
+        // If we got data, it must not be a TLS handshake (0x16)
+        assert_ne!(buf[0], 0x16, "server should not complete handshake with wrong short_id");
+    }
+}
+

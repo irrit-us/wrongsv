@@ -106,8 +106,18 @@ pub fn authenticate(
 
     let auth_key = derive_auth_key(&server_sk, &hello.key_share, &hello.random)?;
 
+    // AAD is the ClientHello body with the session_id zeroed out.
+    // Both client and server agree on this so the session_id content doesn't affect AAD.
+    let mut aad = hello.raw_body.clone();
+    // session_id is at offset 39 within the ClientHello body
+    // (handshake_type(1) + len(3) + version(2) + random(32) + sid_len(1))
+    let sid_start = 39;
+    if aad.len() >= sid_start + 32 {
+        aad[sid_start..sid_start + 32].fill(0);
+    }
+
     let (_version, timestamp, short_id) =
-        decrypt_session_id(&auth_key, &hello.random, &hello.session_id, &hello.raw_body)?;
+        decrypt_session_id(&auth_key, &hello.random, &hello.session_id, &aad)?;
 
     verify_timestamp(timestamp, config.max_time_diff)?;
     verify_short_id(&short_id, &config.short_ids)?;

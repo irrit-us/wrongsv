@@ -156,8 +156,11 @@ pub fn accept_reality(
     // Generate dynamic certificate for this connection
     let (certified_key, _pub_key_der) = generate_reality_cert(&auth_key)?;
 
-    // Build rustls config with our cert resolver
-    let rustls_config = ServerConfig::builder()
+    // Build rustls config with explicit crypto provider
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let rustls_config = ServerConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .unwrap()
         .with_no_client_auth()
         .with_cert_resolver(Arc::new(RealityCertResolver {
             cert_key: Arc::new(certified_key),

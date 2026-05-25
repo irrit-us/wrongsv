@@ -21,7 +21,7 @@ pub fn generate_reality_cert(
     auth_key: &[u8],
 ) -> Result<(CertifiedKey, Vec<u8>), RealityError> {
     // Generate fresh Ed25519 keypair for this connection
-    let key_pair = KeyPair::generate()
+    let key_pair = KeyPair::generate_for(&rcgen::PKCS_ED25519)
         .map_err(|e| RealityError::CertError(format!("key generation failed: {e}")))?;
 
     let pub_key_der = key_pair.public_key_der();
