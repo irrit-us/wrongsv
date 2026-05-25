@@ -76,11 +76,7 @@ fn verify_timestamp(timestamp: u32, max_time_diff: u64) -> Result<(), RealityErr
         .map_err(|e| RealityError::AuthFailed(format!("clock: {e}")))?
         .as_secs();
 
-    let diff = if now >= timestamp as u64 {
-        now - timestamp as u64
-    } else {
-        timestamp as u64 - now
-    };
+    let diff = now.abs_diff(timestamp as u64);
 
     if diff > max_time_diff {
         return Err(RealityError::AuthFailed(format!(
