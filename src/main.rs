@@ -108,6 +108,7 @@ fn build_default_config() -> Config {
         decryption: None,
         flow: Some("xtls-rprx-vision".into()),
         kyber_secret_key: kyber,
+        reality: None,
     }
 }
 

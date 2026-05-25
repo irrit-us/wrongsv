@@ -11,7 +11,7 @@ use wrongsv_vless::{MemoryValidator, Validator, XRV};
 use wrongsv_vless::vision::{TrafficState, VisionReader, VisionWriter};
 use wrongsv_vless_encoding::{self as encoding, Addons};
 
-use crate::config::Config;
+use crate::config::{Config, RealityServerConfig};
 
 /// Decode a hex string into a fixed-size byte array.
 fn decode_hex<const N: usize>(hex: &str) -> Result<[u8; N], String> {
@@ -37,10 +37,27 @@ fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
+fn parse_reality_config(rc: &RealityServerConfig) -> Result<wrongsv_reality::RealityConfig, String> {
+    let private_key = decode_hex::<32>(&rc.private_key)
+        .map_err(|e| format!("reality.private_key: {e}"))?;
+    let short_ids: Result<Vec<[u8; 8]>, _> = rc
+        .short_ids
+        .iter()
+        .map(|s| decode_hex::<8>(s))
+        .collect();
+    let short_ids = short_ids.map_err(|e| format!("reality.short_ids: {e}"))?;
+    Ok(wrongsv_reality::RealityConfig {
+        private_key,
+        short_ids,
+        max_time_diff: rc.max_time_diff,
+    })
+}
+
 pub struct InboundServer {
     config: Config,
     validator: Arc<MemoryValidator>,
     kyber_sk: Option<[u8; 64]>,
+    reality_config: Option<wrongsv_reality::RealityConfig>,
 }
 
 impl InboundServer {
@@ -48,6 +65,10 @@ impl InboundServer {
         config.validate()?;
         let kyber_sk = match &config.kyber_secret_key {
             Some(hex) => Some(decode_hex::<64>(hex).map_err(|e| format!("kyber_secret_key: {e}"))?),
+            None => None,
+        };
+        let reality_config = match &config.reality {
+            Some(rc) => Some(parse_reality_config(rc)?),
             None => None,
         };
         let validator = Arc::new(MemoryValidator::new());
@@ -78,6 +99,7 @@ impl InboundServer {
             config,
             validator,
             kyber_sk,
+            reality_config,
         })
     }
 
@@ -107,6 +129,7 @@ impl InboundServer {
 
         let validator = Arc::clone(&self.validator);
         let kyber_sk = self.kyber_sk;
+        let reality_config = self.reality_config.clone();
 
         loop {
             if !running.load(Ordering::SeqCst) {
@@ -117,8 +140,14 @@ impl InboundServer {
                 Ok((stream, addr)) => {
                     debug!("accepted connection from {}", addr);
                     let v = Arc::clone(&validator);
+                    let rc = reality_config.clone();
                     thread::spawn(move || {
-                        if let Err(e) = handle_connection(stream, v, kyber_sk) {
+                        let result = if let Some(ref rc) = rc {
+                            handle_reality_connection(stream, v, kyber_sk, rc)
+                        } else {
+                            handle_connection(stream, v, kyber_sk)
+                        };
+                        if let Err(e) = result {
                             warn!("connection error: {}", e);
                         }
                         trace!("connection thread finished");
@@ -233,6 +262,182 @@ fn handle_connection(
     }
     debug!("{peer} relay finished");
 
+    Ok(())
+}
+
+fn handle_reality_connection(
+    stream: TcpStream,
+    validator: Arc<MemoryValidator>,
+    kyber_sk: Option<[u8; 64]>,
+    reality_config: &wrongsv_reality::RealityConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let peer = stream.peer_addr()?;
+    trace!("{peer} REALITY connection");
+
+    // REALITY accept: parse ClientHello, authenticate, generate cert
+    let mut tls_stream = wrongsv_reality::accept_reality(stream, reality_config)?;
+    wrongsv_reality::complete_handshake(&mut tls_stream)?;
+    info!("{peer} REALITY handshake complete");
+
+    // Read VLESS header from TLS stream
+    let mut first = vec![0u8; 8192];
+    let (read_conn, write_conn) = tls_stream.get_mut();
+    // Read initial bytes — try TLS first
+    loop {
+        match read_conn.reader().read(&mut first) {
+            Ok(0) => {
+                let n = read_conn.read_tls(write_conn)?;
+                if n == 0 {
+                    return Err("connection closed before VLESS header".into());
+                }
+                read_conn.process_new_packets().map_err(|e| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+                })?;
+            }
+            Ok(n) => {
+                first.truncate(n);
+                break;
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                return Err("REALITY: no data after handshake".into());
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    let n = first.len();
+    trace!("{peer} REALITY read {n} bytes VLESS header");
+
+    if n < 18 {
+        debug!("{peer} connection too short ({n} bytes), dropping");
+        return Err("connection too short for VLESS header".into());
+    }
+
+    // Decode VLESS header
+    let decoded = {
+        let v = validator.clone();
+        let mut cursor = std::io::Cursor::new(first);
+        encoding::decode_request_header(&mut cursor, move |id| v.get(id))?
+    };
+
+    let request = &decoded.header;
+    let account = &request.user.account;
+
+    info!(
+        "{} {} {} -> {}:{}",
+        peer,
+        if request.command == RequestCommand::Tcp { "TCP" } else { "UDP" },
+        request.user.email,
+        request.address,
+        request.port,
+    );
+
+    let use_vision = decoded.addons.flow == XRV && account.flow == XRV;
+    trace!("{peer} flow={} use_vision={use_vision}", decoded.addons.flow);
+
+    // Kyber decapsulation
+    if !decoded.addons.kyber_ct.is_empty() {
+        if let Some(sk) = kyber_sk {
+            match wrongsv_kyber::decapsulate(&sk, &decoded.addons.kyber_ct) {
+                Ok(_shared_secret) => {
+                    info!("{peer} Kyber session established (ML-KEM-512, ss={} bytes)", wrongsv_kyber::SS_SIZE);
+                }
+                Err(e) => {
+                    warn!("{peer} Kyber decapsulation failed: {}", e);
+                }
+            }
+        } else {
+            debug!("{peer} client sent kyber_ct but server has no kyber_secret_key configured");
+        }
+    }
+
+    // Send response header
+    let response_addons = Addons {
+        flow: String::new(),
+        ..Default::default()
+    };
+    let mut resp_buf = bytes::BytesMut::new();
+    encoding::encode_response_header(&mut resp_buf, request, &response_addons)?;
+    read_conn.writer().write_all(&resp_buf)?;
+    // Flush TLS
+    while read_conn.wants_write() {
+        read_conn.write_tls(write_conn)?;
+    }
+
+    // Connect to target
+    let target_addr = format!("{}:{}", request.address, request.port);
+    debug!("{peer} connecting to target {target_addr}");
+    let target = TcpStream::connect_timeout(
+        &target_addr.parse()?,
+        Duration::from_secs(10),
+    )?;
+    target.set_read_timeout(Some(Duration::from_secs(300)))?;
+    trace!("{peer} connected to target");
+
+    if use_vision {
+        debug!("{peer} REALITY+Vision relay not yet wired, falling through");
+    }
+    // Relay: client is TLS, target is raw TCP
+    relay_reality(tls_stream, target)?;
+    debug!("{peer} REALITY relay finished");
+
+    Ok(())
+}
+
+fn relay_reality(
+    mut tls: wrongsv_reality::RealityTlsStream,
+    mut target: TcpStream,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Simple sequential relay: read from client → write to target,
+    // then read from target → write to client. Repeat.
+    let mut buf = [0u8; 8192];
+    target.set_read_timeout(Some(Duration::from_secs(1)))?;
+    let (conn, stream) = tls.get_mut();
+    loop {
+        // Client → Target: try to read plaintext from TLS
+        match conn.reader().read(&mut buf) {
+            Ok(0) => {
+                // No decrypted data — read more TLS records
+                match conn.read_tls(stream) {
+                    Ok(0) => break, // EOF
+                    Ok(_) => {
+                        conn.process_new_packets()
+                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                        continue;
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        // No data from client, check target
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            Ok(n) => {
+                target.write_all(&buf[..n])?;
+                continue;
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(e) => return Err(e.into()),
+        }
+
+        // Target → Client: try to read from target
+        match target.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                conn.writer().write_all(&buf[..n])?;
+                // Flush TLS
+                while conn.wants_write() {
+                    conn.write_tls(stream)?;
+                }
+            }
+            Err(ref e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
     Ok(())
 }
 

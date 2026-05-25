@@ -1,0 +1,17 @@
+[package]
+name = "wrongsv-reality"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+hkdf = "0.12"
+hmac = "0.12"
+sha2.workspace = true
+aes-gcm.workspace = true
+rand.workspace = true
+thiserror.workspace = true
+rcgen = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["tls12", "std", "aws_lc_rs"] }
+pem = "3"
+tracing.workspace = true

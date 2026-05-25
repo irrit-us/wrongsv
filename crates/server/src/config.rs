@@ -18,6 +18,29 @@ pub struct Config {
     /// carried in client addons.
     #[serde(default)]
     pub kyber_secret_key: Option<String>,
+    /// REALITY configuration. When set, TLS REALITY is enabled.
+    #[serde(default)]
+    pub reality: Option<RealityServerConfig>,
+}
+
+/// REALITY server-side configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RealityServerConfig {
+    /// X25519 private key (32 bytes, hex-encoded).
+    pub private_key: String,
+    /// Allowed short IDs (hex-encoded, up to 8 bytes each).
+    #[serde(default)]
+    pub short_ids: Vec<String>,
+    /// Fallback destination for spider mode (e.g. "www.microsoft.com:443").
+    #[serde(default)]
+    pub dest: Option<String>,
+    /// Maximum allowed clock skew in seconds (default 300 = 5 min).
+    #[serde(default = "default_max_time_diff")]
+    pub max_time_diff: u64,
+}
+
+fn default_max_time_diff() -> u64 {
+    300
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -93,6 +116,7 @@ flow = "xtls-rprx-vision"
             decryption: None,
             flow: None,
             kyber_secret_key: None,
+            reality: None,
         };
         assert!(config.validate().is_err());
     }
@@ -110,6 +134,7 @@ flow = "xtls-rprx-vision"
             decryption: None,
             flow: None,
             kyber_secret_key: None,
+            reality: None,
         };
         assert!(config.validate().is_err());
     }

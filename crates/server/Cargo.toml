@@ -9,6 +9,7 @@ wrongsv-vless.workspace = true
 wrongsv-vless-encoding.workspace = true
 wrongsv-encryption.workspace = true
 wrongsv-kyber.workspace = true
+wrongsv-reality.workspace = true
 wrongsv-net-types.workspace = true
 wrongsv-uuid.workspace = true
 bytes.workspace = true
