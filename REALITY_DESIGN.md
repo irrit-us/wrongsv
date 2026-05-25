@@ -1,4 +1,4 @@
-# REALITY Protocol — Missing Components
+# REALITY Protocol — Implementation Reference
 
 ## Protocol Summary
 
@@ -7,53 +7,55 @@ self-signed certificate to authenticated clients; unauthenticated probes are for
 to a real target (spider mode).
 
 ### ClientHello SessionID (32 bytes)
+
 ```
-[0..3]:   Version bytes
-[3]:      Reserved (0)
+[0..3]:   Version bytes (1, 2, 3)
+[3]:      Reserved (must be 0)
 [4..8]:   Unix timestamp (big-endian uint32)
 [8..16]:  ShortId (8 bytes, server identifier)
-[16..32]: AES-GCM encrypted auth payload (16 bytes)
 ```
 
+The full 32-byte SessionID is AES-256-GCM encrypted, producing 16 bytes ciphertext + 16 bytes tag.
+
 ### Auth Flow
+
 1. Client X25519 ECDH: `shared = client_ephemeral_priv.diffie_hellman(server_pub)`
-2. Auth key: `HKDF-SHA256(shared, salt=client_random[0..20], info="REALITY")`
-3. Encrypt SessionID[0..16] with AES-GCM(nonce=client_random[20..32], aad=ClientHello.raw)
-4. Server reverses: extract client's ephemeral pub from key_share, ECDH, HKDF, decrypt
-5. Verify: timestamp in range, shortId in allow-list
-6. Client verifies server via: HMAC-SHA512(auth_key, server_cert_pubkey)
+2. Auth key: `HKDF-SHA256(salt=client_random[0..20], ikm=shared, info="REALITY")` → 32 bytes
+3. Encrypt payload (16 bytes) with AES-256-GCM(nonce=client_random[20..32], aad=ClientHello with zeroed session_id)
+4. Server reverses: extract client's ephemeral pub from key_share extension, ECDH, HKDF, decrypt
+5. Verify: timestamp within max_time_diff, shortId in allow-list
+6. Dynamic cert: clone Ed25519 template cert + patch last 64 bytes with HMAC-SHA512(auth_key, raw_pubkey)
 
-## What Exists
+## Implementation (crates/reality/)
 
-| Component | Status |
-|-----------|--------|
-| build.rs X25519 keypair | compile-time `BUILD_X25519_SK` / `BUILD_X25519_PK` |
-| Short ID generation | compile-time `BUILD_SHORT_ID` |
-| VLESS + XTLS Vision | raw TCP in handler.rs |
-| AES-GCM | via aes-gcm crate |
-| SHA2 | via sha2 crate |
-| Kyber KEM | optional, in crates/kyber |
+| Module | File | Purpose |
+|--------|------|---------|
+| Public API | `lib.rs` | RealityConfig, RealityError, RealityAcceptError, re-exports |
+| ClientHello parser | `hello.rs` | Parse TLS record, extract random(32), session_id(32), key_share extension |
+| Auth engine | `auth.rs` | X25519 ECDH, HKDF-SHA256, AES-256-GCM decrypt, timestamp + shortId verify, HMAC-SHA512 |
+| Cert generation | `cert.rs` | Ed25519 keypair at startup, clone + HMAC-patch per connection |
+| TLS acceptor | `tls.rs` | BufferedStream for ClientHello replay, rustls integration with dynamic cert resolver, spider fallback |
 
-## What's Missing
+### Spider Mode
 
-| # | Component | Description |
-|---|-----------|-------------|
-| 1 | **ClientHello parser** | Parse TLS record + handshake headers, extract random(32), session_id(32), key_share extension |
-| 2 | **X25519 ECDH (runtime)** | `x25519-dalek` as runtime dep: `StaticSecret::diffie_hellman()` |
-| 3 | **HKDF-SHA256** | `hkdf` crate: derive auth key from shared secret |
-| 4 | **SessionID decryption** | AES-GCM decrypt of session_id[16..32] with AAD=ClientHello.raw |
-| 5 | **Timestamp + shortId verify** | Check unix timestamp vs maxTimeDiff, shortId in allow-list |
-| 6 | **Dynamic cert generation** | `rcgen`: self-signed X.509 cert per connection |
-| 7 | **TLS 1.3 server** | `rustls` with custom `ResolvesServerCert` + buffered ClientHello replay |
-| 8 | **Spider mode** | On auth failure: TCP connect to dest, relay between client and target |
-| 9 | **Server config** | reality section: private_key, short_ids, dest, server_names, max_time_diff |
-| 10 | **Integration into handler** | Accept TLS → REALITY auth → VLESS decode → relay |
-| 11 | **Tests** | Unit tests per component, integration test end-to-end |
+On REALITY auth failure with a configured `dest`, the server forwards the connection
+to a real HTTPS target (e.g. `www.microsoft.com:443`). The buffered ClientHello is
+replayed to the target, then TCP is bidirectionally relayed between client and target.
 
-## Implementation Order
+## Config Reference
 
-1. `crates/reality/` — REALITY crate with auth logic (components 1-5)
-2. Dynamic cert generation (component 6)
-3. TLS integration + handler wiring (components 7-8)
-4. Config extension (component 9)
-5. Integration test (component 11)
+```toml
+[reality]
+private_key = "d75c6e2f..."           # X25519 32-byte hex
+short_ids = ["aaaaaaaaaaaaaaaa"]      # hex-encoded 8-byte short IDs
+max_time_diff = 300                   # seconds, default 300
+dest = "www.microsoft.com:443"        # optional spider fallback target
+server_names = ["www.microsoft.com"]  # SNI for spider mode
+```
+
+## Testing
+
+- **Unit tests** in `crates/reality/src/auth.rs`: auth roundtrip, wrong short_id, expired timestamp
+- **Cross-validation tests** against Go-generated test vectors: HKDF, AES-GCM, HMAC, cert generation
+- **Go client E2E test**: black-box handshake verification against Rust server
+- **18 correctness/stress tests**: short_id allow-listing, timestamp validation, malformed inputs, TLS 1.2, large ClientHello, missing extensions, wrong key share, spider forwarding, 50 concurrent connections, mixed auth, large payload, rapid connect/disconnect

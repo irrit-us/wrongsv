@@ -77,6 +77,19 @@ kyber_secret_key = "a1b2c3d4e5f6..."  # 64-byte hex (128 hex chars)
 
 The server will decapsulate Kyber ciphertexts sent by clients in the VLESS addons field and derive session keys from the shared secret.
 
+### REALITY configuration
+
+To enable REALITY TLS 1.3 authentication, add a `[reality]` section:
+
+```toml
+[reality]
+private_key = "d75c6e2f7e8a1b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4"
+short_ids = ["aaaaaaaaaaaaaaaa"]
+max_time_diff = 300                         # optional, default 300 seconds
+dest = "www.microsoft.com:443"              # optional spider fallback target
+server_names = ["www.microsoft.com"]        # SNI hostnames for spider mode
+```
+
 ### Full config reference
 
 ```toml
@@ -91,6 +104,14 @@ decryption = "..."
 
 # Optional: ML-KEM-512 secret key seed (64 bytes, hex-encoded)
 kyber_secret_key = "..."
+
+# Optional: REALITY TLS 1.3 auth
+[reality]
+private_key = "..."          # X25519 32-byte hex
+short_ids = ["..."]          # allowed short IDs (8-byte hex)
+max_time_diff = 300          # max clock skew in seconds
+dest = "host:port"           # spider fallback target
+server_names = ["host"]      # SNI for spider certificates
 
 # User definitions
 [[users]]
@@ -143,11 +164,12 @@ public key that `build.rs` embeds into the binary.
 cargo test
 
 # Specific crate
+cargo test -p wrongsv-reality
 cargo test -p wrongsv-kyber
 cargo test -p wrongsv-vless
 cargo test -p wrongsv-server
 
-# Integration tests (spawn real server + echo target, 16 tests)
+# Integration tests (spawn real server + echo target, 50 tests)
 cargo test --test integration
 
 # With output
@@ -180,7 +202,7 @@ wrongsv/
 ├── examples/
 │   └── stress.rs           # memory stress test (RSS monitoring)
 ├── tests/
-│   └── integration.rs      # end-to-end integration tests (16 tests)
+│   └── integration.rs      # end-to-end integration tests (50 tests)
 └── crates/
     ├── uuid/               # UUID v4/v5, ProcessUUID
     ├── net-types/          # Address, Port, AddressFamily
@@ -189,6 +211,7 @@ wrongsv/
     ├── vless/              # Validator trait, MemoryValidator, XTLS Vision
     ├── encryption/         # AEAD ciphers, TLS 1.3 record disguise
     ├── kyber/              # NIST ML-KEM-512 KEM
+    ├── reality/            # REALITY TLS auth, dynamic cert, spider fallback
     └── server/             # InboundServer, config, connection handler
 ```
 

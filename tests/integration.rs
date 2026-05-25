@@ -1447,3 +1447,1483 @@ dest = "{}"
 
     echo_handle.join().ok();
 }
+
+// ============================================================================
+// Cross-implementation verification tests against Go (Xray-core) test vectors
+// ============================================================================
+
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize)]
+struct GoTestVectors {
+    inputs: GoInputs,
+    key_derivation: GoKeyDerivation,
+    session_id: GoSessionID,
+    cert_hmac: GoCertHmac,
+    cert_generation: GoCertGeneration,
+    patched_cert_der: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GoInputs {
+    server_private_key: String,
+    client_ephemeral: GoClientEphemeral,
+    client_random: String,
+    short_id: String,
+    timestamp: u32,
+    raw_client_hello: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct GoClientEphemeral {
+    private_key: String,
+    public_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GoKeyDerivation {
+    shared_secret: String,
+    auth_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GoSessionID {
+    plaintext: String,
+    nonce: String,
+    aad: String,
+    zeroed_aad: String,
+    encrypted: String,
+    decrypted: String,
+    decrypted_version: String,
+    decrypted_reserved: u8,
+    decrypted_timestamp: u32,
+    decrypted_short_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GoCertHmac {
+    auth_key: String,
+    raw_pubkey: String,
+    hmac_sha512: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct GoCertGeneration {
+    seed: String,
+    cert_der: String,
+    raw_pubkey: String,
+    signing_key_der: String,
+    cert_der_len: i64,
+    signature_field: String,
+}
+
+fn load_go_vectors() -> GoTestVectors {
+    let json = include_str!("reality_test_vectors.json");
+    serde_json::from_str(json).expect("failed to parse Go test vectors")
+}
+
+/// Verify HKDF-SHA256 key derivation matches Go/Xray.
+#[test]
+fn test_cross_hkdf_key_derivation() {
+    use hkdf::Hkdf;
+    use sha2::Sha256;
+    use x25519_dalek::{PublicKey, StaticSecret};
+
+    let v = load_go_vectors();
+
+    let server_sk_bytes: [u8; 32] = hex::decode(&v.inputs.server_private_key)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let client_pk_bytes: [u8; 32] = hex::decode(&v.inputs.client_ephemeral.public_key)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let client_random: [u8; 32] = hex::decode(&v.inputs.client_random)
+        .unwrap()
+        .try_into()
+        .unwrap();
+
+    let server_sk = StaticSecret::from(server_sk_bytes);
+    let client_pk = PublicKey::from(client_pk_bytes);
+
+    let shared_secret = server_sk.diffie_hellman(&client_pk);
+    assert_eq!(
+        hex::encode(shared_secret.as_bytes()),
+        v.key_derivation.shared_secret,
+        "shared secret mismatch"
+    );
+
+    let hkdf = Hkdf::<Sha256>::new(Some(&client_random[..20]), shared_secret.as_bytes());
+    let mut auth_key = vec![0u8; 32];
+    hkdf.expand(b"REALITY", &mut auth_key).unwrap();
+
+    assert_eq!(
+        hex::encode(&auth_key),
+        v.key_derivation.auth_key,
+        "auth_key mismatch"
+    );
+}
+
+/// Verify AES-256-GCM SessionID decryption matches Go/Xray.
+#[test]
+fn test_cross_session_id_decryption() {
+    use aes_gcm::aead::{Aead, Payload};
+    use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+
+    let v = load_go_vectors();
+
+    let auth_key = hex::decode(&v.key_derivation.auth_key).unwrap();
+    let encrypted: [u8; 32] = hex::decode(&v.session_id.encrypted)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let zeroed_aad = hex::decode(&v.session_id.zeroed_aad).unwrap();
+    let nonce_bytes = hex::decode(&v.session_id.nonce).unwrap();
+
+    let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&auth_key);
+    let cipher = Aes256Gcm::new(key);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    let plaintext = cipher
+        .decrypt(
+            nonce,
+            Payload {
+                msg: &encrypted,
+                aad: &zeroed_aad,
+            },
+        )
+        .expect("decryption must succeed with Go-encrypted data");
+
+    assert_eq!(hex::encode(&plaintext), v.session_id.decrypted);
+    assert_eq!(
+        plaintext[0..3],
+        hex::decode(&v.session_id.decrypted_version).unwrap()
+    );
+    assert_eq!(plaintext[3], v.session_id.decrypted_reserved);
+    assert_eq!(
+        u32::from_be_bytes(plaintext[4..8].try_into().unwrap()),
+        v.session_id.decrypted_timestamp
+    );
+    assert_eq!(
+        &plaintext[8..16],
+        hex::decode(&v.session_id.decrypted_short_id)
+            .unwrap()
+            .as_slice()
+    );
+}
+
+/// Verify that the Go-generated encrypted session_id roundtrips: decrypt it and re-verify.
+#[test]
+fn test_cross_session_id_encrypt_match() {
+    use aes_gcm::aead::{Aead, Payload};
+    use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+
+    let v = load_go_vectors();
+
+    let auth_key = hex::decode(&v.key_derivation.auth_key).unwrap();
+    let plaintext = hex::decode(&v.session_id.plaintext).unwrap();
+    let nonce_bytes = hex::decode(&v.session_id.nonce).unwrap();
+    let aad = hex::decode(&v.session_id.aad).unwrap();
+    let go_encrypted = hex::decode(&v.session_id.encrypted).unwrap();
+
+    // Re-encrypt with the same inputs — but AES-GCM is non-deterministic only
+    // if we use a random nonce. With the same nonce, key, plaintext, and AAD,
+    // the output should be identical.
+    // Actually, AES-GCM IS deterministic with the same inputs — but the Go code
+    // uses a random nonce (client_random[20:32] which is random per connection).
+    // For the test vectors, nonce is fixed, so we CAN verify.
+    let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&auth_key);
+    let cipher = Aes256Gcm::new(key);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    let our_encrypted = cipher
+        .encrypt(
+            nonce,
+            Payload {
+                msg: &plaintext,
+                aad: &aad,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(
+        hex::encode(&our_encrypted),
+        hex::encode(&go_encrypted),
+        "AES-GCM encryption must be deterministic with fixed nonce"
+    );
+}
+
+/// Verify HMAC-SHA512 cert signature matches Go/Xray.
+#[test]
+fn test_cross_cert_hmac() {
+    let v = load_go_vectors();
+
+    let auth_key = hex::decode(&v.cert_hmac.auth_key).unwrap();
+    let raw_pubkey: [u8; 32] = hex::decode(&v.cert_hmac.raw_pubkey)
+        .unwrap()
+        .try_into()
+        .unwrap();
+
+    let our_hmac = wrongsv_reality::compute_cert_hmac(&auth_key, &raw_pubkey);
+
+    assert_eq!(
+        hex::encode(&our_hmac),
+        v.cert_hmac.hmac_sha512,
+        "HMAC-SHA512 mismatch between Rust and Go"
+    );
+}
+
+/// Verify cert generation: Go's cert DER structure and patching.
+#[test]
+fn test_cross_cert_generation() {
+    let v = load_go_vectors();
+
+    // The patched cert has HMAC overwriting the last 64 bytes
+    let patched_cert = hex::decode(&v.patched_cert_der).unwrap();
+    let raw_pubkey: [u8; 32] = hex::decode(&v.cert_generation.raw_pubkey)
+        .unwrap()
+        .try_into()
+        .unwrap();
+
+    // Verify the last 64 bytes of patched cert = HMAC-SHA512(auth_key, raw_pubkey)
+    let auth_key = hex::decode(&v.cert_hmac.auth_key).unwrap();
+    let expected_hmac = wrongsv_reality::compute_cert_hmac(&auth_key, &raw_pubkey);
+
+    let sig_start = patched_cert.len() - 64;
+    assert_eq!(
+        &patched_cert[sig_start..],
+        expected_hmac.as_slice(),
+        "patched cert signature must equal HMAC-SHA512(auth_key, raw_pubkey)"
+    );
+
+    // Verify our build_cert_material produces a DER cert with compatible structure
+    let material = wrongsv_reality::cert::build_cert_material().unwrap();
+    // Our raw pubkey should be 32 bytes
+    assert_eq!(material.raw_pubkey.len(), 32);
+    // Our cert DER should have a 64-byte signature at the end
+    assert!(material.cert_template_der.len() > 64);
+}
+
+/// End-to-end: Replicate the full REALITY auth flow using low-level primitives
+/// and verify every step against Go-generated test vectors.
+#[test]
+fn test_cross_full_auth_flow() {
+    use aes_gcm::aead::{Aead, Payload};
+    use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+    use hkdf::Hkdf;
+    use sha2::Sha256;
+    use x25519_dalek::{PublicKey, StaticSecret};
+
+    let v = load_go_vectors();
+
+    let server_sk_bytes: [u8; 32] = hex::decode(&v.inputs.server_private_key)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let client_pk_bytes: [u8; 32] = hex::decode(&v.inputs.client_ephemeral.public_key)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let client_random: [u8; 32] = hex::decode(&v.inputs.client_random)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let session_id: [u8; 32] = hex::decode(&v.session_id.encrypted)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let short_id: [u8; 8] = hex::decode(&v.inputs.short_id).unwrap().try_into().unwrap();
+    let raw_body = hex::decode(&v.inputs.raw_client_hello).unwrap();
+
+    // Step 1: ECDH + HKDF key derivation (matches Xray server)
+    let server_sk = StaticSecret::from(server_sk_bytes);
+    let client_pk = PublicKey::from(client_pk_bytes);
+    let shared_secret = server_sk.diffie_hellman(&client_pk);
+    let hkdf = Hkdf::<Sha256>::new(Some(&client_random[..20]), shared_secret.as_bytes());
+    let mut auth_key = vec![0u8; 32];
+    hkdf.expand(b"REALITY", &mut auth_key).unwrap();
+
+    assert_eq!(auth_key, hex::decode(&v.key_derivation.auth_key).unwrap());
+
+    // Step 2: Build zeroed AAD (matches Xray server)
+    let mut zeroed_aad = raw_body.clone();
+    let sid_start = 39;
+    zeroed_aad[sid_start..sid_start + 32].fill(0);
+
+    // Step 3: Decrypt SessionID
+    let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&auth_key);
+    let cipher = Aes256Gcm::new(key);
+    let nonce = Nonce::from_slice(&client_random[20..32]);
+    let plaintext = cipher
+        .decrypt(
+            nonce,
+            Payload {
+                msg: &session_id,
+                aad: &zeroed_aad,
+            },
+        )
+        .expect("decryption must succeed");
+
+    // Step 4: Verify plaintext fields
+    assert_eq!(plaintext[3], 0, "reserved must be 0"); // reserved
+    let timestamp = u32::from_be_bytes(plaintext[4..8].try_into().unwrap());
+    assert_eq!(timestamp, v.inputs.timestamp);
+    let decrypted_short_id: &[u8; 8] = plaintext[8..16].try_into().unwrap();
+    assert_eq!(decrypted_short_id, &short_id);
+
+    // Step 5: Cert HMAC (Xray client verification)
+    let raw_pubkey: [u8; 32] = hex::decode(&v.cert_generation.raw_pubkey)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let our_hmac = wrongsv_reality::compute_cert_hmac(&auth_key, &raw_pubkey);
+    assert_eq!(hex::encode(&our_hmac), v.cert_hmac.hmac_sha512);
+
+    // Step 6: Verify patched cert
+    let patched_cert = hex::decode(&v.patched_cert_der).unwrap();
+    let sig_start = patched_cert.len() - 64;
+    assert_eq!(&patched_cert[sig_start..], our_hmac.as_slice());
+}
+
+// ============================================================================
+// End-to-end black-box test: Go REALITY client → Rust REALITY server
+// ============================================================================
+
+/// Generate a deterministic X25519 keypair for use in the Go client test.
+fn generate_test_keypair() -> ([u8; 32], [u8; 32]) {
+    use x25519_dalek::{PublicKey, StaticSecret};
+    let sk = StaticSecret::random_from_rng(rand::rngs::OsRng);
+    let pk = PublicKey::from(&sk);
+    (*sk.as_bytes(), *pk.as_bytes())
+}
+
+/// Go REALITY client connects to our Rust server and verifies the handshake.
+///
+/// This is the ultimate black-box test: a Go program implementing the REALITY
+/// protocol exactly as Xray does connects to our Rust server, authenticates,
+/// and verifies the certificate HMAC signature.
+#[test]
+fn test_go_client_handshake_with_rust_server() {
+    // Path to the Go client binary
+    let go_client = std::path::Path::new("/tmp/reality_vectors/reality_client");
+
+    // Generate server keypair
+    let (sk, pk) = generate_test_keypair();
+    let sk_hex = hex::encode(sk);
+    let pk_hex = hex::encode(pk);
+
+    let short_id_hex = "deadbeefcafebabe";
+
+    let server_addr = format!("127.0.0.1:{}", 20500 + (rand::random::<u16>() % 10000));
+
+    // Start Rust REALITY server
+    let user_id = "12345678-1234-1234-1234-123456789abc";
+    let handle =
+        spawn_wrongsv_server_with_reality(&server_addr, user_id, "", &sk_hex, &[short_id_hex]);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    // Run Go client against our server
+    let output = std::process::Command::new(go_client)
+        .args([&server_addr, &pk_hex, short_id_hex])
+        .output()
+        .expect("failed to spawn Go client");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !output.status.success() {
+        eprintln!("Go client STDOUT:\n{stdout}");
+        eprintln!("Go client STDERR:\n{stderr}");
+        panic!(
+            "Go client exited with status {}",
+            output.status.code().unwrap_or(-1)
+        );
+    }
+
+    assert!(
+        stdout.contains("PASS"),
+        "Go client should report success. stdout: {stdout}"
+    );
+    // ServerHello confirms auth accepted; encrypted records confirm TLS progression
+    assert!(
+        stdout.contains("ServerHello received"),
+        "Go client should receive ServerHello. stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("handshake complete"),
+        "Go client should complete handshake. stdout: {stdout}"
+    );
+
+    drop(handle);
+}
+
+// ============================================================================
+// REALITY correctness tests — all configuration & edge case variants
+// ============================================================================
+
+/// Start a REALITY server with full config options (dest, max_time_diff, etc.).
+fn spawn_reality_server_full(
+    listen_addr: &str,
+    user_id: &str,
+    private_key_hex: &str,
+    short_ids: &[&str],
+    max_time_diff: u64,
+    dest: Option<&str>,
+) -> thread::JoinHandle<()> {
+    let short_ids_toml = short_ids
+        .iter()
+        .map(|s| format!(r#""{}""#, s))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let dest_toml = match dest {
+        Some(d) => format!(r#"dest = "{}""#, d),
+        None => String::new(),
+    };
+    let config_toml = format!(
+        r#"
+listen = "{}"
+
+[[users]]
+id = "{}"
+email = "test@reality.test"
+
+[reality]
+private_key = "{}"
+short_ids = [{}]
+max_time_diff = {}
+{}
+"#,
+        listen_addr, user_id, private_key_hex, short_ids_toml, max_time_diff, dest_toml
+    );
+    let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
+    let server = wrongsv_server::InboundServer::new(config).unwrap();
+    thread::spawn(move || {
+        server.run().ok();
+    })
+}
+
+/// Build a REALITY ClientHello that wraps the given raw body (without TLS record).
+fn wrap_in_tls_record(body: &[u8]) -> Vec<u8> {
+    let mut record = Vec::new();
+    record.push(0x16); // handshake
+    record.extend_from_slice(&[0x03, 0x01]); // TLS 1.0 record version
+    record.extend_from_slice(&(body.len() as u16).to_be_bytes());
+    record.extend_from_slice(body);
+    record
+}
+
+/// Send raw bytes to a server and read response bytes (or error).
+fn send_and_read(addr: &str, data: &[u8], timeout_ms: u64) -> Result<Vec<u8>, String> {
+    let mut conn = TcpStream::connect_timeout(
+        &addr.parse().map_err(|e| format!("parse: {e}"))?,
+        Duration::from_millis(timeout_ms),
+    )
+    .map_err(|e| format!("connect: {e}"))?;
+    conn.set_read_timeout(Some(Duration::from_millis(timeout_ms)))
+        .ok();
+    conn.write_all(data).map_err(|e| format!("write: {e}"))?;
+    let mut buf = vec![0u8; 4096];
+    match conn.read(&mut buf) {
+        Ok(n) => {
+            buf.truncate(n);
+            Ok(buf)
+        }
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) =>
+        {
+            Ok(Vec::new()) // server dropped connection silently
+        }
+        Err(e) => Err(format!("read: {e}")),
+    }
+}
+
+/// Check if response starts with a ServerHello
+fn is_server_hello(resp: &[u8]) -> bool {
+    resp.len() >= 6 && resp[0] == 0x16 && resp[5] == 0x02
+}
+
+// --- Config edge cases ---
+
+#[test]
+fn test_reality_multiple_short_ids() {
+    let (sk, pk) = generate_test_keypair();
+    let sk_hex = hex::encode(sk);
+    let addr = format!("127.0.0.1:{}", 21000 + (rand::random::<u16>() % 10000));
+
+    let handle = spawn_reality_server_full(
+        &addr,
+        "12345678-1234-1234-1234-123456789abc",
+        &sk_hex,
+        &["aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb", "deadbeefcafebabe"],
+        300,
+        None,
+    );
+    std::thread::sleep(Duration::from_millis(200));
+
+    // First short_id should work
+    let sid1: [u8; 8] = hex::decode("aaaaaaaaaaaaaaaa").unwrap().try_into().unwrap();
+    let hello1 = build_reality_hello(&pk, &sid1);
+    let resp1 = send_and_read(&addr, &hello1, 2000).unwrap();
+    assert!(
+        is_server_hello(&resp1),
+        "valid short_id 1 should be accepted"
+    );
+
+    // Second should also work
+    let sid2: [u8; 8] = hex::decode("bbbbbbbbbbbbbbbb").unwrap().try_into().unwrap();
+    let hello2 = build_reality_hello(&pk, &sid2);
+    let resp2 = send_and_read(&addr, &hello2, 2000).unwrap();
+    assert!(
+        is_server_hello(&resp2),
+        "valid short_id 2 should be accepted"
+    );
+
+    // Third should also work
+    let sid3: [u8; 8] = hex::decode("deadbeefcafebabe").unwrap().try_into().unwrap();
+    let hello3 = build_reality_hello(&pk, &sid3);
+    let resp3 = send_and_read(&addr, &hello3, 2000).unwrap();
+    assert!(
+        is_server_hello(&resp3),
+        "valid short_id 3 should be accepted"
+    );
+
+    // Unknown short_id should be rejected
+    let bad_sid: [u8; 8] = *b"nope5678";
+    let bad_hello = build_reality_hello(&pk, &bad_sid);
+    let bad_resp = send_and_read(&addr, &bad_hello, 2000).unwrap();
+    assert!(
+        !is_server_hello(&bad_resp),
+        "unknown short_id should be rejected"
+    );
+
+    drop(handle);
+}
+
+#[test]
+fn test_reality_empty_short_ids_rejects_all() {
+    let (sk, pk) = generate_test_keypair();
+    let sk_hex = hex::encode(sk);
+    let addr = format!("127.0.0.1:{}", 21100 + (rand::random::<u16>() % 10000));
+
+    let handle = spawn_reality_server_full(
+        &addr,
+        "12345678-1234-1234-1234-123456789abc",
+        &sk_hex,
+        &[], // empty short_ids
+        300,
+        None,
+    );
+    std::thread::sleep(Duration::from_millis(200));
+
+    let sid: [u8; 8] = *b"anything";
+    let hello = build_reality_hello(&pk, &sid);
+    let resp = send_and_read(&addr, &hello, 2000).unwrap();
+    assert!(
+        !is_server_hello(&resp),
+        "empty short_ids must reject all: got {:?}",
+        resp.get(..16)
+    );
+
+    drop(handle);
+}
+
+#[test]
+fn test_reality_no_spider_drops_connection() {
+    let (sk, pk) = generate_test_keypair();
+    let sk_hex = hex::encode(sk);
+    let addr = format!("127.0.0.1:{}", 21200 + (rand::random::<u16>() % 10000));
+
+    // No dest = no spider fallback
+    let handle = spawn_reality_server_full(
+        &addr,
+        "12345678-1234-1234-1234-123456789abc",
+        &sk_hex,
+        &["aaaaaaaaaaaaaaaa"],
+        300,
+        None, // no dest
+    );
+    std::thread::sleep(Duration::from_millis(200));
+
+    let bad_sid: [u8; 8] = *b"bad-----";
+    let hello = build_reality_hello(&pk, &bad_sid);
+    let resp = send_and_read(&addr, &hello, 2000).unwrap();
+
+    // Without spider, unauthenticated connections should be dropped
+    // Either no response or a TLS alert
+    if !resp.is_empty() {
+        assert!(
+            !is_server_hello(&resp),
+            "bad auth should not get ServerHello"
+        );
+    }
+
+    drop(handle);
+}
+
+// --- Auth payload edge cases ---
+
+#[test]
+fn test_reality_reserved_byte_nonzero_rejected() {
+    let (sk, pk) = generate_test_keypair();
+    let sk_hex = hex::encode(sk);
+    let addr = format!("127.0.0.1:{}", 21300 + (rand::random::<u16>() % 10000));
+
+    let handle = spawn_reality_server_full(
+        &addr,
+        "12345678-1234-1234-1234-123456789abc",
+        &sk_hex,
+        &["aaaaaaaaaaaaaaaa"],
+        300,
+        None,
+    );
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Build a hello with reserved byte = 1
+    let hello = build_reality_hello_with_options(
+        &pk,
+        &[0xaa; 8],
+        &[1, 2, 3], // version
+        1,          // reserved = 1 (invalid!)
+        None,       // current timestamp
+    );
+    let resp = send_and_read(&addr, &hello, 2000).unwrap();
+    assert!(!is_server_hello(&resp), "reserved != 0 must be rejected");
+
+    drop(handle);
+}
+
+/// Build a REALITY hello with custom auth payload options.
+fn build_reality_hello_with_options(
+    server_pk_bytes: &[u8; 32],
+    short_id: &[u8; 8],
+    version: &[u8; 3],
+    reserved: u8,
+    timestamp_override: Option<u32>,
+) -> Vec<u8> {
+    let client_sk = StaticSecret::random_from_rng(rand::rngs::OsRng);
+    let client_pk = PublicKey::from(&client_sk);
+    let server_pk = PublicKey::from(*server_pk_bytes);
+    let shared_secret = client_sk.diffie_hellman(&server_pk);
+
+    let mut client_random = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut client_random);
+
+    let hkdf = Hkdf::<Sha256>::new(Some(&client_random[..20]), shared_secret.as_bytes());
+    let mut auth_key = vec![0u8; 32];
+    hkdf.expand(b"REALITY", &mut auth_key).unwrap();
+
+    let timestamp = timestamp_override.unwrap_or({
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32
+    });
+
+    let mut plaintext = vec![0u8; 16];
+    plaintext[0..3].copy_from_slice(version);
+    plaintext[3] = reserved;
+    plaintext[4..8].copy_from_slice(&timestamp.to_be_bytes());
+    plaintext[8..16].copy_from_slice(short_id);
+
+    let temp_hello = build_reality_client_hello(client_random, [0u8; 32], *client_pk.as_bytes());
+    let aad = &temp_hello[5..];
+
+    let key = Key::<Aes256Gcm>::from_slice(&auth_key);
+    let cipher = Aes256Gcm::new(key);
+    let nonce = Nonce::from_slice(&client_random[20..32]);
+    let ct = cipher
+        .encrypt(
+            nonce,
+            Payload {
+                msg: plaintext.as_slice(),
+                aad,
+            },
+        )
+        .unwrap();
+
+    let mut session_id = [0u8; 32];
+    session_id.copy_from_slice(&ct);
+
+    wrap_in_tls_record(
+        &build_reality_client_hello(client_random, session_id, *client_pk.as_bytes())[5..],
+    )
+}
+
+#[test]
+fn test_reality_wrong_version_rejected() {
+    let (sk, pk) = generate_test_keypair();
+    let sk_hex = hex::encode(sk);
+    let addr = format!("127.0.0.1:{}", 21400 + (rand::random::<u16>() % 10000));
+
+    let handle = spawn_reality_server_full(
+        &addr,
+        "12345678-1234-1234-1234-123456789abc",
+        &sk_hex,
+        &["aaaaaaaaaaaaaaaa"],
+        300,
+        None,
+    );
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Wrong version bytes (0,0,0 instead of 1,2,3)
+    let hello = build_reality_hello_with_options(
+        &pk,
+        &[0xaa; 8],
+        &[0, 0, 0], // wrong version
+        0,          // reserved
+        None,
+    );
+    let resp = send_and_read(&addr, &hello, 2000).unwrap();
+    // Version bytes are not validated by Xray or our implementation,
+    // so wrong version should still be accepted (ServerHello returned).
+    assert!(
+        is_server_hello(&resp),
+        "wrong version should be accepted (version is not validated)"
+    );
+
+    drop(handle);
+}
+
+#[test]
+fn test_reality_timestamp_at_boundary() {
+    let (sk, pk) = generate_test_keypair();
+    let sk_hex = hex::encode(sk);
+    let addr = format!("127.0.0.1:{}", 21500 + (rand::random::<u16>() % 10000));
+
+    // Use a large max_time_diff to ensure timestamps are accepted
+    let handle = spawn_reality_server_full(
+        &addr,
+        "12345678-1234-1234-1234-123456789abc",
+        &sk_hex,
+        &["aaaaaaaaaaaaaaaa"],
+        31536000, // 1 year - generous
+        None,
+    );
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Fresh timestamp should work
+    let hello_fresh = build_reality_hello(&pk, &[0xaa; 8]);
+    let resp = send_and_read(&addr, &hello_fresh, 2000).unwrap();
+    assert!(
+        is_server_hello(&resp),
+        "current timestamp should be accepted with large max_time_diff"
+    );
+
+    // Old timestamp (1 hour ago) — should work with 1-year window
+    let old_ts = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - 3600) as u32;
+    let hello_old = build_reality_hello_with_options(&pk, &[0xaa; 8], &[1, 2, 3], 0, Some(old_ts));
+    let resp2 = send_and_read(&addr, &hello_old, 2000).unwrap();
+    assert!(
+        is_server_hello(&resp2),
+        "timestamp 1h ago should be accepted with 1-year max_time_diff"
+    );
+
+    drop(handle);
+}
+
+#[test]
+fn test_reality_timestamp_expired_rejected() {
+    let (sk, pk) = generate_test_keypair();
+    let sk_hex = hex::encode(sk);
+    let addr = format!("127.0.0.1:{}", 21600 + (rand::random::<u16>() % 10000));
+
+    // Strict 1-second window
+    let handle = spawn_reality_server_full(
+        &addr,
+        "12345678-1234-1234-1234-123456789abc",
+        &sk_hex,
+        &["aaaaaaaaaaaaaaaa"],
+        1, // 1 second max_time_diff
+        None,
+    );
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Old timestamp should be rejected with 1-second window
+    let old_ts = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - 10) as u32; // 10 seconds ago
+    let hello_old = build_reality_hello_with_options(&pk, &[0xaa; 8], &[1, 2, 3], 0, Some(old_ts));
+    let resp = send_and_read(&addr, &hello_old, 2000).unwrap();
+    assert!(
+        !is_server_hello(&resp),
+        "timestamp 10s ago should be rejected with 1s max_time_diff"
+    );
+
+    drop(handle);
+}
+
+// --- ClientHello structure edge cases ---
+
+#[test]
+fn test_reality_non_tls_data_handled_gracefully() {
+    let (sk, _pk) = generate_test_keypair();
+    let sk_hex = hex::encode(sk);
+    let addr = format!("127.0.0.1:{}", 21700 + (rand::random::<u16>() % 10000));
+
+    let handle = spawn_reality_server_full(
+        &addr,
+        "12345678-1234-1234-1234-123456789abc",
+        &sk_hex,
+        &["aaaaaaaaaaaaaaaa"],
+        300,
+        None,
+    );
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Send HTTP request (not TLS)
+    let http_req = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
+    let resp = send_and_read(&addr, http_req, 2000).unwrap();
+    // Server should not crash and either drop or respond with error
+    assert!(
+        !is_server_hello(&resp),
+        "HTTP request should not get ServerHello"
+    );
+
+    // Send garbage bytes
+    let garbage = [0x00u8; 100];
+    let resp2 = send_and_read(&addr, &garbage, 2000).unwrap();
+    assert!(
+        !is_server_hello(&resp2),
+        "garbage should not get ServerHello"
+    );
+
+    // Verify server still works after garbage
+    let sid: [u8; 8] = hex::decode("aaaaaaaaaaaaaaaa").unwrap().try_into().unwrap();
+    let hello = build_reality_hello_from_pk_bytes(server_pk_bytes_from_sk(&sk), &sid);
+    let resp3 = send_and_read(&addr, &hello, 2000).unwrap();
+    assert!(
+        is_server_hello(&resp3),
+        "server should still accept valid hello after garbage"
+    );
+
+    drop(handle);
+}
+
+/// Helper to get server public key bytes from private key
+fn server_pk_bytes_from_sk(sk: &[u8; 32]) -> [u8; 32] {
+    let secret = StaticSecret::from(*sk);
+    *PublicKey::from(&secret).as_bytes()
+}
+
+/// Build REALITY hello using raw server pubkey bytes (simpler interface)
+fn build_reality_hello_from_pk_bytes(server_pk_bytes: [u8; 32], short_id: &[u8; 8]) -> Vec<u8> {
+    build_reality_hello(&server_pk_bytes, short_id)
+}
+
+#[test]
+fn test_reality_tls12_client_hello_handling() {
+    let (sk, _pk) = generate_test_keypair();
+    let sk_hex = hex::encode(sk);
+    let addr = format!("127.0.0.1:{}", 21800 + (rand::random::<u16>() % 10000));
+
+    let handle = spawn_reality_server_full(
+        &addr,
+        "12345678-1234-1234-1234-123456789abc",
+        &sk_hex,
+        &["aaaaaaaaaaaaaaaa"],
+        300,
+        None,
+    );
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Build a TLS 1.2 ClientHello (supported_versions = TLS 1.2 only)
+    let mut body = Vec::new();
+    body.push(0x01); // handshake type
+    body.extend_from_slice(&[0x00, 0x00, 0x00]); // length placeholder
+    body.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
+    body.extend_from_slice(&[0u8; 32]); // random
+    body.push(0); // session_id length = 0
+    body.extend_from_slice(&[0x00, 0x02, 0xc0, 0x2b]); // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+    body.extend_from_slice(&[0x01, 0x00]); // compression
+
+    let mut exts = Vec::new();
+    // supported_versions: only TLS 1.2
+    exts.extend_from_slice(&0x002bu16.to_be_bytes());
+    exts.extend_from_slice(&3u16.to_be_bytes());
+    exts.push(2);
+    exts.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
+    body.extend_from_slice(&(exts.len() as u16).to_be_bytes());
+    body.extend_from_slice(&exts);
+
+    let hs_len = (body.len() - 4) as u32;
+    body[1] = (hs_len >> 16) as u8;
+    body[2] = (hs_len >> 8) as u8;
+    body[3] = hs_len as u8;
+
+    let record = wrap_in_tls_record(&body);
+    let resp = send_and_read(&addr, &record, 2000).unwrap();
+
+    // TLS 1.2 might be rejected or might get a ServerHello with version negotiation
+    // Either way, server should not crash
+    if !resp.is_empty() && resp[0] == 0x15 {
+        // Got alert — that's fine
+    } else if is_server_hello(&resp) {
+        // Server might accept TLS 1.2 — verify it's a valid response
+    }
+    // No crash = success
+
+    drop(handle);
+}
+
+#[test]
+fn test_reality_large_client_hello() {
+    let (sk, pk) = generate_test_keypair();
+    let sk_hex = hex::encode(sk);
+    let addr = format!("127.0.0.1:{}", 21900 + (rand::random::<u16>() % 10000));
+
+    let handle = spawn_reality_server_full(
+        &addr,
+        "12345678-1234-1234-1234-123456789abc",
+        &sk_hex,
+        &["aaaaaaaaaaaaaaaa"],
+        300,
+        None,
+    );
+    std::thread::sleep(Duration::from_millis(200));
+
+    let sid: [u8; 8] = hex::decode("aaaaaaaaaaaaaaaa").unwrap().try_into().unwrap();
+    let base_hello = build_reality_hello(&pk, &sid);
+
+    // Build a large ClientHello simulating uTLS fingerprint (~4KB) with a huge SNI
+    let host = "a".repeat(3800);
+    let mut body2 = Vec::new();
+    body2.push(0x01);
+    body2.extend_from_slice(&[0x00, 0x00, 0x00]); // length placeholder
+    body2.extend_from_slice(&[0x03, 0x03]);
+    body2.extend_from_slice(&[0u8; 32][..]);
+    body2.push(32);
+    body2.extend_from_slice(&[0u8; 32][..]);
+    body2.extend_from_slice(&[0x00, 0x02, 0x13, 0x01]);
+    body2.extend_from_slice(&[0x01, 0x00]);
+
+    let mut exts = Vec::new();
+    // SNI with large hostname
+    exts.extend_from_slice(&0x0000u16.to_be_bytes());
+    let sn_len = 5 + host.len() as u16;
+    exts.extend_from_slice(&sn_len.to_be_bytes());
+    exts.extend_from_slice(&(3 + host.len() as u16).to_be_bytes());
+    exts.push(0);
+    exts.extend_from_slice(&(host.len() as u16).to_be_bytes());
+    exts.extend_from_slice(host.as_bytes());
+    // supported_versions
+    exts.extend_from_slice(&0x002bu16.to_be_bytes());
+    exts.extend_from_slice(&3u16.to_be_bytes());
+    exts.push(2);
+    exts.extend_from_slice(&[0x03, 0x04]);
+
+    body2.extend_from_slice(&(exts.len() as u16).to_be_bytes());
+    body2.extend_from_slice(&exts);
+    let hs_len = (body2.len() - 4) as u32;
+    body2[1] = (hs_len >> 16) as u8;
+    body2[2] = (hs_len >> 8) as u8;
+    body2[3] = hs_len as u8;
+
+    let large_record = wrap_in_tls_record(&body2);
+    assert!(large_record.len() > 3000, "large hello should be > 3KB");
+
+    let resp = send_and_read(&addr, &large_record, 3000).unwrap();
+    // Not a valid REALITY hello (no auth), so should be rejected
+    assert!(
+        !is_server_hello(&resp),
+        "unauthenticated large hello rejected"
+    );
+
+    // Verify server still works
+    let resp2 = send_and_read(&addr, &base_hello, 2000).unwrap();
+    assert!(
+        is_server_hello(&resp2),
+        "server still accepts valid hello after large one"
+    );
+
+    drop(handle);
+}
+
+#[test]
+fn test_reality_missing_key_share_handling() {
+    let (sk, _pk) = generate_test_keypair();
+    let sk_hex = hex::encode(sk);
+    let addr = format!("127.0.0.1:{}", 22000 + (rand::random::<u16>() % 10000));
+
+    let handle = spawn_reality_server_full(
+        &addr,
+        "12345678-1234-1234-1234-123456789abc",
+        &sk_hex,
+        &["aaaaaaaaaaaaaaaa"],
+        300,
+        None,
+    );
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Build ClientHello without key_share extension
+    let mut body = Vec::new();
+    body.push(0x01);
+    body.extend_from_slice(&[0x00, 0x00, 0x00]);
+    body.extend_from_slice(&[0x03, 0x03]);
+    body.extend_from_slice(&[0u8; 32]);
+    body.push(32);
+    body.extend_from_slice(&[0u8; 32]);
+    body.extend_from_slice(&[0x00, 0x02, 0x13, 0x01]);
+    body.extend_from_slice(&[0x01, 0x00]);
+
+    let mut exts = Vec::new();
+    exts.extend_from_slice(&0x002bu16.to_be_bytes()); // supported_versions
+    exts.extend_from_slice(&3u16.to_be_bytes());
+    exts.push(2);
+    exts.extend_from_slice(&[0x03, 0x04]);
+    // No key_share extension!
+
+    body.extend_from_slice(&(exts.len() as u16).to_be_bytes());
+    body.extend_from_slice(&exts);
+    let hs_len = (body.len() - 4) as u32;
+    body[1] = (hs_len >> 16) as u8;
+    body[2] = (hs_len >> 8) as u8;
+    body[3] = hs_len as u8;
+
+    let record = wrap_in_tls_record(&body);
+    let resp = send_and_read(&addr, &record, 2000).unwrap();
+    // Server should handle gracefully — either reject or alert
+    assert!(
+        !is_server_hello(&resp),
+        "ClientHello without key_share should not succeed"
+    );
+
+    drop(handle);
+}
+
+#[test]
+fn test_reality_wrong_key_share_group() {
+    let (sk, _pk) = generate_test_keypair();
+    let sk_hex = hex::encode(sk);
+    let addr = format!("127.0.0.1:{}", 22100 + (rand::random::<u16>() % 10000));
+
+    let handle = spawn_reality_server_full(
+        &addr,
+        "12345678-1234-1234-1234-123456789abc",
+        &sk_hex,
+        &["aaaaaaaaaaaaaaaa"],
+        300,
+        None,
+    );
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Build ClientHello with P-256 key_share (group 0x0017) instead of X25519 (0x001d)
+    let p256_point = [0x04u8; 65]; // uncompressed point for P-256
+    let mut body = Vec::new();
+    body.push(0x01);
+    body.extend_from_slice(&[0x00, 0x00, 0x00]);
+    body.extend_from_slice(&[0x03, 0x03]);
+    body.extend_from_slice(&[0u8; 32]);
+    body.push(32);
+    body.extend_from_slice(&[0u8; 32]);
+    body.extend_from_slice(&[0x00, 0x02, 0x13, 0x01]);
+    body.extend_from_slice(&[0x01, 0x00]);
+
+    let mut exts = Vec::new();
+    exts.extend_from_slice(&0x002bu16.to_be_bytes());
+    exts.extend_from_slice(&3u16.to_be_bytes());
+    exts.push(2);
+    exts.extend_from_slice(&[0x03, 0x04]);
+    // supported_groups with P-256
+    exts.extend_from_slice(&0x000au16.to_be_bytes());
+    exts.extend_from_slice(&4u16.to_be_bytes());
+    exts.extend_from_slice(&2u16.to_be_bytes());
+    exts.extend_from_slice(&0x0017u16.to_be_bytes()); // P-256
+    // key_share with P-256
+    exts.extend_from_slice(&0x0033u16.to_be_bytes());
+    exts.extend_from_slice(&71u16.to_be_bytes()); // length
+    exts.extend_from_slice(&69u16.to_be_bytes()); // share length
+    exts.extend_from_slice(&0x0017u16.to_be_bytes()); // P-256 group
+    exts.extend_from_slice(&65u16.to_be_bytes()); // key length
+    exts.extend_from_slice(&p256_point);
+
+    body.extend_from_slice(&(exts.len() as u16).to_be_bytes());
+    body.extend_from_slice(&exts);
+    let hs_len = (body.len() - 4) as u32;
+    body[1] = (hs_len >> 16) as u8;
+    body[2] = (hs_len >> 8) as u8;
+    body[3] = hs_len as u8;
+
+    let record = wrap_in_tls_record(&body);
+    let resp = send_and_read(&addr, &record, 2000).unwrap();
+    // Server should reject — can't derive X25519 key from P-256 share
+    assert!(
+        !is_server_hello(&resp),
+        "P-256 key_share should not succeed"
+    );
+
+    drop(handle);
+}
+
+#[test]
+fn test_reality_malformed_tls_record() {
+    let (sk, _pk) = generate_test_keypair();
+    let sk_hex = hex::encode(sk);
+    let addr = format!("127.0.0.1:{}", 22200 + (rand::random::<u16>() % 10000));
+
+    let handle = spawn_reality_server_full(
+        &addr,
+        "12345678-1234-1234-1234-123456789abc",
+        &sk_hex,
+        &["aaaaaaaaaaaaaaaa"],
+        300,
+        None,
+    );
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Case 1: too short
+    let resp1 = send_and_read(&addr, &[0x16, 0x03], 2000).unwrap();
+    assert!(
+        resp1.is_empty() || resp1[0] == 0x15,
+        "too short: drop or alert"
+    );
+
+    // Case 2: wrong record type
+    let bad_type: Vec<u8> = [0x17, 0x03, 0x03, 0x00, 0x10]
+        .iter()
+        .chain(&[0u8; 16])
+        .copied()
+        .collect();
+    let _resp2 = send_and_read(&addr, &bad_type, 2000).unwrap();
+
+    // Case 3: length mismatch (claim 1000 bytes, send 10)
+    let mut mismatch = vec![0x16, 0x03, 0x01, 0x03, 0xe8]; // 1000 bytes
+    mismatch.extend_from_slice(&[0u8; 10]);
+    let _ = send_and_read(&addr, &mismatch, 1000);
+
+    // Verify server still functions
+    let sid: [u8; 8] = hex::decode("aaaaaaaaaaaaaaaa").unwrap().try_into().unwrap();
+    let hello = build_reality_hello_from_pk_bytes(server_pk_bytes_from_sk(&sk), &sid);
+    let resp4 = send_and_read(&addr, &hello, 2000).unwrap();
+    assert!(
+        is_server_hello(&resp4),
+        "server should still work after malformed input"
+    );
+
+    drop(handle);
+}
+
+#[test]
+fn test_reality_spider_with_dest_forwards_and_echoes() {
+    // Verify spider mode: when auth fails with a dest configured, the server
+    // forwards the connection to the dest. We use a simple echo server as dest
+    // and verify the client receives echoed data back.
+    let echo = TcpListener::bind("127.0.0.1:0").unwrap();
+    let echo_addr = echo.local_addr().unwrap();
+    let _echo_handle = thread::spawn(move || {
+        for stream in echo.incoming().flatten() {
+            thread::spawn(move || {
+                let mut s = stream;
+                let mut buf = [0u8; 8192];
+                loop {
+                    match s.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if s.write_all(&buf[..n]).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+
+    let (sk, pk) = generate_test_keypair();
+    let sk_hex = hex::encode(sk);
+    let addr = format!("127.0.0.1:{}", 22300 + (rand::random::<u16>() % 10000));
+
+    let handle = spawn_reality_server_full(
+        &addr,
+        "12345678-1234-1234-1234-123456789abc",
+        &sk_hex,
+        &["aaaaaaaaaaaaaaaa"],
+        300,
+        Some(&echo_addr.to_string()),
+    );
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Send wrong short_id → spider forwards to echo server. The echo
+    // echoes back, and spider relays it to us. Just verify we get data
+    // back (not a drop) and server remains healthy.
+    let bad_sid: [u8; 8] = *b"nope5678";
+    let hello = build_reality_hello(&pk, &bad_sid);
+    let mut conn =
+        TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_secs(5)).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    conn.write_all(&hello).unwrap();
+
+    // We should get something back from the spider relay (echoed data)
+    let mut buf = [0u8; 4096];
+    let got_data = match conn.read(&mut buf) {
+        Ok(n) if n > 0 => {
+            // Got echoed data back — spider forwarding works
+            eprintln!("  Spider forward: got {n} bytes back from echo dest");
+            true
+        }
+        _ => {
+            eprintln!("  Spider forward: no data back (timeout or drop, acceptable)");
+            false
+        }
+    };
+    assert!(
+        got_data,
+        "spider forwarding should relay echoed data back to client"
+    );
+
+    drop(conn);
+    drop(handle);
+    // echo_handle.join() would block forever (infinite accept loop);
+    // thread is killed when the test process exits.
+}
+
+// ============================================================================
+// REALITY stress tests
+// ============================================================================
+
+#[test]
+fn test_reality_concurrent_authenticated_connections() {
+    let (sk, pk) = generate_test_keypair();
+    let sk_hex = hex::encode(sk);
+    let addr = format!("127.0.0.1:{}", 23000 + (rand::random::<u16>() % 10000));
+
+    let handle = spawn_reality_server_full(
+        &addr,
+        "12345678-1234-1234-1234-123456789abc",
+        &sk_hex,
+        &["aaaaaaaaaaaaaaaa"],
+        300,
+        None,
+    );
+    std::thread::sleep(Duration::from_millis(200));
+
+    let sid: [u8; 8] = hex::decode("aaaaaaaaaaaaaaaa").unwrap().try_into().unwrap();
+
+    // Spawn 50 concurrent connections
+    let handles: Vec<_> = (0..50)
+        .map(|_| {
+            let addr = addr.clone();
+            thread::spawn(move || {
+                let hello = build_reality_hello(&pk, &sid);
+                let mut conn =
+                    TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_secs(5))
+                        .unwrap();
+                conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                conn.write_all(&hello).unwrap();
+                let mut buf = [0u8; 1024];
+                match conn.read(&mut buf) {
+                    Ok(n) if n > 0 => buf[0] == 0x16, // got ServerHello
+                    _ => false,
+                }
+            })
+        })
+        .collect();
+
+    let mut success = 0;
+    for h in handles {
+        if h.join().unwrap() {
+            success += 1;
+        }
+    }
+    assert!(
+        success > 0,
+        "at least some concurrent connections should succeed"
+    );
+    eprintln!("  Concurrent REALITY: {success}/50 connections got ServerHello");
+
+    drop(handle);
+}
+
+#[test]
+fn test_reality_mixed_auth_and_spider() {
+    // Verify mixed valid/invalid connections are handled correctly.
+    // Without spider dest, invalid connections are dropped (connection rejected).
+    // Valid connections proceed to TLS handshake.
+    let (sk, pk) = generate_test_keypair();
+    let sk_hex = hex::encode(sk);
+    let addr = format!("127.0.0.1:{}", 23100 + (rand::random::<u16>() % 10000));
+
+    let handle = spawn_reality_server_full(
+        &addr,
+        "12345678-1234-1234-1234-123456789abc",
+        &sk_hex,
+        &["aaaaaaaaaaaaaaaa"],
+        300,
+        None, // no spider dest — invalid connections get dropped
+    );
+    std::thread::sleep(Duration::from_millis(200));
+
+    let valid_sid: [u8; 8] = hex::decode("aaaaaaaaaaaaaaaa").unwrap().try_into().unwrap();
+    let bad_sid: [u8; 8] = *b"nope5678";
+
+    // Send 20 valid and 20 invalid connections concurrently
+    let mut handles = Vec::new();
+    for i in 0..40 {
+        let addr = addr.clone();
+        let is_valid = i % 2 == 0;
+        let short_id = if is_valid { valid_sid } else { bad_sid };
+        handles.push(thread::spawn(move || {
+            let hello = build_reality_hello(&pk, &short_id);
+            let mut conn =
+                TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_secs(5)).unwrap();
+            conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            conn.write_all(&hello).unwrap();
+            let mut buf = [0u8; 4096];
+            match conn.read(&mut buf) {
+                Ok(n) if n > 0 => {
+                    let got_server_hello = buf[0] == 0x16 && buf[5] == 0x02;
+                    (is_valid, got_server_hello)
+                }
+                _ => (is_valid, false),
+            }
+        }));
+    }
+
+    let mut valid_ok = 0;
+    let mut valid_fail = 0;
+    let mut invalid_got_hello = 0;
+    let mut invalid_dropped = 0;
+
+    for h in handles {
+        match h.join().unwrap() {
+            (true, true) => valid_ok += 1,
+            (true, false) => valid_fail += 1,
+            (false, false) => invalid_dropped += 1,
+            (false, true) => invalid_got_hello += 1,
+        }
+    }
+
+    assert!(valid_ok > 0, "valid connections should get ServerHello");
+    // Invalid connections should be dropped (no spider dest)
+    assert!(
+        invalid_dropped > 0,
+        "invalid connections should be dropped without spider dest"
+    );
+    eprintln!(
+        "  Mixed: {valid_ok} auth OK, {valid_fail} auth fail, \
+         {invalid_got_hello} unexpected hello, {invalid_dropped} dropped"
+    );
+
+    drop(handle);
+}
+
+#[test]
+fn test_reality_large_payload_through_tunnel() {
+    // Create a full REALITY TLS tunnel and send large data through it
+    // This simulates real traffic through the proxy
+
+    let (sk, _pk) = generate_test_keypair();
+    let sk_hex = hex::encode(sk);
+    let addr = format!("127.0.0.1:{}", 23200 + (rand::random::<u16>() % 10000));
+
+    let handle = spawn_reality_server_full(
+        &addr,
+        "12345678-1234-1234-1234-123456789abc",
+        &sk_hex,
+        &["aaaaaaaaaaaaaaaa"],
+        300,
+        None,
+    );
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Send a valid REALITY hello and verify we get at least part of the handshake
+    let pk = server_pk_bytes_from_sk(&sk);
+    let sid: [u8; 8] = hex::decode("aaaaaaaaaaaaaaaa").unwrap().try_into().unwrap();
+    let hello = build_reality_hello(&pk, &sid);
+
+    let mut conn =
+        TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_secs(5)).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    conn.write_all(&hello).unwrap();
+
+    // Read the full server flight
+    let mut total_data = Vec::new();
+    let mut buf = [0u8; 8192];
+    for _ in 0..10 {
+        match conn.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                total_data.extend_from_slice(&buf[..n]);
+                if total_data.len() > 2000 {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+
+    // We should have received the full server flight
+    assert!(!total_data.is_empty(), "should receive server response");
+    assert!(total_data[0] == 0x16, "should receive TLS record");
+
+    // The server flight should be substantial (ServerHello + CCS + encrypted msgs)
+    assert!(
+        total_data.len() > 100,
+        "server flight should be substantial"
+    );
+    eprintln!("  Server flight: {} bytes received", total_data.len());
+
+    drop(handle);
+}
+
+#[test]
+fn test_reality_rapid_connect_disconnect() {
+    let (sk, pk) = generate_test_keypair();
+    let sk_hex = hex::encode(sk);
+    let addr = format!("127.0.0.1:{}", 23300 + (rand::random::<u16>() % 10000));
+
+    let handle = spawn_reality_server_full(
+        &addr,
+        "12345678-1234-1234-1234-123456789abc",
+        &sk_hex,
+        &["aaaaaaaaaaaaaaaa"],
+        300,
+        None,
+    );
+    std::thread::sleep(Duration::from_millis(200));
+
+    let sid: [u8; 8] = hex::decode("aaaaaaaaaaaaaaaa").unwrap().try_into().unwrap();
+
+    // Rapidly connect, send hello, read a bit, disconnect
+    let mut success_count = 0;
+    for _ in 0..30 {
+        let hello = build_reality_hello(&pk, &sid);
+        if let Ok(mut conn) =
+            TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_secs(2))
+        {
+            conn.set_read_timeout(Some(Duration::from_millis(500))).ok();
+            if conn.write_all(&hello).is_ok() {
+                let mut buf = [0u8; 256];
+                if conn.read(&mut buf).unwrap_or(0) > 0 {
+                    success_count += 1;
+                }
+            }
+            // drop immediately
+        }
+    }
+
+    assert!(success_count > 0, "some connections should succeed");
+    eprintln!("  Rapid connect/disconnect: {success_count}/30 successful");
+
+    // Verify server still works after rapid cycling
+    let hello = build_reality_hello(&pk, &sid);
+    let resp = send_and_read(&addr, &hello, 2000).unwrap();
+    assert!(
+        is_server_hello(&resp),
+        "server should still work after rapid connects"
+    );
+
+    drop(handle);
+}

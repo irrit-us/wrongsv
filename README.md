@@ -7,6 +7,7 @@ A minimal, high-performance VLESS proxy server with XTLS Vision flow and NIST ML
 ```
 wrongsv (binary)
 ├── server        — inbound handler, config, connection relay
+├── reality       — REALITY TLS 1.3 authentication with spider fallback
 ├── vless         — user validator, XTLS Vision padding/unpadding
 ├── vless-encoding — VLESS header codec, addons protobuf, body framing
 ├── encryption    — TLS-1.3-disguised AEAD (AES-256-GCM / ChaCha20-Poly1305)
@@ -19,6 +20,7 @@ wrongsv (binary)
 ## Features
 
 - **VLESS protocol** — stateless proxy wire format with version + UUID + addons + command + address
+- **REALITY** — TLS 1.3 handshake hijacking with X25519 ECDH auth, dynamic cert generation, spider fallback
 - **XTLS Vision** (`xtls-rprx-vision`) — traffic analysis resistance via padding/unpadding
 - **TLS 1.3 record disguise** — AEAD-encrypted transport that appears as TLS 1.3 application data
 - **AEAD ciphers** — AES-256-GCM and ChaCha20-Poly1305 with BLAKE3 key derivation
@@ -78,7 +80,7 @@ cargo run --release -- --write-client-config client.json --server-host YOUR_IP -
 
 ```bash
 cargo test                          # all unit + integration tests
-cargo test --test integration       # integration tests only (16 tests, incl. 114 randomized scenarios)
+cargo test --test integration       # integration tests only (50 tests, incl. 114 randomized scenarios)
 cargo bench                         # criterion benchmarks
 ```
 
@@ -103,6 +105,11 @@ Runs 480 connections across 3 rounds and monitors RSS for memory leaks.
 | `decryption` | string | Server-wide decryption key (not yet wired) |
 | `flow` | string | Default flow for all users |
 | `kyber_secret_key` | string | ML-KEM-512 64-byte seed (hex-encoded) |
+| `reality.private_key` | string | X25519 32-byte private key (hex-encoded) |
+| `reality.short_ids` | []string | Allowed short IDs (8-byte hex strings) |
+| `reality.max_time_diff` | int | Max clock skew in seconds (default 300) |
+| `reality.dest` | string | Spider fallback target (e.g. `"www.microsoft.com:443"`) |
+| `reality.server_names` | []string | SNI hostnames for spider certificates |
 
 ## Security
 

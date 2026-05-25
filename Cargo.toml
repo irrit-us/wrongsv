@@ -64,6 +64,7 @@ ml-kem = { version = "0.3", features = ["getrandom"] }
 
 [dev-dependencies]
 serde_json = "1"
+serde.workspace = true
 wrongsv-protocol.workspace = true
 wrongsv-uuid.workspace = true
 wrongsv-vless-encoding.workspace = true
@@ -84,6 +85,7 @@ aes-gcm.workspace = true
 sha2.workspace = true
 rustls = { version = "0.23", default-features = false, features = ["tls12", "std", "aws_lc_rs"] }
 pem = "3"
+hex = "0.4"
 
 [[bench]]
 name = "throughput"
