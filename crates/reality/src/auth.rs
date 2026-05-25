@@ -135,12 +135,16 @@ pub fn authenticate(
     Ok(auth_key)
 }
 
-/// HMAC-SHA512 for client-side cert verification.
-/// Client computes HMAC-SHA512(auth_key, server_cert_pubkey_bytes).
-pub fn compute_cert_hmac(auth_key: &[u8], cert_pubkey_der: &[u8]) -> Vec<u8> {
+/// HMAC-SHA512 for REALITY cert verification.
+///
+/// Both server and client compute `HMAC-SHA512(auth_key, raw_pubkey)` where
+/// `raw_pubkey` is the 32-byte raw Ed25519 public key (not DER-encoded).
+/// The server writes this into the cert's trailing 64-byte signature field;
+/// the client compares it against `cert.Signature`.
+pub fn compute_cert_hmac(auth_key: &[u8], raw_pubkey: &[u8; 32]) -> Vec<u8> {
     let mut mac = <HmacSha512 as KeyInit>::new_from_slice(auth_key)
         .expect("HMAC-SHA512 key must be >= 32 bytes");
-    mac.update(cert_pubkey_der);
+    mac.update(raw_pubkey);
     mac.finalize().into_bytes().to_vec()
 }
 
@@ -214,11 +218,12 @@ mod tests {
             key_share: *client_ephemeral_pk.as_bytes(),
         };
 
-        let config = RealityConfig {
-            private_key: server_sk.to_bytes(),
-            short_ids: vec![short_id],
-            max_time_diff: 300,
-        };
+        let config = RealityConfig::new(
+            server_sk.to_bytes(),
+            vec![short_id],
+            300,
+            crate::cert::build_cert_material().unwrap(),
+        );
 
         let derived_auth_key = authenticate(&hello, &config).unwrap();
         assert_eq!(auth_key, derived_auth_key);
@@ -255,11 +260,12 @@ mod tests {
             key_share: *client_ephemeral_pk.as_bytes(),
         };
 
-        let config = RealityConfig {
-            private_key: server_sk.to_bytes(),
-            short_ids: vec![*b"nope5678"],
-            max_time_diff: 300,
-        };
+        let config = RealityConfig::new(
+            server_sk.to_bytes(),
+            vec![*b"nope5678"],
+            300,
+            crate::cert::build_cert_material().unwrap(),
+        );
 
         assert!(authenticate(&hello, &config).is_err());
     }
@@ -292,11 +298,12 @@ mod tests {
             key_share: *client_ephemeral_pk.as_bytes(),
         };
 
-        let config = RealityConfig {
-            private_key: server_sk.to_bytes(),
-            short_ids: vec![short_id],
-            max_time_diff: 60,
-        };
+        let config = RealityConfig::new(
+            server_sk.to_bytes(),
+            vec![short_id],
+            60,
+            crate::cert::build_cert_material().unwrap(),
+        );
 
         assert!(authenticate(&hello, &config).is_err());
     }

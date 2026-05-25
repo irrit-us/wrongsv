@@ -7,7 +7,7 @@
 //! real target (spider mode) for active probe resistance.
 
 mod auth;
-mod cert;
+pub mod cert;
 mod hello;
 mod tls;
 
@@ -16,6 +16,7 @@ pub use cert::generate_reality_cert;
 pub use hello::ParsedClientHello;
 pub use tls::{BufferedStream, RealityTlsStream, accept_reality, complete_handshake};
 
+use std::sync::Arc;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -32,6 +33,21 @@ pub enum RealityError {
     TlsHandshake(String),
 }
 
+/// Pre-generated Ed25519 certificate material shared across all connections.
+///
+/// Matches Xray-core's approach: one keypair generated at startup, with
+/// the DER certificate template cloned per connection and its trailing
+/// 64-byte signature field overwritten with HMAC-SHA512(auth_key, raw_pubkey).
+#[derive(Debug, Clone)]
+pub struct RealityCertMaterial {
+    /// DER-encoded certificate template (self-signed Ed25519 cert).
+    pub cert_template_der: Vec<u8>,
+    /// Raw 32-byte Ed25519 public key (not DER-encoded).
+    pub raw_pubkey: [u8; 32],
+    /// PKCS#8 DER-encoded Ed25519 private key for TLS signing.
+    pub signing_key_der: Vec<u8>,
+}
+
 /// Server-side REALITY configuration.
 #[derive(Debug, Clone)]
 pub struct RealityConfig {
@@ -41,4 +57,23 @@ pub struct RealityConfig {
     pub short_ids: Vec<[u8; 8]>,
     /// Maximum allowed clock skew in seconds
     pub max_time_diff: u64,
+    /// Pre-generated cert material (shared across connections)
+    pub cert_material: Arc<RealityCertMaterial>,
+}
+
+impl RealityConfig {
+    /// Create a new config, generating the shared Ed25519 cert material.
+    pub fn new(
+        private_key: [u8; 32],
+        short_ids: Vec<[u8; 8]>,
+        max_time_diff: u64,
+        cert_material: RealityCertMaterial,
+    ) -> Self {
+        RealityConfig {
+            private_key,
+            short_ids,
+            max_time_diff,
+            cert_material: Arc::new(cert_material),
+        }
+    }
 }

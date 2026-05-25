@@ -153,8 +153,8 @@ pub fn accept_reality(
     let parsed = parse_client_hello(&buf)?;
     let auth_key = authenticate(&parsed, config)?;
 
-    // Generate dynamic certificate for this connection
-    let (certified_key, _pub_key_der) = generate_reality_cert(&auth_key)?;
+    // Generate dynamic certificate: clone template, patch signature with HMAC
+    let certified_key = generate_reality_cert(&auth_key, &config.cert_material)?;
 
     // Build rustls config with explicit crypto provider
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());

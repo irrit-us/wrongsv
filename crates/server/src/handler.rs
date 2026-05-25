@@ -46,11 +46,14 @@ fn parse_reality_config(
     let short_ids: Result<Vec<[u8; 8]>, _> =
         rc.short_ids.iter().map(|s| decode_hex::<8>(s)).collect();
     let short_ids = short_ids.map_err(|e| format!("reality.short_ids: {e}"))?;
-    Ok(wrongsv_reality::RealityConfig {
+    let cert_material = wrongsv_reality::cert::build_cert_material()
+        .map_err(|e| format!("reality cert material: {e}"))?;
+    Ok(wrongsv_reality::RealityConfig::new(
         private_key,
         short_ids,
-        max_time_diff: rc.max_time_diff,
-    })
+        rc.max_time_diff,
+        cert_material,
+    ))
 }
 
 pub struct InboundServer {
