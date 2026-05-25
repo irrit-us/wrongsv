@@ -33,9 +33,19 @@ fn derive_auth_key(
         .map_err(|e| RealityError::AuthFailed(format!("HKDF expand: {e}")))?;
     tracing::debug!(
         "REALITY auth: server_pk={} client_ks={} auth_key={}",
-        server_pk.as_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>(),
-        client_key_share.iter().map(|b| format!("{b:02x}")).collect::<String>(),
-        auth_key.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+        server_pk
+            .as_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>(),
+        client_key_share
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>(),
+        auth_key
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>(),
     );
     Ok(auth_key)
 }

@@ -123,3 +123,33 @@ impl RealityConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_private_key_hex_to_public_b64_roundtrip() {
+        // Generate a known keypair
+        let sk = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
+        let pk = x25519_dalek::PublicKey::from(&sk);
+        let expected_b64 = {
+            use base64::Engine;
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(pk.as_bytes())
+        };
+
+        let sk_hex: String = sk.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+        let computed_b64 = private_key_hex_to_public_b64(&sk_hex).unwrap();
+        assert_eq!(computed_b64, expected_b64);
+    }
+
+    #[test]
+    fn test_private_key_hex_to_public_b64_invalid_hex() {
+        assert!(private_key_hex_to_public_b64("not-hex").is_err());
+    }
+
+    #[test]
+    fn test_private_key_hex_to_public_b64_wrong_length() {
+        assert!(private_key_hex_to_public_b64("aabbccdd").is_err());
+    }
+}

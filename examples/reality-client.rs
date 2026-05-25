@@ -155,18 +155,12 @@ impl rustls::client::danger::ServerCertVerifier for NoVerify {
 
 /// HKDF-Extract: HMAC-Hash(salt, ikm)
 fn hkdf_extract(salt: &[u8], ikm: &[u8]) -> [u8; 32] {
-    let mut mac = <hmac::Hmac<Sha256> as Mac>::new_from_slice(salt)
-        .expect("HMAC key len");
+    let mut mac = <hmac::Hmac<Sha256> as Mac>::new_from_slice(salt).expect("HMAC key len");
     mac.update(ikm);
     mac.finalize().into_bytes().into()
 }
 
-fn hkdf_expand_label(
-    secret: &[u8],
-    label: &str,
-    context: &[u8],
-    length: usize,
-) -> Vec<u8> {
+fn hkdf_expand_label(secret: &[u8], label: &str, context: &[u8], length: usize) -> Vec<u8> {
     let hkdf = Hkdf::<Sha256>::from_prk(secret).expect("valid prk");
     let mut out = vec![0u8; length];
 
@@ -263,7 +257,8 @@ impl TlsCipher {
         let record_len = inner.len() + 16;
         let hdr: [u8; 5] = [
             0x17, // application_data
-            0x03, 0x03, // TLS 1.2 compat version
+            0x03,
+            0x03, // TLS 1.2 compat version
             (record_len >> 8) as u8,
             record_len as u8,
         ];
@@ -467,10 +462,8 @@ impl HandshakeState {
         let master_secret = hkdf_extract(&derived, &[0u8; 32]);
 
         // Placeholder app keys (updated with real transcript later)
-        let client_app_ts =
-            hkdf_expand_label(&master_secret, "c ap traffic", &empty_hash, 32);
-        let server_app_ts =
-            hkdf_expand_label(&master_secret, "s ap traffic", &empty_hash, 32);
+        let client_app_ts = hkdf_expand_label(&master_secret, "c ap traffic", &empty_hash, 32);
+        let server_app_ts = hkdf_expand_label(&master_secret, "s ap traffic", &empty_hash, 32);
 
         let client_app_key = hkdf_expand_label(&client_app_ts, "key", b"", 16);
         let client_app_iv = hkdf_expand_label(&client_app_ts, "iv", b"", 12);
@@ -500,10 +493,18 @@ impl HandshakeState {
 
     /// Update application traffic secrets with the final transcript hash.
     fn update_app_keys(&mut self, full_transcript_hash: &[u8]) {
-        let client_app_ts =
-            hkdf_expand_label(&self.master_secret, "c ap traffic", full_transcript_hash, 32);
-        let server_app_ts =
-            hkdf_expand_label(&self.master_secret, "s ap traffic", full_transcript_hash, 32);
+        let client_app_ts = hkdf_expand_label(
+            &self.master_secret,
+            "c ap traffic",
+            full_transcript_hash,
+            32,
+        );
+        let server_app_ts = hkdf_expand_label(
+            &self.master_secret,
+            "s ap traffic",
+            full_transcript_hash,
+            32,
+        );
 
         self.client_app_key = hkdf_expand_label(&client_app_ts, "key", b"", 16);
         self.server_app_key = hkdf_expand_label(&server_app_ts, "key", b"", 16);
@@ -518,12 +519,13 @@ impl HandshakeState {
 // ServerHello parser
 // ---------------------------------------------------------------------------
 
-fn parse_server_hello(
-    payload: &[u8],
-) -> Result<([u8; 32], [u8; 32], [u8; 32]), String> {
+fn parse_server_hello(payload: &[u8]) -> Result<([u8; 32], [u8; 32], [u8; 32]), String> {
     // TLS handshake header: type(1) + len(3)
     if payload.len() < 4 || payload[0] != 0x02 {
-        return Err(format!("expected ServerHello (0x02), got 0x{:02x}", payload[0]));
+        return Err(format!(
+            "expected ServerHello (0x02), got 0x{:02x}",
+            payload[0]
+        ));
     }
     let _hs_len = u32::from_be_bytes([0, payload[1], payload[2], payload[3]]) as usize;
 
@@ -554,8 +556,7 @@ fn parse_server_hello(
     let mut server_key_share = None;
     while ext_pos + 4 <= ext_data.len() {
         let ext_type = u16::from_be_bytes([ext_data[ext_pos], ext_data[ext_pos + 1]]);
-        let ext_size =
-            u16::from_be_bytes([ext_data[ext_pos + 2], ext_data[ext_pos + 3]]) as usize;
+        let ext_size = u16::from_be_bytes([ext_data[ext_pos + 2], ext_data[ext_pos + 3]]) as usize;
         ext_pos += 4;
         if ext_pos + ext_size > ext_data.len() {
             break;
@@ -586,10 +587,7 @@ fn parse_server_hello(
 // REALITY auth key derivation (client side)
 // ---------------------------------------------------------------------------
 
-fn derive_auth_key(
-    client_random: &[u8; 32],
-    shared_secret: &[u8],
-) -> [u8; 32] {
+fn derive_auth_key(client_random: &[u8; 32], shared_secret: &[u8]) -> [u8; 32] {
     let hkdf = Hkdf::<Sha256>::new(Some(&client_random[..20]), shared_secret);
     let mut auth_key = [0u8; 32];
     hkdf.expand(b"REALITY", &mut auth_key).unwrap();
@@ -606,8 +604,8 @@ fn verify_reality_cert(
         return Err("cert too short".into());
     }
     let sig = &cert_der[cert_der.len() - 64..];
-    let mut mac = <hmac::Hmac<Sha512> as Mac>::new_from_slice(auth_key)
-        .map_err(|e| format!("hmac: {e}"))?;
+    let mut mac =
+        <hmac::Hmac<Sha512> as Mac>::new_from_slice(auth_key).map_err(|e| format!("hmac: {e}"))?;
     mac.update(raw_pubkey);
     let expected = mac.finalize().into_bytes();
     if sig == expected.as_slice() {
@@ -642,9 +640,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let bytes = base64::engine::general_purpose::URL_SAFE
             .decode(&b64)
             .map_err(|e| format!("server-pk base64 decode: {e}"))?;
-        bytes
-            .try_into()
-            .map_err(|_| "server-pk must be 32 bytes")?
+        bytes.try_into().map_err(|_| "server-pk must be 32 bytes")?
     };
 
     // Parse short ID
@@ -760,8 +756,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut server_hello_record = Vec::new();
     server_hello_record.push(0x16);
     server_hello_record.extend_from_slice(&[0x03, 0x03]);
-    server_hello_record
-        .extend_from_slice(&(server_hello_payload.len() as u16).to_be_bytes());
+    server_hello_record.extend_from_slice(&(server_hello_payload.len() as u16).to_be_bytes());
     server_hello_record.extend_from_slice(&server_hello_payload);
 
     // ------------------------------------------------------------------
@@ -786,7 +781,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut keylog_client_app_ts: Option<Vec<u8>> = None;
 
     if let Some(ref keylog_path) = cli.keylog_file {
-        let cr_hex = client_random.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let cr_hex = client_random
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
         match std::fs::read_to_string(keylog_path) {
             Ok(contents) => {
                 for line in contents.lines() {
@@ -798,8 +796,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 Err(_) => continue,
                             };
                             match parts[0] {
-                                "SERVER_HANDSHAKE_TRAFFIC_SECRET" => keylog_server_hs_ts = Some(secret),
-                                "CLIENT_HANDSHAKE_TRAFFIC_SECRET" => keylog_client_hs_ts = Some(secret),
+                                "SERVER_HANDSHAKE_TRAFFIC_SECRET" => {
+                                    keylog_server_hs_ts = Some(secret)
+                                }
+                                "CLIENT_HANDSHAKE_TRAFFIC_SECRET" => {
+                                    keylog_client_hs_ts = Some(secret)
+                                }
                                 "SERVER_TRAFFIC_SECRET_0" => keylog_server_app_ts = Some(secret),
                                 "CLIENT_TRAFFIC_SECRET_0" => keylog_client_app_ts = Some(secret),
                                 _ => {}
@@ -810,7 +812,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if keylog_server_hs_ts.is_some() && keylog_client_hs_ts.is_some() {
                     tracing::info!("loaded KEYLOG secrets from {keylog_path}");
                 } else {
-                    tracing::warn!("KEYLOG file {keylog_path} found but no matching secrets for client_random={cr_hex}");
+                    tracing::warn!(
+                        "KEYLOG file {keylog_path} found but no matching secrets for client_random={cr_hex}"
+                    );
                 }
             }
             Err(e) => {
@@ -822,13 +826,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Allow KEYLOG-based override for debugging key schedule mismatch.
     // Priority: --keylog-file (auto) > --keylog-server-hs/--keylog-client-hs (manual)
     let hs_server_ts_override: Option<Vec<u8>> = keylog_server_hs_ts.or_else(|| {
-        cli.keylog_server_hs.as_ref().and_then(|h| hex::decode(h).ok())
+        cli.keylog_server_hs
+            .as_ref()
+            .and_then(|h| hex::decode(h).ok())
     });
     let hs_client_ts_override: Option<Vec<u8>> = keylog_client_hs_ts.or_else(|| {
-        cli.keylog_client_hs.as_ref().and_then(|h| hex::decode(h).ok())
+        cli.keylog_client_hs
+            .as_ref()
+            .and_then(|h| hex::decode(h).ok())
     });
     let (server_hs_key_used, server_hs_iv_used, client_hs_key_used, client_hs_iv_used) =
-        if let (Some(server_hs_ts), Some(client_hs_ts)) = (&hs_server_ts_override, &hs_client_ts_override)
+        if let (Some(server_hs_ts), Some(client_hs_ts)) =
+            (&hs_server_ts_override, &hs_client_ts_override)
         {
             if server_hs_ts.len() != 32 || client_hs_ts.len() != 32 {
                 return Err("handshake traffic secrets must be 32 bytes".into());
@@ -870,9 +879,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match ct {
             0x14 => continue,
             0x17 => {
-                let cipher = Aes128Gcm::new(Key::<Aes128Gcm>::from_slice(
-                    &hs_cipher.read_key,
-                ));
+                let cipher = Aes128Gcm::new(Key::<Aes128Gcm>::from_slice(&hs_cipher.read_key));
                 let nonce_arr = tls13_nonce(&hs_cipher.read_iv, hs_cipher.read_seq);
                 let nonce = Nonce::from_slice(&nonce_arr);
                 let pt = cipher
@@ -964,10 +971,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    tracing::info!(
-        "handshake complete, cert {} bytes",
-        cert_der.len()
-    );
+    tracing::info!("handshake complete, cert {} bytes", cert_der.len());
 
     // Verify cert HMAC
     if !cli.insecure {
@@ -1010,9 +1014,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     finished_msg.extend_from_slice(&verify_data);
 
     // Encrypt and send with TLS 1.3 AAD
-    let hs_cipher_send = Aes128Gcm::new(Key::<Aes128Gcm>::from_slice(
-        &client_hs_key_used,
-    ));
+    let hs_cipher_send = Aes128Gcm::new(Key::<Aes128Gcm>::from_slice(&client_hs_key_used));
     let send_nonce_arr = tls13_nonce(&client_hs_iv_used, 0);
     let send_nonce = Nonce::from_slice(&send_nonce_arr);
 
@@ -1022,11 +1024,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Record header as AAD
     let record_len = inner.len() + 16; // +16 for AES-GCM tag
-    let hdr: [u8; 5] = [
-        0x17, 0x03, 0x03,
-        (record_len >> 8) as u8,
-        record_len as u8,
-    ];
+    let hdr: [u8; 5] = [0x17, 0x03, 0x03, (record_len >> 8) as u8, record_len as u8];
 
     let finished_ct = hs_cipher_send
         .encrypt(
@@ -1053,10 +1051,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Allow KEYLOG-based override for app traffic keys
     let server_app_ts: Option<Vec<u8>> = keylog_server_app_ts.or_else(|| {
-        cli.keylog_server_app.as_ref().and_then(|h| hex::decode(h).ok())
+        cli.keylog_server_app
+            .as_ref()
+            .and_then(|h| hex::decode(h).ok())
     });
     let client_app_ts: Option<Vec<u8>> = keylog_client_app_ts.or_else(|| {
-        cli.keylog_client_app.as_ref().and_then(|h| hex::decode(h).ok())
+        cli.keylog_client_app
+            .as_ref()
+            .and_then(|h| hex::decode(h).ok())
     });
     let (client_app_key_used, client_app_iv_used, server_app_key_used, server_app_iv_used) =
         if let (Some(client_app_ts), Some(server_app_ts)) = (client_app_ts, server_app_ts) {
@@ -1140,7 +1142,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Step 8: Request through the tunnel
     // ------------------------------------------------------------------
     if cli.http {
-        tracing::info!("sending plain HTTP request to {target_host}:{target_port}{}", cli.path);
+        tracing::info!(
+            "sending plain HTTP request to {target_host}:{target_port}{}",
+            cli.path
+        );
 
         let http_req = format!(
             "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: wrongsv-reality-client\r\nAccept: */*\r\nConnection: close\r\n\r\n",
@@ -1167,7 +1172,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         tracing::info!("done — received {total} bytes");
     } else {
-        tracing::info!("connecting to https://{target_host}:{target_port}{}", cli.path);
+        tracing::info!(
+            "connecting to https://{target_host}:{target_port}{}",
+            cli.path
+        );
 
         // TLS handshake with target (use real web PKI via webpki-roots)
         let mut root_store = rustls::RootCertStore::empty();
@@ -1190,14 +1198,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let server_name = rustls::pki_types::ServerName::try_from(target_host.to_string())
             .map_err(|e| format!("invalid server name: {e}"))?;
-        let mut tls_conn = rustls::ClientConnection::new(std::sync::Arc::new(tls_config), server_name)
-            .map_err(|e| format!("TLS client: {e}"))?;
+        let mut tls_conn =
+            rustls::ClientConnection::new(std::sync::Arc::new(tls_config), server_name)
+                .map_err(|e| format!("TLS client: {e}"))?;
 
         // Drive TLS handshake over the encrypted tunnel.
         loop {
             if tls_conn.wants_write() {
                 let mut write_buf = Vec::new();
-                tls_conn.write_tls(&mut write_buf).map_err(|e| format!("TLS write: {e}"))?;
+                tls_conn
+                    .write_tls(&mut write_buf)
+                    .map_err(|e| format!("TLS write: {e}"))?;
                 if !write_buf.is_empty() {
                     app_cipher.encrypt_write(&mut stream, &write_buf)?;
                 }
@@ -1205,11 +1216,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if tls_conn.wants_read() {
                 let server_data = app_cipher.decrypt_read(&mut stream)?;
                 let mut cursor = std::io::Cursor::new(server_data);
-                let n = tls_conn.read_tls(&mut cursor).map_err(|e| format!("TLS read hs: {e}"))?;
+                let n = tls_conn
+                    .read_tls(&mut cursor)
+                    .map_err(|e| format!("TLS read hs: {e}"))?;
                 if n == 0 {
                     return Err("TLS target closed during handshake".into());
                 }
-                tls_conn.process_new_packets().map_err(|e| format!("TLS process hs: {e}"))?;
+                tls_conn
+                    .process_new_packets()
+                    .map_err(|e| format!("TLS process hs: {e}"))?;
             }
             if !tls_conn.is_handshaking() && !tls_conn.wants_write() {
                 break;
@@ -1224,7 +1239,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         tls_conn.writer().write_all(http_req.as_bytes())?;
         let mut write_buf = Vec::new();
-        tls_conn.write_tls(&mut write_buf).map_err(|e| format!("TLS write req: {e}"))?;
+        tls_conn
+            .write_tls(&mut write_buf)
+            .map_err(|e| format!("TLS write req: {e}"))?;
         if !write_buf.is_empty() {
             app_cipher.encrypt_write(&mut stream, &write_buf)?;
         }
@@ -1243,8 +1260,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
             let mut cursor = std::io::Cursor::new(&data);
-            tls_conn.read_tls(&mut cursor).map_err(|e| format!("TLS read resp: {e}"))?;
-            tls_conn.process_new_packets().map_err(|e| format!("TLS process resp: {e}"))?;
+            tls_conn
+                .read_tls(&mut cursor)
+                .map_err(|e| format!("TLS read resp: {e}"))?;
+            tls_conn
+                .process_new_packets()
+                .map_err(|e| format!("TLS process resp: {e}"))?;
             let mut buf = [0u8; 4096];
             loop {
                 match tls_conn.reader().read(&mut buf) {

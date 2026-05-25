@@ -20,7 +20,7 @@ wrongsv (binary)
 ## Features
 
 - **VLESS protocol** — stateless proxy wire format with version + UUID + addons + command + address
-- **REALITY** — TLS 1.3 handshake hijacking with X25519 ECDH auth, dynamic cert generation, spider fallback
+- **REALITY** — TLS 1.3 handshake hijacking with X25519 ECDH auth, dynamic cert generation, spider fallback. Compatible with xray-core clients (Chrome fingerprint + Ed25519 certs).
 - **XTLS Vision** (`xtls-rprx-vision`) — traffic analysis resistance via padding/unpadding
 - **TLS 1.3 record disguise** — AEAD-encrypted transport that appears as TLS 1.3 application data
 - **AEAD ciphers** — AES-256-GCM and ChaCha20-Poly1305 with BLAKE3 key derivation
@@ -117,6 +117,10 @@ Runs 480 connections across 3 rounds and monitors RSS for memory leaks.
 - **Post-quantum KEM**: ML-KEM-512 (NIST FIPS 203) for forward-secure session keys resistant to quantum attacks
 - **Traffic analysis resistance**: XTLS Vision padding eliminates length-based fingerprinting
 - **No pre-shared keys required**: Kyber key exchange establishes session keys without prior key distribution
+
+## Known Limitations
+
+- **REALITY + Vision relay**: The XTLS Vision flow is not yet wired for REALITY TLS connections. REALITY connections fall through to raw TCP relay, which handles HTTP and plain TCP correctly but may have issues with bidirectional TLS (HTTPS proxying). Standard VLESS + Vision (non-REALITY) works correctly.
 
 ## License
 

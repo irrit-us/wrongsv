@@ -116,6 +116,44 @@ mod tests {
     use sha2::Sha512;
 
     #[test]
+    fn test_reality_signing_key_forces_ed25519() {
+        let mat = build_cert_material().unwrap();
+        let signing_key = rustls::crypto::aws_lc_rs::sign::any_supported_type(
+            &PrivateKeyDer::Pkcs8(mat.signing_key_der.clone().into()),
+        )
+        .unwrap();
+
+        // Chrome fingerprint schemes — no Ed25519
+        let chrome_schemes = &[
+            SignatureScheme::ECDSA_NISTP256_SHA256,
+            SignatureScheme::RSA_PSS_SHA256,
+            SignatureScheme::RSA_PKCS1_SHA256,
+            SignatureScheme::ECDSA_NISTP384_SHA384,
+        ];
+
+        // Without wrapper: should fail
+        assert!(
+            signing_key.choose_scheme(chrome_schemes).is_none(),
+            "Ed25519 key should not match Chrome fingerprint schemes"
+        );
+
+        // With wrapper: should force Ed25519
+        let wrapped = RealitySigningKey { inner: signing_key };
+        let signer = wrapped
+            .choose_scheme(chrome_schemes)
+            .expect("RealitySigningKey should force Ed25519 even when not offered");
+        assert_eq!(signer.scheme(), SignatureScheme::ED25519);
+
+        // When Ed25519 IS offered, normal path should work too
+        let with_ed = &[
+            SignatureScheme::ECDSA_NISTP256_SHA256,
+            SignatureScheme::ED25519,
+        ];
+        let signer2 = wrapped.choose_scheme(with_ed).unwrap();
+        assert_eq!(signer2.scheme(), SignatureScheme::ED25519);
+    }
+
+    #[test]
     fn test_build_cert_material_extracts_raw_pubkey() {
         let mat = build_cert_material().unwrap();
         // Raw pubkey must be 32 non-zero bytes

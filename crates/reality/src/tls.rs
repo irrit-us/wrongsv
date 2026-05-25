@@ -136,11 +136,21 @@ struct DebugKeyLog;
 
 impl rustls::KeyLog for DebugKeyLog {
     fn log(&self, label: &str, client_random: &[u8], secret: &[u8]) {
-        let cr_hex = client_random.iter().map(|b| format!("{b:02x}")).collect::<String>();
-        let secret_hex = secret.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let cr_hex = client_random
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        let secret_hex = secret
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
         tracing::info!("KEYLOG {label} {cr_hex} {secret_hex}");
         if let Ok(path) = std::env::var("WRONGSV_KEYLOG_FILE") {
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
                 let _ = writeln!(f, "KEYLOG {label} {cr_hex} {secret_hex}");
             }
         }
@@ -222,13 +232,26 @@ pub fn accept_reality(
     // Debug: log what we parsed vs what we're buffering for rustls
     tracing::info!(
         "REALITY parsed: client_random={} key_share={} sid_len={}",
-        parsed.random.iter().map(|b| format!("{b:02x}")).collect::<String>(),
-        parsed.key_share.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+        parsed
+            .random
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>(),
+        parsed
+            .key_share
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>(),
         parsed.session_id.len(),
     );
     // Log first 100 bytes of raw_body (the ClientHello handshake message we feed to rustls)
-    let body_preview: String = parsed.raw_body.iter().take(80)
-        .map(|b| format!("{b:02x}")).collect::<Vec<_>>().join("");
+    let body_preview: String = parsed
+        .raw_body
+        .iter()
+        .take(80)
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join("");
     tracing::info!("REALITY raw_body[..80]={body_preview}");
 
     let auth_key = match authenticate(&parsed, config) {

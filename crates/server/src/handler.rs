@@ -503,7 +503,9 @@ fn relay_reality(
     }
 
     let (conn, stream) = tls.get_mut();
-    stream.get_mut().set_read_timeout(Some(Duration::from_secs(1)))?;
+    stream
+        .get_mut()
+        .set_read_timeout(Some(Duration::from_secs(1)))?;
 
     loop {
         // Client → Target: read TLS records, then drain plaintext
