@@ -304,7 +304,6 @@ mod tests {
             max_time_diff,
             crate::cert::build_cert_material().unwrap(),
             None,
-            vec![],
         )
     }
 }

@@ -54,7 +54,6 @@ fn parse_reality_config(
         rc.max_time_diff,
         cert_material,
         rc.dest.clone(),
-        rc.server_names.clone(),
     ))
 }
 

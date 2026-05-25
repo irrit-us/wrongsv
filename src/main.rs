@@ -119,15 +119,87 @@ fn load_config(path: &str) -> Result<wrongsv_server::Config, Box<dyn std::error:
 }
 
 // ---------------------------------------------------------------------------
-// client config generation (v2rayN / v2rayNG compatible JSON)
+// client config generation (Xray-compatible JSON)
 // ---------------------------------------------------------------------------
 
+struct ClientConfigValues {
+    uuid: String,
+    port: String,
+    short_id: String,
+    x25519_pk: String,
+    servername: String,
+}
+
+/// Resolve values for the generated client config.
+///
+/// If a TOML config is provided AND the user hasn't overridden --servername
+/// from its default, TOML values for uuid/port/reality are used. Otherwise
+/// compile-time BUILD_* defaults are used.
+fn resolve_client_values(cli: &Cli) -> ClientConfigValues {
+    let build_uuid = || option_env!("BUILD_UUID").unwrap_or("00000000-0000-4000-8000-000000000000");
+    let build_port = || option_env!("BUILD_PORT").unwrap_or("443");
+    let build_sid = || option_env!("BUILD_SHORT_ID").unwrap_or("00000000");
+    let build_pk =
+        || option_env!("BUILD_X25519_PK").unwrap_or("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+
+    let toml_config = cli.config.as_ref().and_then(|path| {
+        let content = std::fs::read_to_string(path).ok()?;
+        toml::from_str::<wrongsv_server::Config>(&content).ok()
+    });
+
+    match toml_config {
+        Some(ref cfg) => {
+            let uuid = cfg
+                .users
+                .first()
+                .map(|u| u.id.as_str())
+                .unwrap_or(build_uuid());
+            let port = cfg.listen.rsplit(':').next().unwrap_or(build_port());
+            let (pk, sid) = match &cfg.reality {
+                Some(rc) => {
+                    let pk = wrongsv_reality::private_key_hex_to_public_b64(&rc.private_key)
+                        .unwrap_or_else(|_| build_pk().to_string());
+                    let sid = rc
+                        .short_ids
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| build_sid().to_string());
+                    (pk, sid)
+                }
+                None => (build_pk().to_string(), build_sid().to_string()),
+            };
+            // Default servername from reality.dest hostname if user didn't override
+            let servername = if cli.servername == "YOUR_SNI" {
+                cfg.reality
+                    .as_ref()
+                    .and_then(|rc| rc.dest.as_ref())
+                    .and_then(|d| d.split(':').next())
+                    .unwrap_or(&cli.servername)
+                    .to_string()
+            } else {
+                cli.servername.clone()
+            };
+
+            ClientConfigValues {
+                uuid: uuid.to_string(),
+                port: port.to_string(),
+                short_id: sid,
+                x25519_pk: pk,
+                servername,
+            }
+        }
+        None => ClientConfigValues {
+            uuid: build_uuid().to_string(),
+            port: build_port().to_string(),
+            short_id: build_sid().to_string(),
+            x25519_pk: build_pk().to_string(),
+            servername: cli.servername.clone(),
+        },
+    }
+}
+
 fn client_config_json(cli: &Cli) -> String {
-    let uuid = option_env!("BUILD_UUID").unwrap_or("00000000-0000-4000-8000-000000000000");
-    let port = option_env!("BUILD_PORT").unwrap_or("443");
-    let short_id = option_env!("BUILD_SHORT_ID").unwrap_or("00000000");
-    let x25519_pk =
-        option_env!("BUILD_X25519_PK").unwrap_or("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    let vals = resolve_client_values(cli);
 
     format!(
         r#"{{
@@ -136,24 +208,22 @@ fn client_config_json(cli: &Cli) -> String {
   "server": "{server}",
   "port": {port},
   "uuid": "{uuid}",
-  "udp": true,
-  "tls": true,
-  "skip-cert-verify": false,
+  "encryption": "none",
   "flow": "xtls-rprx-vision",
-  "client-fingerprint": "chrome",
+  "fingerprint": "chrome",
   "servername": "{sni}",
   "reality-opts": {{
-    "public-key": "{pk}",
-    "short-id": "{sid}"
+    "publicKey": "{pk}",
+    "shortId": "{sid}"
   }}
 }}"#,
         name = cli.client_name,
         server = cli.server_host,
-        port = port,
-        uuid = uuid,
-        sni = cli.servername,
-        pk = x25519_pk,
-        sid = short_id,
+        port = vals.port,
+        uuid = vals.uuid,
+        sni = vals.servername,
+        pk = vals.x25519_pk,
+        sid = vals.short_id,
     )
 }
 

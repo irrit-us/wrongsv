@@ -109,7 +109,6 @@ Runs 480 connections across 3 rounds and monitors RSS for memory leaks.
 | `reality.short_ids` | []string | Allowed short IDs (8-byte hex strings) |
 | `reality.max_time_diff` | int | Max clock skew in seconds (default 300) |
 | `reality.dest` | string | Spider fallback target (e.g. `"www.microsoft.com:443"`) |
-| `reality.server_names` | []string | SNI hostnames for spider certificates |
 
 ## Security
 

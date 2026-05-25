@@ -34,9 +34,6 @@ pub struct RealityServerConfig {
     /// Fallback destination for spider mode (e.g. "www.microsoft.com:443").
     #[serde(default)]
     pub dest: Option<String>,
-    /// Allowed server names (SNI) for spider fallback target.
-    #[serde(default)]
-    pub server_names: Vec<String>,
     /// Maximum allowed clock skew in seconds (default 300 = 5 min).
     #[serde(default = "default_max_time_diff")]
     pub max_time_diff: u64,

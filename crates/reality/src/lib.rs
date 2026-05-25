@@ -88,9 +88,22 @@ pub struct RealityConfig {
     /// Fallback destination for spider mode (e.g. "www.microsoft.com:443").
     /// When set, unauthenticated connections are forwarded here instead of dropped.
     pub dest: Option<String>,
-    /// Allowed server names for the real certificate (unused in current server-only impl).
-    #[allow(dead_code)]
-    pub server_names: Vec<String>,
+}
+
+/// Derive the base64-encoded X25519 public key from a hex-encoded private key.
+/// Used for generating client config.
+pub fn private_key_hex_to_public_b64(hex_sk: &str) -> Result<String, String> {
+    let bytes = (0..hex_sk.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex_sk[i..i + 2], 16))
+        .collect::<Result<Vec<u8>, _>>()
+        .map_err(|e| format!("invalid hex private key: {e}"))?;
+    let sk: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| "private key must be 32 bytes")?;
+    let pk = x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(sk));
+    use base64::Engine;
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(pk.as_bytes()))
 }
 
 impl RealityConfig {
@@ -100,7 +113,6 @@ impl RealityConfig {
         max_time_diff: u64,
         cert_material: RealityCertMaterial,
         dest: Option<String>,
-        server_names: Vec<String>,
     ) -> Self {
         RealityConfig {
             private_key,
@@ -108,7 +120,6 @@ impl RealityConfig {
             max_time_diff,
             cert_material: Arc::new(cert_material),
             dest,
-            server_names,
         }
     }
 }

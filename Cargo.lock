@@ -2224,6 +2224,7 @@ name = "wrongsv-reality"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
+ "base64",
  "hkdf",
  "hmac",
  "pem",

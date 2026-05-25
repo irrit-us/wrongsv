@@ -87,7 +87,6 @@ private_key = "d75c6e2f7e8a1b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4"
 short_ids = ["aaaaaaaaaaaaaaaa"]
 max_time_diff = 300                         # optional, default 300 seconds
 dest = "www.microsoft.com:443"              # optional spider fallback target
-server_names = ["www.microsoft.com"]        # SNI hostnames for spider mode
 ```
 
 ### Full config reference
@@ -111,7 +110,6 @@ private_key = "..."          # X25519 32-byte hex
 short_ids = ["..."]          # allowed short IDs (8-byte hex)
 max_time_diff = 300          # max clock skew in seconds
 dest = "host:port"           # spider fallback target
-server_names = ["host"]      # SNI for spider certificates
 
 # User definitions
 [[users]]

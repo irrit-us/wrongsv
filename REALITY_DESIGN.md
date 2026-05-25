@@ -50,7 +50,6 @@ private_key = "d75c6e2f..."           # X25519 32-byte hex
 short_ids = ["aaaaaaaaaaaaaaaa"]      # hex-encoded 8-byte short IDs
 max_time_diff = 300                   # seconds, default 300
 dest = "www.microsoft.com:443"        # optional spider fallback target
-server_names = ["www.microsoft.com"]  # SNI for spider mode
 ```
 
 ## Testing
