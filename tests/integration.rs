@@ -3296,3 +3296,391 @@ fn test_udp_stress_many_packets() {
 
     drop(handle);
 }
+
+// =============================================================================
+// configuration matrix — every (command, flow) combination
+// =============================================================================
+
+#[test]
+fn test_configuration_matrix_smoke() {
+    // (command, flow) combos that should succeed
+    let combos: Vec<(RequestCommand, &str)> = vec![
+        (RequestCommand::Tcp, ""),
+        (RequestCommand::Tcp, "xtls-rprx-vision"),
+        (RequestCommand::Udp, ""),
+    ];
+
+    for (cmd, flow) in &combos {
+        let (echo_addr, _echo_handle) = spawn_echo_target();
+        let echo_port = echo_addr.port();
+
+        let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+        let server_addr = reserve.local_addr().unwrap();
+        let listen_str = server_addr.to_string();
+        drop(reserve);
+
+        let user_uuid = Uuid::new_v4();
+        let user_str = user_uuid.to_string();
+        let _server = spawn_wrongsv_server(&listen_str, &user_str, flow);
+        thread::sleep(Duration::from_millis(50));
+
+        if *cmd == RequestCommand::Udp {
+            let (_udp_sock, udp_addr) = udp_echo_server();
+            let udp_parts: Vec<&str> = udp_addr.split(':').collect();
+            let udp_port: u16 = udp_parts[1].parse().unwrap();
+
+            let stream = vless_udp_connect(&listen_str, &user_uuid, "127.0.0.1", udp_port);
+            let mut stream = stream;
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+
+            let payload = b"matrix-udp-test";
+            let mut writer = LengthPacketWriter::new(&mut stream);
+            writer.write_packet(payload).unwrap();
+            let mut reader = LengthPacketReader::new(&mut stream);
+            let resp = reader.read_packet().unwrap();
+            assert_eq!(&resp[..], payload, "cmd={:?} flow={}", cmd, flow);
+        } else if *flow == "xtls-rprx-vision" {
+            use wrongsv_vless::vision::{TrafficState, VisionReader};
+            let mut conn = vless_connect(&listen_str, &user_uuid, "127.0.0.1", echo_port, flow);
+            conn.write_all(b"matrix-tcp-test").unwrap();
+            let state = TrafficState::new(user_uuid.as_bytes());
+            let mut reader = VisionReader::new(conn, state, true);
+            let mut buf = [0u8; 64];
+            let n = reader.read(&mut buf).unwrap();
+            assert_eq!(&buf[..n], b"matrix-tcp-test", "cmd={:?} flow={}", cmd, flow);
+        } else {
+            let mut conn = vless_connect(&listen_str, &user_uuid, "127.0.0.1", echo_port, flow);
+            conn.write_all(b"matrix-tcp-test").unwrap();
+            let mut buf = [0u8; 64];
+            let n = conn.read(&mut buf).unwrap();
+            assert_eq!(&buf[..n], b"matrix-tcp-test", "cmd={:?} flow={}", cmd, flow);
+        }
+    }
+
+    // UDP+Vision must be rejected
+    {
+        let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+        let server_addr = reserve.local_addr().unwrap();
+        let listen_str = server_addr.to_string();
+        drop(reserve);
+
+        let user_uuid = Uuid::new_v4();
+        let user_str = user_uuid.to_string();
+        let _server = spawn_wrongsv_server(&listen_str, &user_str, "xtls-rprx-vision");
+        thread::sleep(Duration::from_millis(50));
+
+        let (_udp_sock, udp_addr) = udp_echo_server();
+        let udp_parts: Vec<&str> = udp_addr.split(':').collect();
+        let udp_port: u16 = udp_parts[1].parse().unwrap();
+
+        let validator = Arc::new(MemoryValidator::new());
+        let user = MemoryUser {
+            account: MemoryAccount {
+                id: ID::new(user_uuid),
+                flow: "xtls-rprx-vision".into(),
+                encryption: String::new(),
+                udp: true,
+                xor_mode: 0,
+                seconds: 0,
+                padding: String::new(),
+                testpre: 0,
+                testseed: vec![],
+            },
+            email: "test@e2e.test".into(),
+            level: 0,
+        };
+        validator.add(user).unwrap();
+
+        let request = RequestHeader {
+            version: 0,
+            command: RequestCommand::Udp,
+            address: Address::parse("127.0.0.1"),
+            port: wrongsv_net_types::Port(udp_port),
+            user: validator.get(user_uuid.as_bytes()).unwrap(),
+        };
+        let addons = Addons {
+            flow: "xtls-rprx-vision".into(),
+            ..Default::default()
+        };
+        let mut req_buf = bytes::BytesMut::new();
+        encoding::encode_request_header(&mut req_buf, &request, &addons).unwrap();
+
+        let mut stream = TcpStream::connect_timeout(&server_addr, Duration::from_secs(5)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        stream.write_all(&req_buf).unwrap();
+
+        // Server should close connection for UDP+Vision
+        let mut buf = [0u8; 64];
+        let result = stream.read(&mut buf);
+        let rejected = result.is_err() || result.unwrap_or(1) == 0;
+        assert!(rejected, "UDP+Vision should be rejected");
+    }
+}
+
+#[test]
+fn test_udp_stress_1000_packets() {
+    let (_echo, echo_addr) = udp_echo_server();
+    let echo_parts: Vec<&str> = echo_addr.split(':').collect();
+    let echo_port: u16 = echo_parts[1].parse().unwrap();
+
+    let (_, uuid) = make_test_validator();
+    let listen = format!("127.0.0.1:{}", 41000 + (rand::random::<u16>() % 10000));
+    let uuid_str = uuid.to_string();
+    let _server = spawn_wrongsv_server(&listen, &uuid_str, "");
+    thread::sleep(Duration::from_millis(50));
+
+    let stream = vless_udp_connect(&listen, &uuid, "127.0.0.1", echo_port);
+    let mut stream = stream;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+
+    let mut rng = rand::thread_rng();
+    for i in 0..1000 {
+        let size: usize = rng.gen_range(1..1400);
+        let mut payload = vec![0u8; size];
+        rng.fill(&mut payload[..]);
+
+        let mut writer = LengthPacketWriter::new(&mut stream);
+        writer.write_packet(&payload).unwrap();
+
+        let mut reader = LengthPacketReader::new(&mut stream);
+        let resp = reader.read_packet().unwrap();
+        assert_eq!(&resp[..], &payload, "mismatch at packet {i}");
+    }
+}
+
+#[test]
+fn test_udp_concurrent_connections() {
+    let (_echo, echo_addr) = udp_echo_server();
+    let echo_parts: Vec<&str> = echo_addr.split(':').collect();
+    let echo_port: u16 = echo_parts[1].parse().unwrap();
+
+    let listen = format!("127.0.0.1:{}", 42000 + (rand::random::<u16>() % 10000));
+    let user_uuid = Uuid::new_v4();
+    let uuid_str = user_uuid.to_string();
+    let _server = spawn_wrongsv_server(&listen, &uuid_str, "");
+    thread::sleep(Duration::from_millis(50));
+
+    let listen = Arc::new(listen);
+    let user_uuid = Arc::new(user_uuid);
+
+    let handles: Vec<_> = (0..10)
+        .map(|client_id| {
+            let listen = Arc::clone(&listen);
+            let user_uuid = Arc::clone(&user_uuid);
+            thread::spawn(move || {
+                let stream = vless_udp_connect(&listen, &user_uuid, "127.0.0.1", echo_port);
+                let mut stream = stream;
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut rng = rand::thread_rng();
+                for i in 0..50 {
+                    let size: usize = rng.gen_range(1..500);
+                    let mut payload = vec![0u8; size];
+                    rng.fill(&mut payload[..]);
+
+                    let mut writer = LengthPacketWriter::new(&mut stream);
+                    writer.write_packet(&payload).unwrap();
+
+                    let mut reader = LengthPacketReader::new(&mut stream);
+                    let resp = reader.read_packet().unwrap();
+                    assert_eq!(
+                        &resp[..],
+                        &payload,
+                        "client {client_id} packet {i}: mismatch"
+                    );
+                }
+            })
+        })
+        .collect();
+
+    for h in handles {
+        h.join().unwrap();
+    }
+}
+
+#[test]
+fn test_mixed_tcp_udp_concurrent() {
+    let (_echo, echo_addr) = udp_echo_server();
+    let echo_parts: Vec<&str> = echo_addr.split(':').collect();
+    let echo_port: u16 = echo_parts[1].parse().unwrap();
+
+    let (tcp_echo_addr, _tcp_handle) = spawn_echo_target();
+
+    let listen = format!("127.0.0.1:{}", 43000 + (rand::random::<u16>() % 10000));
+    let user_uuid = Uuid::new_v4();
+    let uuid_str = user_uuid.to_string();
+    let _server = spawn_wrongsv_server(&listen, &uuid_str, "");
+    thread::sleep(Duration::from_millis(50));
+
+    let listen = Arc::new(listen);
+    let user_uuid = Arc::new(user_uuid);
+
+    let mut handles = Vec::new();
+
+    // 5 TCP clients
+    for i in 0..5 {
+        let listen = Arc::clone(&listen);
+        let user_uuid = Arc::clone(&user_uuid);
+        handles.push(thread::spawn(move || {
+            let mut stream =
+                vless_connect(&listen, &user_uuid, "127.0.0.1", tcp_echo_addr.port(), "");
+            let msg = format!("tcp-{i:03}-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
+            stream.write_all(msg.as_bytes()).unwrap();
+            let mut buf = [0u8; 128];
+            let n = stream.read(&mut buf).unwrap();
+            assert_eq!(&buf[..n], msg.as_bytes());
+        }));
+    }
+
+    // 5 UDP clients
+    for i in 0..5 {
+        let listen = Arc::clone(&listen);
+        let user_uuid = Arc::clone(&user_uuid);
+        handles.push(thread::spawn(move || {
+            let stream = vless_udp_connect(&listen, &user_uuid, "127.0.0.1", echo_port);
+            let mut stream = stream;
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            for j in 0..20 {
+                let payload = format!("udp-{i:03}-{j:03}");
+                let mut writer = LengthPacketWriter::new(&mut stream);
+                writer.write_packet(payload.as_bytes()).unwrap();
+                let mut reader = LengthPacketReader::new(&mut stream);
+                let resp = reader.read_packet().unwrap();
+                assert_eq!(&resp[..], payload.as_bytes(), "udp {i} pkt {j}");
+            }
+        }));
+    }
+
+    for h in handles {
+        h.join().unwrap();
+    }
+}
+
+#[test]
+fn test_kyber_with_udp_echo() {
+    let kp = wrongsv_kyber::generate_keypair();
+    let sk_hex: String = kp.sk.iter().map(|b| format!("{:02x}", b)).collect();
+
+    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server_addr = reserve.local_addr().unwrap();
+    let listen_str = server_addr.to_string();
+    drop(reserve);
+
+    let user_uuid = Uuid::new_v4();
+    let user_id_str = user_uuid.to_string();
+
+    let _server = spawn_wrongsv_server_with_kyber(&listen_str, &user_id_str, "", &sk_hex);
+    thread::sleep(Duration::from_millis(50));
+
+    let (kyber_ct, _shared_secret) = wrongsv_kyber::encapsulate(&kp.pk).unwrap();
+
+    let (_udp_sock, udp_addr) = udp_echo_server();
+    let udp_parts: Vec<&str> = udp_addr.split(':').collect();
+    let udp_port: u16 = udp_parts[1].parse().unwrap();
+
+    // Build UDP request with kyber_ct
+    let validator = Arc::new(MemoryValidator::new());
+    let user = MemoryUser {
+        account: MemoryAccount {
+            id: ID::new(user_uuid),
+            flow: String::new(),
+            encryption: String::new(),
+            udp: true,
+            xor_mode: 0,
+            seconds: 0,
+            padding: String::new(),
+            testpre: 0,
+            testseed: vec![],
+        },
+        email: "test@e2e.test".into(),
+        level: 0,
+    };
+    validator.add(user).unwrap();
+
+    let request = RequestHeader {
+        version: 0,
+        command: RequestCommand::Udp,
+        address: Address::parse("127.0.0.1"),
+        port: wrongsv_net_types::Port(udp_port),
+        user: validator.get(user_uuid.as_bytes()).unwrap(),
+    };
+    let addons = Addons {
+        flow: String::new(),
+        kyber_ct,
+    };
+    let mut req_buf = bytes::BytesMut::new();
+    encoding::encode_request_header(&mut req_buf, &request, &addons).unwrap();
+
+    let mut conn = TcpStream::connect_timeout(&server_addr, Duration::from_secs(5)).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    conn.write_all(&req_buf).unwrap();
+
+    // Read response header
+    let mut version_buf = [0u8; 1];
+    conn.read_exact(&mut version_buf).unwrap();
+    assert_eq!(version_buf[0], 0);
+
+    let mut addons_len_buf = [0u8; 1];
+    conn.read_exact(&mut addons_len_buf).unwrap();
+    let addons_len = addons_len_buf[0] as usize;
+    if addons_len > 0 {
+        let mut proto_payload = vec![0u8; addons_len];
+        conn.read_exact(&mut proto_payload).unwrap();
+    }
+
+    // UDP relay via Kyber connection
+    let payload = b"kyber-udp-test";
+    let mut writer = LengthPacketWriter::new(&mut conn);
+    writer.write_packet(payload).unwrap();
+    let mut reader = LengthPacketReader::new(&mut conn);
+    let resp = reader.read_packet().unwrap();
+    assert_eq!(&resp[..], payload);
+}
+
+#[test]
+fn test_udp_zero_and_max_packets() {
+    let (_echo, echo_addr) = udp_echo_server();
+    let echo_parts: Vec<&str> = echo_addr.split(':').collect();
+    let echo_port: u16 = echo_parts[1].parse().unwrap();
+
+    let (_, uuid) = make_test_validator();
+    let listen = format!("127.0.0.1:{}", 44000 + (rand::random::<u16>() % 10000));
+    let uuid_str = uuid.to_string();
+    let _server = spawn_wrongsv_server(&listen, &uuid_str, "");
+    thread::sleep(Duration::from_millis(50));
+
+    let stream = vless_udp_connect(&listen, &uuid, "127.0.0.1", echo_port);
+    let mut stream = stream;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+
+    // 1-byte packet
+    {
+        let mut writer = LengthPacketWriter::new(&mut stream);
+        writer.write_packet(&[0xAB]).unwrap();
+        let mut reader = LengthPacketReader::new(&mut stream);
+        let resp = reader.read_packet().unwrap();
+        assert_eq!(resp, vec![0xAB]);
+    }
+
+    // 10000-byte packet (large, fragmented)
+    {
+        let payload = vec![0xCD; 10000];
+        let mut writer = LengthPacketWriter::new(&mut stream);
+        writer.write_packet(&payload).unwrap();
+        let mut reader = LengthPacketReader::new(&mut stream);
+        let resp = reader.read_packet().unwrap();
+        assert_eq!(resp.len(), 10000);
+        assert_eq!(resp, payload);
+    }
+}
