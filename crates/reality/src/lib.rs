@@ -14,8 +14,11 @@ mod tls;
 pub use auth::compute_cert_hmac;
 pub use cert::generate_reality_cert;
 pub use hello::ParsedClientHello;
-pub use tls::{BufferedStream, RealityTlsStream, accept_reality, complete_handshake};
+pub use tls::{
+    BufferedStream, RealityTlsStream, accept_reality, complete_handshake, spider_fallback,
+};
 
+use std::net::TcpStream;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -31,6 +34,29 @@ pub enum RealityError {
     CertError(String),
     #[error("TLS handshake error: {0}")]
     TlsHandshake(String),
+}
+
+/// Returned when `accept_reality` fails authentication.
+///
+/// Carries the original stream and buffered ClientHello bytes so the
+/// caller can forward them to a fallback destination (spider mode).
+#[derive(Debug)]
+pub struct RealityAcceptError {
+    pub error: RealityError,
+    pub stream: TcpStream,
+    pub buffered_data: Vec<u8>,
+}
+
+impl std::fmt::Display for RealityAcceptError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "REALITY accept failed: {}", self.error)
+    }
+}
+
+impl std::error::Error for RealityAcceptError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
 }
 
 /// Pre-generated Ed25519 certificate material shared across all connections.
@@ -59,21 +85,30 @@ pub struct RealityConfig {
     pub max_time_diff: u64,
     /// Pre-generated cert material (shared across connections)
     pub cert_material: Arc<RealityCertMaterial>,
+    /// Fallback destination for spider mode (e.g. "www.microsoft.com:443").
+    /// When set, unauthenticated connections are forwarded here instead of dropped.
+    pub dest: Option<String>,
+    /// Allowed server names for the real certificate (unused in current server-only impl).
+    #[allow(dead_code)]
+    pub server_names: Vec<String>,
 }
 
 impl RealityConfig {
-    /// Create a new config, generating the shared Ed25519 cert material.
     pub fn new(
         private_key: [u8; 32],
         short_ids: Vec<[u8; 8]>,
         max_time_diff: u64,
         cert_material: RealityCertMaterial,
+        dest: Option<String>,
+        server_names: Vec<String>,
     ) -> Self {
         RealityConfig {
             private_key,
             short_ids,
             max_time_diff,
             cert_material: Arc::new(cert_material),
+            dest,
+            server_names,
         }
     }
 }

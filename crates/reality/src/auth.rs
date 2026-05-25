@@ -218,12 +218,7 @@ mod tests {
             key_share: *client_ephemeral_pk.as_bytes(),
         };
 
-        let config = RealityConfig::new(
-            server_sk.to_bytes(),
-            vec![short_id],
-            300,
-            crate::cert::build_cert_material().unwrap(),
-        );
+        let config = test_config(server_sk.to_bytes(), vec![short_id], 300);
 
         let derived_auth_key = authenticate(&hello, &config).unwrap();
         assert_eq!(auth_key, derived_auth_key);
@@ -260,12 +255,7 @@ mod tests {
             key_share: *client_ephemeral_pk.as_bytes(),
         };
 
-        let config = RealityConfig::new(
-            server_sk.to_bytes(),
-            vec![*b"nope5678"],
-            300,
-            crate::cert::build_cert_material().unwrap(),
-        );
+        let config = test_config(server_sk.to_bytes(), vec![*b"nope5678"], 300);
 
         assert!(authenticate(&hello, &config).is_err());
     }
@@ -298,13 +288,23 @@ mod tests {
             key_share: *client_ephemeral_pk.as_bytes(),
         };
 
-        let config = RealityConfig::new(
-            server_sk.to_bytes(),
-            vec![short_id],
-            60,
-            crate::cert::build_cert_material().unwrap(),
-        );
+        let config = test_config(server_sk.to_bytes(), vec![short_id], 60);
 
         assert!(authenticate(&hello, &config).is_err());
+    }
+
+    fn test_config(
+        private_key: [u8; 32],
+        short_ids: Vec<[u8; 8]>,
+        max_time_diff: u64,
+    ) -> RealityConfig {
+        RealityConfig::new(
+            private_key,
+            short_ids,
+            max_time_diff,
+            crate::cert::build_cert_material().unwrap(),
+            None,
+            vec![],
+        )
     }
 }

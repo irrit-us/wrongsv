@@ -1366,3 +1366,84 @@ fn test_reality_wrong_short_id_rejected() {
         );
     }
 }
+
+#[test]
+fn test_reality_spider_fallback_forwards_to_dest() {
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
+
+    // Start an echo server that will receive the forwarded traffic
+    let echo_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let echo_addr = echo_listener.local_addr().unwrap();
+    let echo_dest = echo_addr.to_string();
+    let echo_handle = thread::spawn(move || {
+        let (mut conn, _) = echo_listener.accept().unwrap();
+        let mut buf = [0u8; 4096];
+        // Read what the spider forwards, echo it back
+        let n = conn.read(&mut buf).unwrap();
+        conn.write_all(&buf[..n]).unwrap();
+    });
+
+    // Reserve port for REALITY server
+    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server_addr = reserve.local_addr().unwrap();
+    let listen_str = server_addr.to_string();
+    drop(reserve);
+
+    let server_sk = StaticSecret::random_from_rng(rand::rngs::OsRng);
+    let server_pk = PublicKey::from(&server_sk);
+    let sk_hex: String = server_sk
+        .to_bytes()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect();
+    let user_uuid = Uuid::new_v4();
+    let allowed_short_id = *b"real5432";
+    let allowed_short_id_hex: String = allowed_short_id
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect();
+
+    // Build config with spider dest pointing to the echo server
+    let config_toml = format!(
+        r#"
+listen = "{}"
+
+[[users]]
+id = "{}"
+email = "test@reality.test"
+flow = "xtls-rprx-vision"
+
+[reality]
+private_key = "{}"
+short_ids = ["{}"]
+max_time_diff = 300
+dest = "{}"
+"#,
+        listen_str, user_uuid, sk_hex, allowed_short_id_hex, echo_dest
+    );
+    let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
+    let server = wrongsv_server::InboundServer::new(config).unwrap();
+    thread::spawn(move || {
+        server.run().ok();
+    });
+    thread::sleep(Duration::from_millis(100));
+
+    // Send invalid ClientHello (wrong short_id) — should trigger spider fallback
+    let wrong_short_id = *b"nope5678";
+    let hello = build_reality_hello(server_pk.as_bytes(), &wrong_short_id);
+
+    let mut conn = TcpStream::connect_timeout(&server_addr, Duration::from_secs(5)).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    conn.write_all(&hello).unwrap();
+
+    // Spider should have forwarded to the echo server.
+    // The echo server echoes back whatever it received.
+    let mut buf = [0u8; 4096];
+    let n = conn.read(&mut buf).unwrap();
+    assert!(n > 0, "spider should forward to dest and echo data back");
+
+    // Verify the echoed data matches what we sent (the ClientHello)
+    assert_eq!(&buf[..n], &hello[..n]);
+
+    echo_handle.join().ok();
+}

@@ -53,6 +53,8 @@ fn parse_reality_config(
         short_ids,
         rc.max_time_diff,
         cert_material,
+        rc.dest.clone(),
+        rc.server_names.clone(),
     ))
 }
 
@@ -285,7 +287,21 @@ fn handle_reality_connection(
     trace!("{peer} REALITY connection");
 
     // REALITY accept: parse ClientHello, authenticate, generate cert
-    let mut tls_stream = wrongsv_reality::accept_reality(stream, reality_config)?;
+    let mut tls_stream = match wrongsv_reality::accept_reality(stream, reality_config) {
+        Ok(tls) => tls,
+        Err(accept_err) => {
+            debug!("{peer} REALITY auth failed, spider fallback");
+            if let Some(ref dest) = reality_config.dest {
+                wrongsv_reality::spider_fallback(
+                    accept_err.stream,
+                    accept_err.buffered_data,
+                    dest,
+                )?;
+                return Ok(());
+            }
+            return Err(accept_err.error.into());
+        }
+    };
     wrongsv_reality::complete_handshake(&mut tls_stream)?;
     info!("{peer} REALITY handshake complete");
 

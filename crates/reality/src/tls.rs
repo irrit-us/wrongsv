@@ -4,15 +4,21 @@
 //! processing. We buffer the initial bytes, parse the ClientHello for
 //! REALITY auth, then feed the buffered bytes into rustls via a
 //! `BufferedStream` wrapper so rustls sees the complete byte stream.
+//!
+//! When auth fails and a fallback destination is configured, the buffered
+//! ClientHello is forwarded to the real target (spider mode) so the server
+//! appears to be a normal HTTPS server to probes.
 
 use std::io::{Read, Result as IoResult, Write};
-use std::net::TcpStream;
+use std::net::{Shutdown, TcpStream};
 use std::sync::Arc;
+use std::time::Duration;
 
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 use rustls::{ServerConfig, ServerConnection};
 
+use crate::RealityAcceptError;
 use crate::RealityConfig;
 use crate::RealityError;
 use crate::auth::authenticate;
@@ -85,6 +91,12 @@ impl<S: Read> BufferedStream<S> {
             pos: 0,
         }
     }
+
+    /// Consume self, returning the inner stream and any unread buffered bytes.
+    pub fn into_inner(self) -> (S, Vec<u8>) {
+        let remaining = self.buffer[self.pos..].to_vec();
+        (self.inner, remaining)
+    }
 }
 
 impl<S: Read> Read for BufferedStream<S> {
@@ -131,44 +143,102 @@ impl ResolvesServerCert for RealityCertResolver {
 /// 2. Parses it, extracts REALITY auth data
 /// 3. Authenticates the client
 /// 4. Generates a dynamic certificate
-/// 5. Completes the TLS 1.3 handshake
+/// 5. Builds a `RealityTlsStream` ready for `complete_handshake`
 ///
-/// Returns `Ok(RealityTlsStream)` on success, or `Err(RealityError)` if
-/// auth or handshake fails.
+/// On auth failure, returns `Err(RealityAcceptError)` containing the
+/// original stream and buffered ClientHello bytes for spider fallback.
 pub fn accept_reality(
     mut stream: TcpStream,
     config: &RealityConfig,
-) -> Result<RealityTlsStream, RealityError> {
-    // Read initial bytes (ClientHello typically 200-600 bytes, but could be larger
-    // with uTLS fingerprints). Read up to 4096 to be safe.
+) -> Result<RealityTlsStream, RealityAcceptError> {
+    // Read initial bytes (ClientHello typically 200-600 bytes, could be larger
+    // with uTLS fingerprints). Read up to 4096.
     let mut buf = vec![0u8; 4096];
-    let n = stream.read(&mut buf)?;
+    let n = match stream.read(&mut buf) {
+        Ok(n) => n,
+        Err(e) => {
+            return Err(RealityAcceptError {
+                error: e.into(),
+                stream,
+                buffered_data: Vec::new(),
+            });
+        }
+    };
     buf.truncate(n);
 
     if n < 5 {
-        return Err(RealityError::TlsParse("connection too short".into()));
+        return Err(RealityAcceptError {
+            error: RealityError::TlsParse("connection too short".into()),
+            stream,
+            buffered_data: buf,
+        });
     }
 
     // Parse ClientHello and run REALITY auth
-    let parsed = parse_client_hello(&buf)?;
-    let auth_key = authenticate(&parsed, config)?;
+    let parsed = match parse_client_hello(&buf) {
+        Ok(p) => p,
+        Err(e) => {
+            return Err(RealityAcceptError {
+                error: e,
+                stream,
+                buffered_data: buf,
+            });
+        }
+    };
+
+    let auth_key = match authenticate(&parsed, config) {
+        Ok(k) => k,
+        Err(e) => {
+            return Err(RealityAcceptError {
+                error: e,
+                stream,
+                buffered_data: buf,
+            });
+        }
+    };
 
     // Generate dynamic certificate: clone template, patch signature with HMAC
-    let certified_key = generate_reality_cert(&auth_key, &config.cert_material)?;
+    let certified_key = match generate_reality_cert(&auth_key, &config.cert_material) {
+        Ok(ck) => ck,
+        Err(e) => {
+            return Err(RealityAcceptError {
+                error: e,
+                stream,
+                buffered_data: buf,
+            });
+        }
+    };
 
     // Build rustls config with explicit crypto provider
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-    let rustls_config = ServerConfig::builder_with_provider(provider)
+    let rustls_config = match ServerConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
-        .map_err(|e| RealityError::TlsHandshake(format!("protocol versions: {e}")))?
-        .with_no_client_auth()
-        .with_cert_resolver(Arc::new(RealityCertResolver {
-            cert_key: Arc::new(certified_key),
-        }));
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return Err(RealityAcceptError {
+                error: RealityError::TlsHandshake(format!("protocol versions: {e}")),
+                stream,
+                buffered_data: buf,
+            });
+        }
+    }
+    .with_no_client_auth()
+    .with_cert_resolver(Arc::new(RealityCertResolver {
+        cert_key: Arc::new(certified_key),
+    }));
 
     // Feed buffered data + rest of stream through rustls
-    let conn = ServerConnection::new(Arc::new(rustls_config))
-        .map_err(|e| RealityError::TlsHandshake(format!("create connection: {e}")))?;
+    let conn = match ServerConnection::new(Arc::new(rustls_config)) {
+        Ok(c) => c,
+        Err(e) => {
+            return Err(RealityAcceptError {
+                error: RealityError::TlsHandshake(format!("create connection: {e}")),
+                stream,
+                buffered_data: buf,
+            });
+        }
+    };
 
     let buffered = BufferedStream::new(stream, buf);
 
@@ -191,5 +261,62 @@ pub fn complete_handshake(tls: &mut RealityTlsStream) -> Result<(), RealityError
             }
         }
     }
+    Ok(())
+}
+
+/// Forward an unauthenticated connection to a real target (spider mode).
+///
+/// Replays the buffered ClientHello bytes to the destination, then relays
+/// bidirectionally between the client and the target. This makes the server
+/// appear to be a normal HTTPS server to probes that fail REALITY auth.
+pub fn spider_fallback(
+    mut client: TcpStream,
+    buffered_data: Vec<u8>,
+    dest: &str,
+) -> Result<(), RealityError> {
+    let mut target = TcpStream::connect(dest)?;
+    target.set_read_timeout(Some(Duration::from_secs(300)))?;
+
+    // Replay the buffered ClientHello to the target
+    target.write_all(&buffered_data)?;
+
+    // Bidirectional relay — two threads, mirrors relay_raw in handler
+    let mut c2 = client.try_clone()?;
+    let mut t2 = target.try_clone()?;
+
+    let t1 = std::thread::spawn(move || {
+        let mut buf = [0u8; 8192];
+        loop {
+            match c2.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if t2.write_all(&buf[..n]).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = t2.shutdown(Shutdown::Write);
+    });
+
+    let t2 = std::thread::spawn(move || {
+        let mut buf = [0u8; 8192];
+        loop {
+            match target.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if client.write_all(&buf[..n]).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = client.shutdown(Shutdown::Write);
+    });
+
+    t1.join().ok();
+    t2.join().ok();
     Ok(())
 }
