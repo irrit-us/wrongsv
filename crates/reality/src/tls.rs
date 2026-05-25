@@ -92,6 +92,11 @@ impl<S: Read> BufferedStream<S> {
         }
     }
 
+    /// Borrow the inner stream mutably.
+    pub fn get_mut(&mut self) -> &mut S {
+        &mut self.inner
+    }
+
     /// Consume self, returning the inner stream and any unread buffered bytes.
     pub fn into_inner(self) -> (S, Vec<u8>) {
         let remaining = self.buffer[self.pos..].to_vec();
@@ -125,6 +130,23 @@ where
     }
 }
 
+/// Debug key logger — dumps TLS 1.3 secrets via tracing for debugging.
+#[derive(Debug)]
+struct DebugKeyLog;
+
+impl rustls::KeyLog for DebugKeyLog {
+    fn log(&self, label: &str, client_random: &[u8], secret: &[u8]) {
+        let cr_hex = client_random.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let secret_hex = secret.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        tracing::info!("KEYLOG {label} {cr_hex} {secret_hex}");
+        if let Ok(path) = std::env::var("WRONGSV_KEYLOG_FILE") {
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                let _ = writeln!(f, "KEYLOG {label} {cr_hex} {secret_hex}");
+            }
+        }
+    }
+}
+
 /// Resolves a pre-computed `CertifiedKey` for rustls.
 #[derive(Debug)]
 struct RealityCertResolver {
@@ -132,7 +154,18 @@ struct RealityCertResolver {
 }
 
 impl ResolvesServerCert for RealityCertResolver {
-    fn resolve(&self, _client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+    fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        // rustls 0.23 ClientHello exposes: server_name, signature_schemes,
+        // alpn, cipher_suites, named_groups, cert_types.
+        if let Some(sni) = client_hello.server_name() {
+            tracing::info!("RUSTLS_CH SNI={sni}");
+        }
+        tracing::info!(
+            "RUSTLS_CH cipher_suites={:?} sig_schemes={:?} named_groups={:?}",
+            client_hello.cipher_suites(),
+            client_hello.signature_schemes(),
+            client_hello.named_groups(),
+        );
         Some(Arc::clone(&self.cert_key))
     }
 }
@@ -186,6 +219,18 @@ pub fn accept_reality(
         }
     };
 
+    // Debug: log what we parsed vs what we're buffering for rustls
+    tracing::info!(
+        "REALITY parsed: client_random={} key_share={} sid_len={}",
+        parsed.random.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+        parsed.key_share.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+        parsed.session_id.len(),
+    );
+    // Log first 100 bytes of raw_body (the ClientHello handshake message we feed to rustls)
+    let body_preview: String = parsed.raw_body.iter().take(80)
+        .map(|b| format!("{b:02x}")).collect::<Vec<_>>().join("");
+    tracing::info!("REALITY raw_body[..80]={body_preview}");
+
     let auth_key = match authenticate(&parsed, config) {
         Ok(k) => k,
         Err(e) => {
@@ -211,7 +256,7 @@ pub fn accept_reality(
 
     // Build rustls config with explicit crypto provider
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-    let rustls_config = match ServerConfig::builder_with_provider(provider)
+    let mut rustls_config = match ServerConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
     {
         Ok(c) => c,
@@ -227,6 +272,7 @@ pub fn accept_reality(
     .with_cert_resolver(Arc::new(RealityCertResolver {
         cert_key: Arc::new(certified_key),
     }));
+    rustls_config.key_log = Arc::new(DebugKeyLog);
 
     // Feed buffered data + rest of stream through rustls
     let conn = match ServerConnection::new(Arc::new(rustls_config)) {

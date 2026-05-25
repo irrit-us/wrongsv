@@ -87,6 +87,8 @@ sha2.workspace = true
 rustls = { version = "0.23", default-features = false, features = ["tls12", "std", "aws_lc_rs"] }
 pem = "3"
 hex = "0.4"
+webpki-roots = "1.0"
+base64 = "0.22"
 
 [[bench]]
 name = "throughput"

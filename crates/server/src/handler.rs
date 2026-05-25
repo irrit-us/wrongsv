@@ -1,5 +1,5 @@
 use std::io::{Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream, UdpSocket};
+use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -77,6 +77,15 @@ impl InboundServer {
             Some(rc) => Some(parse_reality_config(rc)?),
             None => None,
         };
+        if let Some(ref rc) = reality_config {
+            let rpk_hex: String = rc
+                .cert_material
+                .raw_pubkey
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            info!("REALITY raw_pubkey (for client cert verification): {rpk_hex}");
+        }
         let validator = Arc::new(MemoryValidator::new());
         for user in &config.users {
             let uuid = Uuid::parse_string(&user.id)?;
@@ -283,7 +292,11 @@ fn handle_connection(
     // Connect to target
     let target_addr = format!("{}:{}", request.address, request.port);
     debug!("{peer} connecting to target {target_addr}");
-    let target = TcpStream::connect_timeout(&target_addr.parse()?, Duration::from_secs(10))?;
+    let addr = target_addr
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| format!("DNS resolution failed for {target_addr}"))?;
+    let target = TcpStream::connect_timeout(&addr, Duration::from_secs(10))?;
     target.set_read_timeout(Some(Duration::from_secs(300)))?;
     trace!("{peer} connected to target");
 
@@ -333,9 +346,9 @@ fn handle_reality_connection(
     // Read VLESS header from TLS stream
     let mut first = vec![0u8; 8192];
     let (read_conn, write_conn) = tls_stream.get_mut();
-    // Read initial bytes — try TLS first
     loop {
-        match read_conn.reader().read(&mut first) {
+        let result = read_conn.reader().read(&mut first);
+        match result {
             Ok(0) => {
                 let n = read_conn.read_tls(write_conn)?;
                 if n == 0 {
@@ -350,7 +363,13 @@ fn handle_reality_connection(
                 break;
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                return Err("REALITY: no data after handshake".into());
+                let n = read_conn.read_tls(write_conn)?;
+                if n == 0 {
+                    return Err("connection closed before VLESS header".into());
+                }
+                read_conn
+                    .process_new_packets()
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
             }
             Err(e) => return Err(e.into()),
         }
@@ -451,15 +470,21 @@ fn handle_reality_connection(
     // Connect to target
     let target_addr = format!("{}:{}", request.address, request.port);
     debug!("{peer} connecting to target {target_addr}");
-    let target = TcpStream::connect_timeout(&target_addr.parse()?, Duration::from_secs(10))?;
+    let addr = target_addr
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| format!("DNS resolution failed for {target_addr}"))?;
+    let target = TcpStream::connect_timeout(&addr, Duration::from_secs(10))?;
     target.set_read_timeout(Some(Duration::from_secs(300)))?;
     trace!("{peer} connected to target");
 
     if use_vision {
         debug!("{peer} REALITY+Vision relay not yet wired, falling through");
     }
-    // Relay: client is TLS, target is raw TCP
-    relay_reality(tls_stream, target)?;
+    // Relay: client is TLS, target is raw TCP.
+    // Pass remaining_body — bytes after the VLESS header that were already
+    // decrypted from the same TLS record (e.g. a pipelined HTTP request).
+    relay_reality(tls_stream, target, remaining_body)?;
     debug!("{peer} REALITY relay finished");
 
     Ok(())
@@ -468,44 +493,51 @@ fn handle_reality_connection(
 fn relay_reality(
     mut tls: wrongsv_reality::RealityTlsStream,
     mut target: TcpStream,
+    initial_data: Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Simple sequential relay: read from client → write to target,
-    // then read from target → write to client. Repeat.
     let mut buf = [0u8; 8192];
     target.set_read_timeout(Some(Duration::from_secs(1)))?;
+
+    if !initial_data.is_empty() {
+        target.write_all(&initial_data)?;
+    }
+
     let (conn, stream) = tls.get_mut();
+    stream.get_mut().set_read_timeout(Some(Duration::from_secs(1)))?;
+
     loop {
-        // Client → Target: try to read plaintext from TLS
-        match conn.reader().read(&mut buf) {
+        // Client → Target: read TLS records, then drain plaintext
+        match conn.read_tls(stream) {
             Ok(0) => {
-                // No decrypted data — read more TLS records
-                match conn.read_tls(stream) {
-                    Ok(0) => break, // EOF
-                    Ok(_) => {
-                        conn.process_new_packets()
-                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-                        continue;
-                    }
-                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        // No data from client, check target
-                    }
-                    Err(e) => return Err(e.into()),
-                }
+                debug!("relay_reality: client EOF");
+                break;
             }
-            Ok(n) => {
-                target.write_all(&buf[..n])?;
-                continue;
+            Ok(_) => {
+                conn.process_new_packets()
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                loop {
+                    match conn.reader().read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            target.write_all(&buf[..n])?;
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(e) => return Err(e.into()),
+                    }
+                }
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(e) => return Err(e.into()),
         }
 
-        // Target → Client: try to read from target
+        // Target → Client: read from target, encrypt and send to client
         match target.read(&mut buf) {
-            Ok(0) => break,
+            Ok(0) => {
+                debug!("relay_reality: target EOF");
+                break;
+            }
             Ok(n) => {
                 conn.writer().write_all(&buf[..n])?;
-                // Flush TLS
                 while conn.wants_write() {
                     conn.write_tls(stream)?;
                 }
@@ -515,10 +547,16 @@ fn relay_reality(
                     e.kind(),
                     std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                 ) => {}
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(e) => return Err(e.into()),
         }
     }
+
+    conn.send_close_notify();
+    while conn.wants_write() {
+        conn.write_tls(stream)?;
+    }
+    stream.get_mut().shutdown(std::net::Shutdown::Write)?;
+    debug!("relay_reality: finished");
     Ok(())
 }
 
