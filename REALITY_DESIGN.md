@@ -54,7 +54,7 @@ dest = "www.microsoft.com:443"        # optional spider fallback target
 
 ## Testing
 
-- **Unit tests** in `crates/reality/src/auth.rs`: auth roundtrip, wrong short_id, expired timestamp
-- **Cross-validation tests** against Go-generated test vectors: HKDF, AES-GCM, HMAC, cert generation
+- **Unit tests** in `crates/reality/src/`: auth roundtrip (3), cert generation (3), ClientHello parsing (4) — 10 total
+- **Cross-validation tests** (6): HKDF derivation, session ID encrypt/decrypt, cert HMAC, cert generation, full auth flow — validated against Go-generated test vectors
+- **33 REALITY-specific integration tests**: config parsing (5), basic accept/reject (2), short-id allow-listing (3), timestamp validation (2), spider fallback (3), malformed/rejected inputs (7), TLS 1.2, large ClientHello, missing key share, wrong key share group, 50 concurrent connections, mixed auth, large payload tunnel, rapid connect/disconnect
 - **Go client E2E test**: black-box handshake verification against Rust server
-- **18 correctness/stress tests**: short_id allow-listing, timestamp validation, malformed inputs, TLS 1.2, large ClientHello, missing extensions, wrong key share, spider forwarding, 50 concurrent connections, mixed auth, large payload, rapid connect/disconnect
