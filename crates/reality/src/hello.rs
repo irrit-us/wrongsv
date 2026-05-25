@@ -99,6 +99,10 @@ pub fn parse_client_hello(buf: &[u8]) -> Result<ParsedClientHello, RealityError>
     let mut session_id = [0u8; 32];
     session_id.copy_from_slice(&body[39..39 + 32]);
 
+    // Need at least 2 bytes for cipher_suites length + 2 for compression
+    if body.len() < 39 + sid_len + 4 {
+        return Err(RealityError::TlsParse("cipher_suites truncated".into()));
+    }
     // Scan extensions for key_share (0x0033)
     let extensions_start = 39 + sid_len // after session_id
         + 2 // cipher_suites length
@@ -284,5 +288,37 @@ mod tests {
         // session_id_len is at record[5+4+2+32] = record[43]
         record[43] = 16; // change from 32 to 16
         assert!(parse_client_hello(&record).is_err());
+    }
+
+    #[test]
+    fn test_parse_rejects_truncated_cipher_suites() {
+        // Build a minimal TLS record whose body ends right after the session_id
+        // (no cipher_suites, compression, or extensions).
+        let mut body = Vec::new();
+        body.push(0x01); // ClientHello
+        // hs_len = version(2) + random(32) + sid_len(1) + sid(32) = 67
+        let hs_len: u32 = 2 + 32 + 1 + 32;
+        body.push((hs_len >> 16) as u8);
+        body.push((hs_len >> 8) as u8);
+        body.push(hs_len as u8);
+        body.extend_from_slice(&[0x03, 0x03]); // version
+        body.extend_from_slice(&[0xAAu8; 32]); // random
+        body.push(32); // session_id_len
+        body.extend_from_slice(&[0xBBu8; 32]); // session_id
+        // body is 71 bytes (4 header + 2 ver + 32 random + 1 sid_len + 32 sid).
+        // No cipher_suites, compression, or extensions — parser should error.
+
+        let mut record = Vec::new();
+        record.push(0x16); // handshake
+        record.extend_from_slice(&[0x03, 0x01]); // TLS 1.0 record
+        record.extend_from_slice(&(body.len() as u16).to_be_bytes());
+        record.extend_from_slice(&body);
+
+        let result = parse_client_hello(&record);
+        assert!(result.is_err());
+        assert!(
+            format!("{}", result.unwrap_err()).contains("cipher_suites truncated"),
+            "expected 'cipher_suites truncated' error"
+        );
     }
 }

@@ -118,9 +118,15 @@ Runs 480 connections across 3 rounds and monitors RSS for memory leaks.
 - **Traffic analysis resistance**: XTLS Vision padding eliminates length-based fingerprinting
 - **No pre-shared keys required**: Kyber key exchange establishes session keys without prior key distribution
 
+## Verified Interop
+
+- **xray-core 26.5.9+** — REALITY handshake completes with `uConn.Verified: true`. Ed25519 cert verification succeeds even with Chrome fingerprint (no Ed25519 in `signature_algorithms`).
+- **Spider fallback** — unauthenticated probes are transparently forwarded to the configured `dest` target. Confirmed with `curl` -> `www.microsoft.com:443` (Microsoft's real TLS 1.3 cert returned).
+- **Concurrent connections** — 6+ simultaneous REALITY connections all authenticate and relay correctly.
+
 ## Known Limitations
 
-- **REALITY + Vision relay**: The XTLS Vision flow is not yet wired for REALITY TLS connections. REALITY connections fall through to raw TCP relay, which handles HTTP and plain TCP correctly but may have issues with bidirectional TLS (HTTPS proxying). Standard VLESS + Vision (non-REALITY) works correctly.
+- **REALITY + Vision relay**: The XTLS Vision flow is not yet wired for REALITY TLS connections. REALITY connections fall through to raw TCP relay. Small payloads that fit in a single TLS record work correctly, but larger payloads split across multiple records may be truncated when the target closes early. Standard VLESS + Vision (non-REALITY) handles all sizes correctly.
 
 ## License
 
