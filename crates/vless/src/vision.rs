@@ -158,9 +158,11 @@ pub fn xtls_padding(
     if !buf.is_empty() {
         frame.extend_from_slice(buf);
     }
-    let pad_start = frame.len();
-    frame.resize(pad_start + padding_len as usize, 0);
-    rng.fill(&mut frame[pad_start..]);
+    if padding_len > 0 {
+        let pad_start = frame.len();
+        frame.resize(pad_start + padding_len as usize, 0);
+        rng.fill(&mut frame[pad_start..]);
+    }
 
     frame
 }

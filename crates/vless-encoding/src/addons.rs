@@ -40,9 +40,11 @@ pub fn decode_header_addons<R: std::io::Read>(reader: &mut R) -> Result<Addons, 
     if length == 0 {
         return Ok(Addons::default());
     }
-    let mut proto_bytes = vec![0u8; length];
-    reader.read_exact(&mut proto_bytes)?;
-    let addons = Addons::decode(&proto_bytes[..])?;
+    // Stack buffer: length prefix is 1 byte (max 255), so 256 bytes on stack
+    // avoids a heap allocation on every non-empty addons decode.
+    let mut proto_bytes = [0u8; 256];
+    reader.read_exact(&mut proto_bytes[..length])?;
+    let addons = Addons::decode(&proto_bytes[..length])?;
     Ok(addons)
 }
 
