@@ -80,7 +80,7 @@ cargo run --release -- --write-client-config client.json --server-host YOUR_IP -
 
 ```bash
 cargo test                          # all unit + integration tests
-cargo test --test integration       # integration tests only (50 tests, incl. 114 randomized scenarios)
+cargo test --test integration       # integration tests only (62 tests, incl. 114 randomized scenarios)
 cargo bench                         # criterion benchmarks
 ```
 
@@ -101,6 +101,7 @@ Runs 480 connections across 3 rounds and monitors RSS for memory leaks.
 | `users[].id` | string | UUID in hex format |
 | `users[].email` | string | Optional email label |
 | `users[].flow` | string | `""` (raw) or `"xtls-rprx-vision"` |
+| `users[].udp` | bool | Enable UDP-over-TCP relay (default: `true`) |
 | `users[].encryption` | string | Per-user encryption key (not yet wired) |
 | `decryption` | string | Server-wide decryption key (not yet wired) |
 | `flow` | string | Default flow for all users |

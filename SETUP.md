@@ -117,6 +117,7 @@ id = "uuid-here"
 email = "user@example.com"     # optional
 flow = ""                      # optional, inherits from global if empty
 encryption = ""                # optional, per-user encryption key (not yet wired)
+udp = true                     # optional, enable UDP-over-TCP relay (default: true)
 ```
 
 ## Running the Server
@@ -167,7 +168,7 @@ cargo test -p wrongsv-kyber
 cargo test -p wrongsv-vless
 cargo test -p wrongsv-server
 
-# Integration tests (spawn real server + echo target, 50 tests)
+# Integration tests (spawn real server + echo target, 62 tests)
 cargo test --test integration
 
 # With output
@@ -200,7 +201,7 @@ wrongsv/
 ├── examples/
 │   └── stress.rs           # memory stress test (RSS monitoring)
 ├── tests/
-│   └── integration.rs      # end-to-end integration tests (50 tests)
+│   └── integration.rs      # end-to-end integration tests (62 tests)
 └── crates/
     ├── uuid/               # UUID v4/v5, ProcessUUID
     ├── net-types/          # Address, Port, AddressFamily
