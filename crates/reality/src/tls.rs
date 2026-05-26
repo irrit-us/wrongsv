@@ -203,6 +203,11 @@ pub fn accept_reality(
     mut stream: TcpStream,
     config: &RealityConfig,
 ) -> Result<RealityTlsStream, RealityAcceptError> {
+    // The listener uses set_nonblocking(true) which propagates to accepted
+    // sockets on Linux. Switch to blocking so read() waits for the full
+    // ClientHello instead of returning a partial frame.
+    let _ = stream.set_nonblocking(false);
+
     // Read initial bytes (ClientHello typically 200-600 bytes, could be larger
     // with uTLS fingerprints). Read up to 4096.
     let mut buf = vec![0u8; 4096];
