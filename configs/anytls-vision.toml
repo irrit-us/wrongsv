@@ -1,0 +1,10 @@
+# AnyTLS + XTLS Vision (TLS disguise with password auth)
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+email = "user@example.com"
+flow = "xtls-rprx-vision"
+
+[anytls]
+password = "your-secure-password"

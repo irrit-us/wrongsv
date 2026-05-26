@@ -1,0 +1,9 @@
+# VLESS + XTLS Vision + Kyber post-quantum key exchange
+listen = "0.0.0.0:443"
+
+kyber_secret_key = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+email = "user@example.com"
+flow = "xtls-rprx-vision"

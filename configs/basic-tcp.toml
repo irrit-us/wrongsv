@@ -1,0 +1,7 @@
+# Basic raw TCP VLESS relay (no flow, no TLS)
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+email = "user@example.com"
+flow = ""
