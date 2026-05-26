@@ -12,9 +12,9 @@ img = Image.new("RGBA", (W, H), WHITE + (255,))
 draw = ImageDraw.Draw(img)
 
 # ── Fonts ─────────────────────────────────────────────────────────────────────
-# Title: TeX Gyre Pagella Bold — closest free alternative to Friz Quadrata
+# Title: Cinzel Bold
 TITLE_FONT = ImageFont.truetype(
-    "/usr/share/fonts/tex-gyre/texgyrepagella-bold.otf", 46
+    os.path.expanduser("~/.local/share/fonts/Cinzel-Bold.ttf"), 46
 )
 
 mono_path = None
@@ -48,8 +48,8 @@ kb = draw.textbbox((0, 0), keywords, font=kw_font)
 kw_w = kb[2] - kb[0]
 
 # ── Positions ─────────────────────────────────────────────────────────────────
-# Pagella Bold 46px: bbox=(0, 12, 182, 47), extent 47
-title_y = 14       # visual: 14+12=26 to 14+47=61
+# Cinzel Bold 46px: bbox=(-2, 16, 229, 46), extent 46
+title_y = 14       # visual: 14+16=30 to 14+46=60
 sub_y = 82         # visual: 82..94   gap from title=21
 kw_y = 113         # visual: 113..124  gap from sub=19
 fl_y = 167         # label at 145     gap from kw=21
