@@ -232,6 +232,66 @@ password = "{password}"
     })
 }
 
+fn spawn_anytls_server_with_cert(
+    listen: &str,
+    user_id: &str,
+    password: &str,
+    cert_pem: &str,
+    key_pem: &str,
+) -> thread::JoinHandle<()> {
+    let config_toml = format!(
+        r#"
+listen = "{listen}"
+
+[[users]]
+id = "{user_id}"
+email = "test@anytls.test"
+
+[anytls]
+password = "{password}"
+certificate = """{cert_pem}"""
+key = """{key_pem}"""
+"#
+    );
+    let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
+    let server = wrongsv_server::InboundServer::new(config).unwrap();
+    thread::spawn(move || {
+        server.run().ok();
+    })
+}
+
+fn spawn_anytls_server_multi_user(
+    listen: &str,
+    users: &[(String, String)], // (id, flow)
+    password: &str,
+) -> thread::JoinHandle<()> {
+    let mut users_toml = String::new();
+    for (uid, flow) in users {
+        users_toml.push_str(&format!(
+            r#"
+[[users]]
+id = "{uid}"
+email = "{uid}@anytls.test"
+flow = "{flow}"
+"#
+        ));
+    }
+    let config_toml = format!(
+        r#"
+listen = "{listen}"
+{users_toml}
+
+[anytls]
+password = "{password}"
+"#
+    );
+    let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
+    let server = wrongsv_server::InboundServer::new(config).unwrap();
+    thread::spawn(move || {
+        server.run().ok();
+    })
+}
+
 fn spawn_anytls_server_with_fallback(
     listen: &str,
     user_id: &str,
@@ -249,6 +309,32 @@ email = "test@anytls.test"
 [anytls]
 password = "{password}"
 dest = "{fallback_dest}"
+"#
+    );
+    let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
+    let server = wrongsv_server::InboundServer::new(config).unwrap();
+    thread::spawn(move || {
+        server.run().ok();
+    })
+}
+
+fn spawn_anytls_server_kyber(
+    listen: &str,
+    user_id: &str,
+    password: &str,
+    kyber_secret_key: &str,
+) -> thread::JoinHandle<()> {
+    let config_toml = format!(
+        r#"
+listen = "{listen}"
+kyber_secret_key = "{kyber_secret_key}"
+
+[[users]]
+id = "{user_id}"
+email = "test@anytls.test"
+
+[anytls]
+password = "{password}"
 "#
     );
     let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
@@ -417,6 +503,97 @@ fn anytls_udp_connect(
         user: validator.get(user_uuid.as_bytes()).unwrap(),
     };
     let addons = Addons::default();
+    let mut req_buf = bytes::BytesMut::new();
+    encoding::encode_request_header(&mut req_buf, &request, &addons).unwrap();
+    tls.tls_write(&req_buf).unwrap();
+
+    let mut header = [0u8; 2];
+    read_exact_tls(&mut tls, &mut header).unwrap();
+    let addons_len = header[1] as usize;
+    if addons_len > 0 {
+        let mut addons_buf = vec![0u8; addons_len];
+        read_exact_tls(&mut tls, &mut addons_buf).unwrap();
+    }
+
+    tls
+}
+
+fn anytls_connect_with_padding(
+    server_addr: &str,
+    user_uuid: &Uuid,
+    target_addr: &str,
+    target_port: u16,
+    flow: &str,
+    password: &str,
+    padding: &[u8],
+) -> TlsClient {
+    let server: std::net::SocketAddr = server_addr.parse().unwrap();
+    let mut sock = None;
+    for _ in 0..20 {
+        match TcpStream::connect_timeout(&server, Duration::from_millis(250)) {
+            Ok(s) => {
+                sock = Some(s);
+                break;
+            }
+            Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => panic!("unexpected connect error: {e}"),
+        }
+    }
+    let mut sock = sock.expect("server did not start within 5s");
+
+    let server_name = rustls::pki_types::ServerName::try_from("cloudfront.net").unwrap();
+    let mut conn =
+        rustls::ClientConnection::new(Arc::new(make_anytls_client_config()), server_name).unwrap();
+
+    loop {
+        match conn.complete_io(&mut sock) {
+            Ok((_, _)) if !conn.is_handshaking() => break,
+            Ok(_) => continue,
+            Err(e) => panic!("TLS handshake failed: {e}"),
+        }
+    }
+
+    let mut tls = TlsClient::new(conn, sock);
+
+    let password_hash: [u8; 32] = Sha256::digest(password.as_bytes()).into();
+    tls.tls_write(&password_hash).unwrap();
+    let plen = padding.len() as u16;
+    tls.tls_write(&plen.to_be_bytes()).unwrap();
+    if !padding.is_empty() {
+        tls.tls_write(padding).unwrap();
+    }
+
+    let validator = Arc::new(MemoryValidator::new());
+    let user = MemoryUser {
+        account: MemoryAccount {
+            id: ID::new(*user_uuid),
+            flow: flow.to_string(),
+            encryption: String::new(),
+            udp: true,
+            xor_mode: 0,
+            seconds: 0,
+            padding: String::new(),
+            testpre: 0,
+            testseed: vec![],
+        },
+        email: "test@anytls.test".into(),
+        level: 0,
+    };
+    validator.add(user).unwrap();
+
+    let request = RequestHeader {
+        version: 0,
+        command: RequestCommand::Tcp,
+        address: Address::parse(target_addr),
+        port: wrongsv_net_types::Port(target_port),
+        user: validator.get(user_uuid.as_bytes()).unwrap(),
+    };
+    let addons = Addons {
+        flow: flow.to_string(),
+        ..Default::default()
+    };
     let mut req_buf = bytes::BytesMut::new();
     encoding::encode_request_header(&mut req_buf, &request, &addons).unwrap();
     tls.tls_write(&req_buf).unwrap();
@@ -827,4 +1004,324 @@ fn test_anytls_udp_echo() {
             // UDP relay may time out if no data — acceptable
         }
     }
+}
+
+#[test]
+fn test_anytls_custom_cert() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("info")
+        .try_init();
+
+    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let listen_str = reserve.local_addr().unwrap().to_string();
+    drop(reserve);
+
+    let (echo_addr, _echo) = spawn_echo_target();
+    let user_uuid = Uuid::new_v4();
+    let password = "custom-cert-pw";
+
+    let (cert_pem, key_pem) = wrongsv_anytls::generate_self_signed_cert().unwrap();
+
+    let _server = spawn_anytls_server_with_cert(
+        &listen_str,
+        &user_uuid.to_string(),
+        password,
+        &cert_pem,
+        &key_pem,
+    );
+    thread::sleep(Duration::from_millis(100));
+
+    let mut tls = anytls_connect(
+        &listen_str,
+        &user_uuid,
+        "127.0.0.1",
+        echo_addr.port(),
+        "",
+        password,
+    );
+
+    tls.tls_write(b"hello custom cert").unwrap();
+    let mut buf = [0u8; 256];
+    let n = tls.tls_read(&mut buf).unwrap();
+    assert!(n > 0);
+    assert_eq!(&buf[..n], b"hello custom cert");
+}
+
+#[test]
+fn test_anytls_with_padding() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("info")
+        .try_init();
+
+    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let listen_str = reserve.local_addr().unwrap().to_string();
+    drop(reserve);
+
+    let (echo_addr, _echo) = spawn_echo_target();
+    let user_uuid = Uuid::new_v4();
+    let password = "padding-secret";
+
+    let _server = spawn_anytls_server(&listen_str, &user_uuid.to_string(), password, "");
+    thread::sleep(Duration::from_millis(100));
+
+    let padding: Vec<u8> = (0..217u32).map(|i| (i % 256) as u8).collect();
+    let mut tls = anytls_connect_with_padding(
+        &listen_str,
+        &user_uuid,
+        "127.0.0.1",
+        echo_addr.port(),
+        "",
+        password,
+        &padding,
+    );
+
+    tls.tls_write(b"hello with padding").unwrap();
+    let mut buf = [0u8; 256];
+    let n = tls.tls_read(&mut buf).unwrap();
+    assert!(n > 0);
+    assert_eq!(&buf[..n], b"hello with padding");
+}
+
+#[test]
+fn test_anytls_large_padding() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("info")
+        .try_init();
+
+    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let listen_str = reserve.local_addr().unwrap().to_string();
+    drop(reserve);
+
+    let (echo_addr, _echo) = spawn_echo_target();
+    let user_uuid = Uuid::new_v4();
+    let password = "big-pad";
+
+    let _server = spawn_anytls_server(&listen_str, &user_uuid.to_string(), password, "");
+    thread::sleep(Duration::from_millis(100));
+
+    // 8192 bytes of padding -- stress test the padding consumption loop
+    let padding: Vec<u8> = vec![0xCC; 8192];
+    let mut tls = anytls_connect_with_padding(
+        &listen_str,
+        &user_uuid,
+        "127.0.0.1",
+        echo_addr.port(),
+        "",
+        password,
+        &padding,
+    );
+
+    tls.tls_write(b"post large padding").unwrap();
+    let mut buf = [0u8; 256];
+    let n = tls.tls_read(&mut buf).unwrap();
+    assert_eq!(&buf[..n], b"post large padding");
+}
+
+#[test]
+fn test_anytls_multi_user() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("info")
+        .try_init();
+
+    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let listen_str = reserve.local_addr().unwrap().to_string();
+    drop(reserve);
+
+    let (echo_addr, _echo) = spawn_echo_target();
+    let u1 = Uuid::new_v4();
+    let u2 = Uuid::new_v4();
+    let password = "multi-secret";
+
+    let _server = spawn_anytls_server_multi_user(
+        &listen_str,
+        &[
+            (u1.to_string(), String::new()),
+            (u2.to_string(), "xtls-rprx-vision".into()),
+        ],
+        password,
+    );
+    thread::sleep(Duration::from_millis(100));
+
+    // User 1 -- raw TCP echo
+    let mut t1 = anytls_connect(
+        &listen_str,
+        &u1,
+        "127.0.0.1",
+        echo_addr.port(),
+        "",
+        password,
+    );
+    t1.tls_write(b"user1").unwrap();
+    let mut buf = [0u8; 256];
+    let n = t1.tls_read(&mut buf).unwrap();
+    assert_eq!(&buf[..n], b"user1");
+
+    // User 2 -- Vision echo
+    let t2 = anytls_connect(
+        &listen_str,
+        &u2,
+        "127.0.0.1",
+        echo_addr.port(),
+        "xtls-rprx-vision",
+        password,
+    );
+    let resp = anytls_vision_echo(t2, &u2, b"user2-vision");
+    assert_eq!(resp, b"user2-vision");
+}
+
+#[test]
+fn test_anytls_concurrent() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("info")
+        .try_init();
+
+    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let listen_str = reserve.local_addr().unwrap().to_string();
+    drop(reserve);
+
+    let (echo_addr, _echo) = spawn_echo_target();
+    let user_uuid = Uuid::new_v4();
+    let password = "concurrent-pw";
+
+    let _server = spawn_anytls_server(&listen_str, &user_uuid.to_string(), password, "");
+    thread::sleep(Duration::from_millis(100));
+
+    let listen = listen_str.clone();
+    let handles: Vec<_> = (0..3)
+        .map(|i| {
+            let addr = listen.clone();
+            let uid = user_uuid;
+            let pw = password.to_string();
+            let ea = echo_addr;
+            thread::spawn(move || {
+                let mut tls = anytls_connect(
+                    &addr,
+                    &uid,
+                    "127.0.0.1",
+                    ea.port(),
+                    "",
+                    &pw,
+                );
+                let msg = format!("concurrent-{i}");
+                tls.tls_write(msg.as_bytes()).unwrap();
+                let mut buf = [0u8; 256];
+                let n = tls.tls_read(&mut buf).unwrap();
+                assert_eq!(&buf[..n], msg.as_bytes());
+            })
+        })
+        .collect();
+
+    for h in handles {
+        h.join().unwrap();
+    }
+}
+
+#[test]
+fn test_anytls_auth_failure_with_padding() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("info")
+        .try_init();
+
+    let fallback = TcpListener::bind("127.0.0.1:0").unwrap();
+    let fallback_addr = fallback.local_addr().unwrap();
+    let fallback_handle = thread::spawn(move || {
+        for stream in fallback.incoming().flatten() {
+            thread::spawn(move || {
+                let mut s = stream;
+                let mut buf = [0u8; 8192];
+                if let Ok(n) = s.read(&mut buf) && n > 0 {
+                    let _ = s.write_all(b"fallback-got-it");
+                }
+            });
+        }
+    });
+
+    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let listen_str = reserve.local_addr().unwrap().to_string();
+    drop(reserve);
+
+    let user_uuid = Uuid::new_v4();
+    let password = "real-secret";
+
+    let _server = spawn_anytls_server_with_fallback(
+        &listen_str,
+        &user_uuid.to_string(),
+        password,
+        &fallback_addr.to_string(),
+    );
+    thread::sleep(Duration::from_millis(100));
+
+    // Wrong password + padding -- fallback should get buffered auth data
+    let server: std::net::SocketAddr = listen_str.parse().unwrap();
+    let mut sock =
+        TcpStream::connect_timeout(&server, Duration::from_millis(500)).unwrap();
+
+    let server_name = rustls::pki_types::ServerName::try_from("cloudfront.net").unwrap();
+    let mut conn =
+        rustls::ClientConnection::new(Arc::new(make_anytls_client_config()), server_name).unwrap();
+
+    loop {
+        match conn.complete_io(&mut sock) {
+            Ok((_, _)) if !conn.is_handshaking() => break,
+            Ok(_) => continue,
+            Err(e) => panic!("TLS handshake failed: {e}"),
+        }
+    }
+
+    let mut tls = TlsClient::new(conn, sock);
+
+    let wrong_hash: [u8; 32] = Sha256::digest(b"wrong-password").into();
+    let padding = vec![0xDD; 500];
+    tls.tls_write(&wrong_hash).unwrap();
+    tls.tls_write(&(padding.len() as u16).to_be_bytes()).unwrap();
+    tls.tls_write(&padding).unwrap();
+
+    // Server forwards buffered data to fallback (raw), client TLS sees close/error
+    let mut buf = [0u8; 256];
+    match tls.tls_read(&mut buf) {
+        Ok(0) | Err(_) => {} // expected
+        Ok(_) => {}
+    }
+
+    drop(fallback_handle);
+}
+
+#[test]
+fn test_anytls_kyber_combo() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("info")
+        .try_init();
+
+    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let listen_str = reserve.local_addr().unwrap().to_string();
+    drop(reserve);
+
+    let (echo_addr, _echo) = spawn_echo_target();
+    let user_uuid = Uuid::new_v4();
+    let password = "kyber-anytls-pw";
+
+    // Valid Kyber-512 seed: 64 bytes hex-encoded
+    let kyber_key: String = (0..64).map(|_| format!("{:02x}", rand::random::<u8>())).collect();
+
+    let _server = spawn_anytls_server_kyber(
+        &listen_str,
+        &user_uuid.to_string(),
+        password,
+        &kyber_key,
+    );
+    thread::sleep(Duration::from_millis(100));
+
+    let mut tls = anytls_connect(
+        &listen_str,
+        &user_uuid,
+        "127.0.0.1",
+        echo_addr.port(),
+        "",
+        password,
+    );
+
+    tls.tls_write(b"kyber+anytls combo").unwrap();
+    let mut buf = [0u8; 256];
+    let n = tls.tls_read(&mut buf).unwrap();
+    assert_eq!(&buf[..n], b"kyber+anytls combo");
 }

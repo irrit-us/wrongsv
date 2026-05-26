@@ -76,6 +76,7 @@ wrongsv-net-types.workspace = true
 wrongsv-server.workspace = true
 wrongsv-kyber.workspace = true
 wrongsv-reality.workspace = true
+wrongsv-anytls.workspace = true
 bytes.workspace = true
 rand.workspace = true
 tracing.workspace = true
