@@ -1,4 +1,4 @@
-"""Generate wrongsv header banner — only #7c91db + #ffffff, minimal and balanced."""
+"""Generate wrongsv header banner — centered vertical layout, two-color minimal."""
 from PIL import Image, ImageDraw, ImageFont
 import os
 
@@ -21,10 +21,10 @@ font_paths = [
 title_font = None
 for fp in font_paths:
     if os.path.exists(fp):
-        title_font = ImageFont.truetype(fp, 46)
+        title_font = ImageFont.truetype(fp, 44)
         break
 if title_font is None:
-    title_font = ImageFont.truetype("/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf", 46)
+    title_font = ImageFont.truetype("/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf", 44)
 
 mono_path = None
 for fp in font_paths:
@@ -37,55 +37,43 @@ if mono_path is None:
 mono = ImageFont.truetype(mono_path, 13)
 mono_sm = ImageFont.truetype(mono_path, 11)
 
-# ── Left accent bar ───────────────────────────────────────────────────────────
-draw.rectangle([(0, 0), (4, H)], fill=ACCENT + (255,))
+# ── Vertical layout, all centered ─────────────────────────────────────────────
+cx = W // 2  # horizontal center
 
-# ── Left column: title + subtitle ─────────────────────────────────────────────
-tx, ty = 36, 36
-draw.text((tx, ty), "wrongsv", fill=ACCENT + (255,), font=title_font)
+# 1. Title
+title = "wrongsv"
+title_bbox = draw.textbbox((0, 0), title, font=title_font)
+title_w = title_bbox[2] - title_bbox[0]
+title_h = title_bbox[3] - title_bbox[1]
+title_y = 36
+draw.text((cx - title_w // 2, title_y), title, fill=ACCENT + (255,), font=title_font)
 
-title_bbox = draw.textbbox((tx, ty), "wrongsv", font=title_font)
-cursor_x = title_bbox[2] + 10
-cursor_y = title_bbox[1] + 6
-cursor_h = title_bbox[3] - title_bbox[1] - 8
+# Cursor block after title
+cursor_x = cx + title_w // 2 + 10
+cursor_y = title_y + 6
+cursor_h = title_h - 10
 cursor_w = 12
 draw.rounded_rectangle(
     [(cursor_x, cursor_y), (cursor_x + cursor_w, cursor_y + cursor_h)],
     radius=3, fill=ACCENT + (200,)
 )
 
-sub_x = tx + 4
-sub_y1 = title_bbox[3] + 20
-draw.text((sub_x, sub_y1), "VLESS proxy server", fill=ACCENT + (150,), font=mono)
-draw.text((sub_x, sub_y1 + 18), "XTLS Vision  ·  REALITY  ·  AnyTLS  ·  ML-KEM-512  ·  AEAD",
-          fill=ACCENT + (115,), font=mono)
+# 2. Subtitle
+subtitle = "VLESS proxy server"
+sub_bbox = draw.textbbox((0, 0), subtitle, font=mono)
+sub_w = sub_bbox[2] - sub_bbox[0]
+sub_y = title_y + title_h + 14
+draw.text((cx - sub_w // 2, sub_y), subtitle, fill=ACCENT + (160,), font=mono)
 
-# ── Right column: feature tags (vertically centered in banner) ────────────────
-tags = ["TLS 1.3", "REALITY", "AnyTLS", "PQ-KEM", "AEAD"]
-tag_h = 22
-tag_pad_x = 10
-tag_gap = 6
-tag_right = W - 30
+# 3. Keywords
+keywords = "XTLS Vision  ·  REALITY  ·  AnyTLS  ·  ML-KEM-512  ·  AEAD"
+kw_bbox = draw.textbbox((0, 0), keywords, font=mono_sm)
+kw_w = kw_bbox[2] - kw_bbox[0]
+kw_y = sub_y + 20
+draw.text((cx - kw_w // 2, kw_y), keywords, fill=ACCENT + (120,), font=mono_sm)
 
-total_tags_h = len(tags) * tag_h + (len(tags) - 1) * tag_gap
-tags_top = (H - total_tags_h) // 2
-
-for i, tag in enumerate(tags):
-    tag_text_w = draw.textbbox((0, 0), tag, font=mono_sm)[2]
-    tag_w = tag_text_w + tag_pad_x * 2
-    tag_left = tag_right - tag_w
-    tag_y = tags_top + i * (tag_h + tag_gap)
-    draw.rounded_rectangle(
-        [(tag_left, tag_y), (tag_right, tag_y + tag_h)],
-        radius=4, outline=ACCENT + (100,), width=1, fill=ACCENT + (15,)
-    )
-    # Center text in tag box
-    text_h = draw.textbbox((0, 0), tag, font=mono_sm)[3]
-    text_y = tag_y + (tag_h - text_h) // 2
-    draw.text((tag_left + tag_pad_x, text_y), tag, fill=ACCENT + (210,), font=mono_sm)
-
-# ── Bottom section: flow diagram ──────────────────────────────────────────────
-fl_y = 154
+# 4. Flow diagram at bottom
+fl_y = 148
 node_r = 5
 
 c_x = 130
@@ -125,7 +113,7 @@ target_tw = draw.textbbox((0, 0), "Target", font=mono_sm)[2]
 draw.text((t_x - target_tw // 2, fl_y - 24), "Target", fill=ACCENT + (160,), font=mono_sm)
 
 # ── Bottom divider ────────────────────────────────────────────────────────────
-draw.line([(36, H - 2), (W - 36, H - 2)], fill=ACCENT + (40,), width=1)
+draw.line([(60, H - 2), (W - 60, H - 2)], fill=ACCENT + (40,), width=1)
 
 img.save(OUT)
 print(f"Banner saved to {OUT} ({W}x{H})")
