@@ -251,7 +251,7 @@ mod tests {
             s[0..3].copy_from_slice(&[1, 2, 3]); // version
             s[3] = 0;
             s[4..8].copy_from_slice(&0x12345678u32.to_be_bytes()); // timestamp
-            s[8..16].copy_from_slice(b"shortid!"); // shortId
+            s[8..12].copy_from_slice(b"sid!"); // shortId (4 bytes)
             s
         };
         let key_share = [0xBBu8; 32];

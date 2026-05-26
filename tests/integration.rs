@@ -1069,7 +1069,7 @@ max_time_diff = 300
 
 /// Build a REALITY ClientHello for the given server public key and short_id.
 /// Returns the wire-format ClientHello bytes.
-fn build_reality_hello(server_pk_bytes: &[u8; 32], short_id: &[u8; 8]) -> Vec<u8> {
+fn build_reality_hello(server_pk_bytes: &[u8; 32], short_id: &[u8; 4]) -> Vec<u8> {
     let client_sk = StaticSecret::random_from_rng(rand::rngs::OsRng);
     let client_pk = PublicKey::from(&client_sk);
     let server_pk = PublicKey::from(*server_pk_bytes);
@@ -1090,7 +1090,8 @@ fn build_reality_hello(server_pk_bytes: &[u8; 32], short_id: &[u8; 8]) -> Vec<u8
     plaintext[0..3].copy_from_slice(&[1, 2, 3]);
     plaintext[3] = 0;
     plaintext[4..8].copy_from_slice(&timestamp.to_be_bytes());
-    plaintext[8..16].copy_from_slice(short_id);
+    plaintext[8..12].copy_from_slice(short_id);
+    // bytes 12..16 are padding zeros
 
     let temp_hello = build_reality_client_hello(client_random, [0u8; 32], *client_pk.as_bytes());
     let aad = &temp_hello[5..];
@@ -1126,21 +1127,47 @@ flow = "xtls-rprx-vision"
 
 [reality]
 private_key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
-short_ids = ["abcdef0123456789", "9988776655443322"]
+short_ids = ["abcdef01", "99887766"]
 dest = "www.microsoft.com:443"
 max_time_diff = 120
 "#;
     let config: wrongsv_server::Config = toml::from_str(toml).unwrap();
     config.validate().unwrap();
-    let reality = config.reality.unwrap();
+    let reality = config.reality.as_ref().unwrap();
     assert_eq!(
         reality.private_key,
         "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
     );
     assert_eq!(reality.short_ids.len(), 2);
-    assert_eq!(reality.short_ids[0], "abcdef0123456789");
-    assert_eq!(reality.dest.unwrap(), "www.microsoft.com:443");
+    assert_eq!(reality.short_ids[0], "abcdef01");
+    assert_eq!(reality.short_ids[0].len(), 8); // 8 hex chars = 4 bytes
+    assert_eq!(reality.dest.as_deref().unwrap(), "www.microsoft.com:443");
     assert_eq!(reality.max_time_diff, 120);
+
+    // Verify full parse pipeline (hex decode + cert generation)
+    let _server = wrongsv_server::InboundServer::new(config).unwrap();
+}
+
+#[test]
+fn test_reality_config_rejects_16char_short_id() {
+    let toml = r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[reality]
+private_key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+short_ids = ["abcdef0123456789"]
+"#;
+    let config: wrongsv_server::Config = toml::from_str(toml).unwrap();
+    let result = wrongsv_server::InboundServer::new(config);
+    assert!(result.is_err(), "16-char short_id should be rejected");
+    let err_msg = result.err().unwrap().to_string();
+    assert!(
+        err_msg.contains("expected 8 hex chars"),
+        "error should mention hex char length, got: {err_msg}"
+    );
 }
 
 #[test]
@@ -1153,10 +1180,10 @@ id = "12345678-1234-1234-1234-123456789abc"
 
 [reality]
 private_key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
-short_ids = ["abcdef0123456789"]
+short_ids = ["abcdef01"]
 "#;
     let config: wrongsv_server::Config = toml::from_str(toml).unwrap();
-    let reality = config.reality.unwrap();
+    let reality = config.reality.as_ref().unwrap();
     assert_eq!(reality.max_time_diff, 300);
 }
 
@@ -1170,7 +1197,7 @@ id = "12345678-1234-1234-1234-123456789abc"
 
 [reality]
 private_key = "too-short"
-short_ids = ["abcdef0123456789"]
+short_ids = ["abcdef01"]
 "#;
     let config: wrongsv_server::Config = toml::from_str(toml).unwrap();
     let result = wrongsv_server::InboundServer::new(config);
@@ -1209,7 +1236,7 @@ fn test_reality_server_startup() {
         .iter()
         .map(|b| format!("{:02x}", b))
         .collect();
-    let short_id_hex = "abcdef0123456789";
+    let short_id_hex = "abcdef01";
     let user_uuid = Uuid::new_v4();
 
     let _server = spawn_wrongsv_server_with_reality(
@@ -1240,7 +1267,7 @@ fn test_reality_invalid_hello_rejected() {
         .iter()
         .map(|b| format!("{:02x}", b))
         .collect();
-    let short_id_hex = "abcdef0123456789";
+    let short_id_hex = "abcdef01";
     let user_uuid = Uuid::new_v4();
 
     let _server = spawn_wrongsv_server_with_reality(
@@ -1278,7 +1305,7 @@ fn test_reality_valid_hello_accepted() {
         .map(|b| format!("{:02x}", b))
         .collect();
 
-    let short_id = *b"test4321";
+    let short_id = *b"test";
     let short_id_hex: String = short_id.iter().map(|b| format!("{:02x}", b)).collect();
 
     let user_uuid = Uuid::new_v4();
@@ -1332,12 +1359,12 @@ fn test_reality_wrong_short_id_rejected() {
         .map(|b| format!("{:02x}", b))
         .collect();
 
-    let allowed_short_id = *b"test4321";
+    let allowed_short_id = *b"test";
     let allowed_short_id_hex: String = allowed_short_id
         .iter()
         .map(|b| format!("{:02x}", b))
         .collect();
-    let wrong_short_id = *b"nope5678";
+    let wrong_short_id = *b"nope";
 
     let user_uuid = Uuid::new_v4();
 
@@ -1402,7 +1429,7 @@ fn test_reality_spider_fallback_forwards_to_dest() {
         .map(|b| format!("{:02x}", b))
         .collect();
     let user_uuid = Uuid::new_v4();
-    let allowed_short_id = *b"real5432";
+    let allowed_short_id = *b"real";
     let allowed_short_id_hex: String = allowed_short_id
         .iter()
         .map(|b| format!("{:02x}", b))
@@ -1434,7 +1461,7 @@ dest = "{}"
     thread::sleep(Duration::from_millis(100));
 
     // Send invalid ClientHello (wrong short_id) — should trigger spider fallback
-    let wrong_short_id = *b"nope5678";
+    let wrong_short_id = *b"nope";
     let hello = build_reality_hello(server_pk.as_bytes(), &wrong_short_id);
 
     let mut conn = TcpStream::connect_timeout(&server_addr, Duration::from_secs(5)).unwrap();
@@ -1613,7 +1640,7 @@ fn test_cross_session_id_decryption() {
         v.session_id.decrypted_timestamp
     );
     assert_eq!(
-        &plaintext[8..16],
+        &plaintext[8..12],
         hex::decode(&v.session_id.decrypted_short_id)
             .unwrap()
             .as_slice()
@@ -1740,7 +1767,7 @@ fn test_cross_full_auth_flow() {
         .unwrap()
         .try_into()
         .unwrap();
-    let short_id: [u8; 8] = hex::decode(&v.inputs.short_id).unwrap().try_into().unwrap();
+    let short_id: [u8; 4] = hex::decode(&v.inputs.short_id).unwrap().try_into().unwrap();
     let raw_body = hex::decode(&v.inputs.raw_client_hello).unwrap();
 
     // Step 1: ECDH + HKDF key derivation (matches Xray server)
@@ -1776,7 +1803,7 @@ fn test_cross_full_auth_flow() {
     assert_eq!(plaintext[3], 0, "reserved must be 0"); // reserved
     let timestamp = u32::from_be_bytes(plaintext[4..8].try_into().unwrap());
     assert_eq!(timestamp, v.inputs.timestamp);
-    let decrypted_short_id: &[u8; 8] = plaintext[8..16].try_into().unwrap();
+    let decrypted_short_id: &[u8; 4] = plaintext[8..12].try_into().unwrap();
     assert_eq!(decrypted_short_id, &short_id);
 
     // Step 5: Cert HMAC (Xray client verification)
@@ -1820,7 +1847,7 @@ fn test_go_client_handshake_with_rust_server() {
     let sk_hex = hex::encode(sk);
     let pk_hex = hex::encode(pk);
 
-    let short_id_hex = "deadbeefcafebabe";
+    let short_id_hex = "deadbeef";
 
     let server_addr = format!("127.0.0.1:{}", 20500 + (rand::random::<u16>() % 10000));
 
@@ -1965,14 +1992,14 @@ fn test_reality_multiple_short_ids() {
         &addr,
         "12345678-1234-1234-1234-123456789abc",
         &sk_hex,
-        &["aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb", "deadbeefcafebabe"],
+        &["aaaaaaaa", "bbbbbbbb", "deadbeef"],
         300,
         None,
     );
     std::thread::sleep(Duration::from_millis(200));
 
     // First short_id should work
-    let sid1: [u8; 8] = hex::decode("aaaaaaaaaaaaaaaa").unwrap().try_into().unwrap();
+    let sid1: [u8; 4] = hex::decode("aaaaaaaa").unwrap().try_into().unwrap();
     let hello1 = build_reality_hello(&pk, &sid1);
     let resp1 = send_and_read(&addr, &hello1, 2000).unwrap();
     assert!(
@@ -1981,7 +2008,7 @@ fn test_reality_multiple_short_ids() {
     );
 
     // Second should also work
-    let sid2: [u8; 8] = hex::decode("bbbbbbbbbbbbbbbb").unwrap().try_into().unwrap();
+    let sid2: [u8; 4] = hex::decode("bbbbbbbb").unwrap().try_into().unwrap();
     let hello2 = build_reality_hello(&pk, &sid2);
     let resp2 = send_and_read(&addr, &hello2, 2000).unwrap();
     assert!(
@@ -1990,7 +2017,7 @@ fn test_reality_multiple_short_ids() {
     );
 
     // Third should also work
-    let sid3: [u8; 8] = hex::decode("deadbeefcafebabe").unwrap().try_into().unwrap();
+    let sid3: [u8; 4] = hex::decode("deadbeef").unwrap().try_into().unwrap();
     let hello3 = build_reality_hello(&pk, &sid3);
     let resp3 = send_and_read(&addr, &hello3, 2000).unwrap();
     assert!(
@@ -1999,7 +2026,7 @@ fn test_reality_multiple_short_ids() {
     );
 
     // Unknown short_id should be rejected
-    let bad_sid: [u8; 8] = *b"nope5678";
+    let bad_sid: [u8; 4] = *b"nope";
     let bad_hello = build_reality_hello(&pk, &bad_sid);
     let bad_resp = send_and_read(&addr, &bad_hello, 2000).unwrap();
     assert!(
@@ -2026,7 +2053,7 @@ fn test_reality_empty_short_ids_rejects_all() {
     );
     std::thread::sleep(Duration::from_millis(200));
 
-    let sid: [u8; 8] = *b"anything";
+    let sid: [u8; 4] = *b"anyt";
     let hello = build_reality_hello(&pk, &sid);
     let resp = send_and_read(&addr, &hello, 2000).unwrap();
     assert!(
@@ -2049,13 +2076,13 @@ fn test_reality_no_spider_drops_connection() {
         &addr,
         "12345678-1234-1234-1234-123456789abc",
         &sk_hex,
-        &["aaaaaaaaaaaaaaaa"],
+        &["aaaaaaaa"],
         300,
         None, // no dest
     );
     std::thread::sleep(Duration::from_millis(200));
 
-    let bad_sid: [u8; 8] = *b"bad-----";
+    let bad_sid: [u8; 4] = *b"bad!";
     let hello = build_reality_hello(&pk, &bad_sid);
     let resp = send_and_read(&addr, &hello, 2000).unwrap();
 
@@ -2083,7 +2110,7 @@ fn test_reality_reserved_byte_nonzero_rejected() {
         &addr,
         "12345678-1234-1234-1234-123456789abc",
         &sk_hex,
-        &["aaaaaaaaaaaaaaaa"],
+        &["aaaaaaaa"],
         300,
         None,
     );
@@ -2092,7 +2119,7 @@ fn test_reality_reserved_byte_nonzero_rejected() {
     // Build a hello with reserved byte = 1
     let hello = build_reality_hello_with_options(
         &pk,
-        &[0xaa; 8],
+        &[0xaa; 4],
         &[1, 2, 3], // version
         1,          // reserved = 1 (invalid!)
         None,       // current timestamp
@@ -2106,7 +2133,7 @@ fn test_reality_reserved_byte_nonzero_rejected() {
 /// Build a REALITY hello with custom auth payload options.
 fn build_reality_hello_with_options(
     server_pk_bytes: &[u8; 32],
-    short_id: &[u8; 8],
+    short_id: &[u8; 4],
     version: &[u8; 3],
     reserved: u8,
     timestamp_override: Option<u32>,
@@ -2134,7 +2161,8 @@ fn build_reality_hello_with_options(
     plaintext[0..3].copy_from_slice(version);
     plaintext[3] = reserved;
     plaintext[4..8].copy_from_slice(&timestamp.to_be_bytes());
-    plaintext[8..16].copy_from_slice(short_id);
+    plaintext[8..12].copy_from_slice(short_id);
+    // bytes 12..16 are padding zeros
 
     let temp_hello = build_reality_client_hello(client_random, [0u8; 32], *client_pk.as_bytes());
     let aad = &temp_hello[5..];
@@ -2170,7 +2198,7 @@ fn test_reality_wrong_version_rejected() {
         &addr,
         "12345678-1234-1234-1234-123456789abc",
         &sk_hex,
-        &["aaaaaaaaaaaaaaaa"],
+        &["aaaaaaaa"],
         300,
         None,
     );
@@ -2179,7 +2207,7 @@ fn test_reality_wrong_version_rejected() {
     // Wrong version bytes (0,0,0 instead of 1,2,3)
     let hello = build_reality_hello_with_options(
         &pk,
-        &[0xaa; 8],
+        &[0xaa; 4],
         &[0, 0, 0], // wrong version
         0,          // reserved
         None,
@@ -2206,14 +2234,14 @@ fn test_reality_timestamp_at_boundary() {
         &addr,
         "12345678-1234-1234-1234-123456789abc",
         &sk_hex,
-        &["aaaaaaaaaaaaaaaa"],
+        &["aaaaaaaa"],
         31536000, // 1 year - generous
         None,
     );
     std::thread::sleep(Duration::from_millis(200));
 
     // Fresh timestamp should work
-    let hello_fresh = build_reality_hello(&pk, &[0xaa; 8]);
+    let hello_fresh = build_reality_hello(&pk, &[0xaa; 4]);
     let resp = send_and_read(&addr, &hello_fresh, 2000).unwrap();
     assert!(
         is_server_hello(&resp),
@@ -2226,7 +2254,7 @@ fn test_reality_timestamp_at_boundary() {
         .unwrap()
         .as_secs()
         - 3600) as u32;
-    let hello_old = build_reality_hello_with_options(&pk, &[0xaa; 8], &[1, 2, 3], 0, Some(old_ts));
+    let hello_old = build_reality_hello_with_options(&pk, &[0xaa; 4], &[1, 2, 3], 0, Some(old_ts));
     let resp2 = send_and_read(&addr, &hello_old, 2000).unwrap();
     assert!(
         is_server_hello(&resp2),
@@ -2247,7 +2275,7 @@ fn test_reality_timestamp_expired_rejected() {
         &addr,
         "12345678-1234-1234-1234-123456789abc",
         &sk_hex,
-        &["aaaaaaaaaaaaaaaa"],
+        &["aaaaaaaa"],
         1, // 1 second max_time_diff
         None,
     );
@@ -2259,7 +2287,7 @@ fn test_reality_timestamp_expired_rejected() {
         .unwrap()
         .as_secs()
         - 10) as u32; // 10 seconds ago
-    let hello_old = build_reality_hello_with_options(&pk, &[0xaa; 8], &[1, 2, 3], 0, Some(old_ts));
+    let hello_old = build_reality_hello_with_options(&pk, &[0xaa; 4], &[1, 2, 3], 0, Some(old_ts));
     let resp = send_and_read(&addr, &hello_old, 2000).unwrap();
     assert!(
         !is_server_hello(&resp),
@@ -2281,7 +2309,7 @@ fn test_reality_non_tls_data_handled_gracefully() {
         &addr,
         "12345678-1234-1234-1234-123456789abc",
         &sk_hex,
-        &["aaaaaaaaaaaaaaaa"],
+        &["aaaaaaaa"],
         300,
         None,
     );
@@ -2305,7 +2333,7 @@ fn test_reality_non_tls_data_handled_gracefully() {
     );
 
     // Verify server still works after garbage
-    let sid: [u8; 8] = hex::decode("aaaaaaaaaaaaaaaa").unwrap().try_into().unwrap();
+    let sid: [u8; 4] = hex::decode("aaaaaaaa").unwrap().try_into().unwrap();
     let hello = build_reality_hello_from_pk_bytes(server_pk_bytes_from_sk(&sk), &sid);
     let resp3 = send_and_read(&addr, &hello, 2000).unwrap();
     assert!(
@@ -2323,7 +2351,7 @@ fn server_pk_bytes_from_sk(sk: &[u8; 32]) -> [u8; 32] {
 }
 
 /// Build REALITY hello using raw server pubkey bytes (simpler interface)
-fn build_reality_hello_from_pk_bytes(server_pk_bytes: [u8; 32], short_id: &[u8; 8]) -> Vec<u8> {
+fn build_reality_hello_from_pk_bytes(server_pk_bytes: [u8; 32], short_id: &[u8; 4]) -> Vec<u8> {
     build_reality_hello(&server_pk_bytes, short_id)
 }
 
@@ -2337,7 +2365,7 @@ fn test_reality_tls12_client_hello_handling() {
         &addr,
         "12345678-1234-1234-1234-123456789abc",
         &sk_hex,
-        &["aaaaaaaaaaaaaaaa"],
+        &["aaaaaaaa"],
         300,
         None,
     );
@@ -2392,13 +2420,13 @@ fn test_reality_large_client_hello() {
         &addr,
         "12345678-1234-1234-1234-123456789abc",
         &sk_hex,
-        &["aaaaaaaaaaaaaaaa"],
+        &["aaaaaaaa"],
         300,
         None,
     );
     std::thread::sleep(Duration::from_millis(200));
 
-    let sid: [u8; 8] = hex::decode("aaaaaaaaaaaaaaaa").unwrap().try_into().unwrap();
+    let sid: [u8; 4] = hex::decode("aaaaaaaa").unwrap().try_into().unwrap();
     let base_hello = build_reality_hello(&pk, &sid);
 
     // Build a large ClientHello simulating uTLS fingerprint (~4KB) with a huge SNI
@@ -2465,7 +2493,7 @@ fn test_reality_missing_key_share_handling() {
         &addr,
         "12345678-1234-1234-1234-123456789abc",
         &sk_hex,
-        &["aaaaaaaaaaaaaaaa"],
+        &["aaaaaaaa"],
         300,
         None,
     );
@@ -2517,7 +2545,7 @@ fn test_reality_wrong_key_share_group() {
         &addr,
         "12345678-1234-1234-1234-123456789abc",
         &sk_hex,
-        &["aaaaaaaaaaaaaaaa"],
+        &["aaaaaaaa"],
         300,
         None,
     );
@@ -2581,7 +2609,7 @@ fn test_reality_malformed_tls_record() {
         &addr,
         "12345678-1234-1234-1234-123456789abc",
         &sk_hex,
-        &["aaaaaaaaaaaaaaaa"],
+        &["aaaaaaaa"],
         300,
         None,
     );
@@ -2608,7 +2636,7 @@ fn test_reality_malformed_tls_record() {
     let _ = send_and_read(&addr, &mismatch, 1000);
 
     // Verify server still functions
-    let sid: [u8; 8] = hex::decode("aaaaaaaaaaaaaaaa").unwrap().try_into().unwrap();
+    let sid: [u8; 4] = hex::decode("aaaaaaaa").unwrap().try_into().unwrap();
     let hello = build_reality_hello_from_pk_bytes(server_pk_bytes_from_sk(&sk), &sid);
     let resp4 = send_and_read(&addr, &hello, 2000).unwrap();
     assert!(
@@ -2653,7 +2681,7 @@ fn test_reality_spider_with_dest_forwards_and_echoes() {
         &addr,
         "12345678-1234-1234-1234-123456789abc",
         &sk_hex,
-        &["aaaaaaaaaaaaaaaa"],
+        &["aaaaaaaa"],
         300,
         Some(&echo_addr.to_string()),
     );
@@ -2662,7 +2690,7 @@ fn test_reality_spider_with_dest_forwards_and_echoes() {
     // Send wrong short_id → spider forwards to echo server. The echo
     // echoes back, and spider relays it to us. Just verify we get data
     // back (not a drop) and server remains healthy.
-    let bad_sid: [u8; 8] = *b"nope5678";
+    let bad_sid: [u8; 4] = *b"nope";
     let hello = build_reality_hello(&pk, &bad_sid);
     let mut conn =
         TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_secs(5)).unwrap();
@@ -2707,13 +2735,13 @@ fn test_reality_concurrent_authenticated_connections() {
         &addr,
         "12345678-1234-1234-1234-123456789abc",
         &sk_hex,
-        &["aaaaaaaaaaaaaaaa"],
+        &["aaaaaaaa"],
         300,
         None,
     );
     std::thread::sleep(Duration::from_millis(200));
 
-    let sid: [u8; 8] = hex::decode("aaaaaaaaaaaaaaaa").unwrap().try_into().unwrap();
+    let sid: [u8; 4] = hex::decode("aaaaaaaa").unwrap().try_into().unwrap();
 
     // Spawn 50 concurrent connections
     let handles: Vec<_> = (0..50)
@@ -2763,14 +2791,14 @@ fn test_reality_mixed_auth_and_spider() {
         &addr,
         "12345678-1234-1234-1234-123456789abc",
         &sk_hex,
-        &["aaaaaaaaaaaaaaaa"],
+        &["aaaaaaaa"],
         300,
         None, // no spider dest — invalid connections get dropped
     );
     std::thread::sleep(Duration::from_millis(200));
 
-    let valid_sid: [u8; 8] = hex::decode("aaaaaaaaaaaaaaaa").unwrap().try_into().unwrap();
-    let bad_sid: [u8; 8] = *b"nope5678";
+    let valid_sid: [u8; 4] = hex::decode("aaaaaaaa").unwrap().try_into().unwrap();
+    let bad_sid: [u8; 4] = *b"nope";
 
     // Send 20 valid and 20 invalid connections concurrently
     let mut handles = Vec::new();
@@ -2836,7 +2864,7 @@ fn test_reality_large_payload_through_tunnel() {
         &addr,
         "12345678-1234-1234-1234-123456789abc",
         &sk_hex,
-        &["aaaaaaaaaaaaaaaa"],
+        &["aaaaaaaa"],
         300,
         None,
     );
@@ -2844,7 +2872,7 @@ fn test_reality_large_payload_through_tunnel() {
 
     // Send a valid REALITY hello and verify we get at least part of the handshake
     let pk = server_pk_bytes_from_sk(&sk);
-    let sid: [u8; 8] = hex::decode("aaaaaaaaaaaaaaaa").unwrap().try_into().unwrap();
+    let sid: [u8; 4] = hex::decode("aaaaaaaa").unwrap().try_into().unwrap();
     let hello = build_reality_hello(&pk, &sid);
 
     let mut conn =
@@ -2893,13 +2921,13 @@ fn test_reality_rapid_connect_disconnect() {
         &addr,
         "12345678-1234-1234-1234-123456789abc",
         &sk_hex,
-        &["aaaaaaaaaaaaaaaa"],
+        &["aaaaaaaa"],
         300,
         None,
     );
     std::thread::sleep(Duration::from_millis(200));
 
-    let sid: [u8; 8] = hex::decode("aaaaaaaaaaaaaaaa").unwrap().try_into().unwrap();
+    let sid: [u8; 4] = hex::decode("aaaaaaaa").unwrap().try_into().unwrap();
 
     // Rapidly connect, send hello, read a bit, disconnect
     let mut success_count = 0;

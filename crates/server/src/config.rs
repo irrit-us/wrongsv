@@ -31,7 +31,7 @@ pub struct Config {
 pub struct RealityServerConfig {
     /// X25519 private key (32 bytes, hex-encoded).
     pub private_key: String,
-    /// Allowed short IDs (hex-encoded, up to 8 bytes each).
+    /// Allowed short IDs (hex-encoded, 8 hex chars = 4 bytes each).
     #[serde(default)]
     pub short_ids: Vec<String>,
     /// Fallback destination for spider mode (e.g. "www.microsoft.com:443").

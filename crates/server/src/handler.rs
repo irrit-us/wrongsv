@@ -45,8 +45,8 @@ fn parse_reality_config(
 ) -> Result<wrongsv_reality::RealityConfig, String> {
     let private_key =
         decode_hex::<32>(&rc.private_key).map_err(|e| format!("reality.private_key: {e}"))?;
-    let short_ids: Result<Vec<[u8; 8]>, _> =
-        rc.short_ids.iter().map(|s| decode_hex::<8>(s)).collect();
+    let short_ids: Result<Vec<[u8; 4]>, _> =
+        rc.short_ids.iter().map(|s| decode_hex::<4>(s)).collect();
     let short_ids = short_ids.map_err(|e| format!("reality.short_ids: {e}"))?;
     let cert_material = wrongsv_reality::cert::build_cert_material()
         .map_err(|e| format!("reality cert material: {e}"))?;

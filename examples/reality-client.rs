@@ -644,13 +644,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Parse short ID
-    let short_id: [u8; 8] = {
-        let mut sid = [0u8; 8];
+    let short_id: [u8; 4] = {
+        let mut sid = [0u8; 4];
         let hex = &cli.short_id;
-        if hex.len() != 16 {
-            return Err("short-id must be 16 hex chars (8 bytes)".into());
+        if hex.len() != 8 {
+            return Err("short-id must be 8 hex chars (4 bytes)".into());
         }
-        for i in 0..8 {
+        for i in 0..4 {
             sid[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
                 .map_err(|e| format!("short-id hex: {e}"))?;
         }
@@ -709,7 +709,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     plaintext[0..3].copy_from_slice(&[1, 2, 3]);
     plaintext[3] = 0;
     plaintext[4..8].copy_from_slice(&timestamp.to_be_bytes());
-    plaintext[8..16].copy_from_slice(&short_id);
+    plaintext[8..12].copy_from_slice(&short_id);
 
     // Build ClientHello with zeroed session_id, compute AAD
     let temp_hello =

@@ -79,8 +79,8 @@ pub struct RealityCertMaterial {
 pub struct RealityConfig {
     /// X25519 private key (32 bytes)
     pub private_key: [u8; 32],
-    /// Allowed short IDs (8 bytes each)
-    pub short_ids: Vec<[u8; 8]>,
+    /// Allowed short IDs (4 bytes / 8 hex chars each)
+    pub short_ids: Vec<[u8; 4]>,
     /// Maximum allowed clock skew in seconds
     pub max_time_diff: u64,
     /// Pre-generated cert material (shared across connections)
@@ -109,7 +109,7 @@ pub fn private_key_hex_to_public_b64(hex_sk: &str) -> Result<String, String> {
 impl RealityConfig {
     pub fn new(
         private_key: [u8; 32],
-        short_ids: Vec<[u8; 8]>,
+        short_ids: Vec<[u8; 4]>,
         max_time_diff: u64,
         cert_material: RealityCertMaterial,
         dest: Option<String>,

@@ -9,5 +9,5 @@ udp = true
 
 [reality]
 private_key = "d75c6e2f7e8a1b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4"
-short_ids = ["aaaaaaaaaaaaaaaa"]
+short_ids = ["aaaaaaaa"]
 dest = "www.microsoft.com:443"

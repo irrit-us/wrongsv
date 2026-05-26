@@ -58,7 +58,7 @@ fn decrypt_session_id(
     client_random: &[u8; 32],
     session_id: &[u8; 32],
     aad: &[u8],
-) -> Result<([u8; 3], u32, [u8; 8]), RealityError> {
+) -> Result<([u8; 3], u32, [u8; 4]), RealityError> {
     let key = Key::<Aes256Gcm>::from_slice(auth_key);
     let cipher = Aes256Gcm::new(key);
     let nonce = Nonce::from_slice(&client_random[20..32]);
@@ -84,8 +84,8 @@ fn decrypt_session_id(
     version.copy_from_slice(&plaintext[0..3]);
     let reserved = plaintext[3];
     let timestamp = u32::from_be_bytes([plaintext[4], plaintext[5], plaintext[6], plaintext[7]]);
-    let mut short_id = [0u8; 8];
-    short_id.copy_from_slice(&plaintext[8..16]);
+    let mut short_id = [0u8; 4];
+    short_id.copy_from_slice(&plaintext[8..12]);
 
     if reserved != 0 {
         return Err(RealityError::AuthFailed("reserved byte must be 0".into()));
@@ -112,7 +112,7 @@ fn verify_timestamp(timestamp: u32, max_time_diff: u64) -> Result<(), RealityErr
 }
 
 /// Verify short_id is in the allow-list.
-fn verify_short_id(short_id: &[u8; 8], short_ids: &[[u8; 8]]) -> Result<(), RealityError> {
+fn verify_short_id(short_id: &[u8; 4], short_ids: &[[u8; 4]]) -> Result<(), RealityError> {
     if short_ids.iter().any(|id| id == short_id) {
         Ok(())
     } else {
@@ -175,7 +175,7 @@ mod tests {
         auth_key: &[u8],
         client_random: &[u8; 32],
         timestamp: u32,
-        short_id: &[u8; 8],
+        short_id: &[u8; 4],
         aad: &[u8],
     ) -> [u8; 32] {
         let version = [1u8, 2, 3];
@@ -183,7 +183,8 @@ mod tests {
         plaintext[0..3].copy_from_slice(&version);
         plaintext[3] = 0; // reserved
         plaintext[4..8].copy_from_slice(&timestamp.to_be_bytes());
-        plaintext[8..16].copy_from_slice(short_id);
+        plaintext[8..12].copy_from_slice(short_id);
+        // bytes 12..16 are padding zeros
 
         let key = Key::<Aes256Gcm>::from_slice(auth_key);
         let cipher = Aes256Gcm::new(key);
@@ -223,7 +224,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as u32;
-        let short_id = *b"test1234";
+        let short_id = *b"test";
 
         let aad = b"fake_client_hello_raw";
         let session_id = build_session_id(&auth_key, &client_random, timestamp, &short_id, aad);
@@ -260,7 +261,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as u32;
-        let short_id = *b"test1234";
+        let short_id = *b"test";
 
         let aad = b"fake_aad1";
         let session_id = build_session_id(&auth_key, &client_random, timestamp, &short_id, aad);
@@ -272,7 +273,7 @@ mod tests {
             key_share: *client_ephemeral_pk.as_bytes(),
         };
 
-        let config = test_config(server_sk.to_bytes(), vec![*b"nope5678"], 300);
+        let config = test_config(server_sk.to_bytes(), vec![*b"nope"], 300);
 
         assert!(authenticate(&hello, &config).is_err());
     }
@@ -293,7 +294,7 @@ mod tests {
         hkdf.expand(b"REALITY", &mut auth_key).unwrap();
 
         let timestamp = 0u32;
-        let short_id = *b"test1234";
+        let short_id = *b"test";
 
         let aad = b"fake_aad2";
         let session_id = build_session_id(&auth_key, &client_random, timestamp, &short_id, aad);
@@ -312,7 +313,7 @@ mod tests {
 
     fn test_config(
         private_key: [u8; 32],
-        short_ids: Vec<[u8; 8]>,
+        short_ids: Vec<[u8; 4]>,
         max_time_diff: u64,
     ) -> RealityConfig {
         RealityConfig::new(
