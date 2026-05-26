@@ -1,4 +1,20 @@
-# wrongsv — VLESS proxy server in Rust
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/banner.png">
+    <img src="assets/banner.png" alt="wrongsv banner" width="800">
+  </picture>
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=for-the-badge" alt="License: MIT"></a>
+  <a href="#"><img src="https://img.shields.io/badge/rust-stable-orange?style=for-the-badge&logo=rust" alt="Rust: stable"></a>
+  <img src="https://img.shields.io/badge/protocol-VLESS-blue?style=for-the-badge" alt="Protocol: VLESS">
+  <img src="https://img.shields.io/badge/flow-xtls--rprx--vision-purple?style=for-the-badge" alt="Flow: XTLS Vision">
+  <img src="https://img.shields.io/badge/TLS-REALITY%201.3-brightgreen?style=for-the-badge" alt="TLS: REALITY 1.3">
+  <img src="https://img.shields.io/badge/KEM-ML--KEM--512-darkslateblue?style=for-the-badge" alt="KEM: ML-KEM-512">
+</p>
+
+---
 
 A minimal, high-performance VLESS proxy server with XTLS Vision flow and NIST ML-KEM post-quantum key encapsulation. Built as a terminal-based runtime that accepts VLESS connections, validates users, decodes XTLS Vision traffic, and forwards to target destinations.
 
