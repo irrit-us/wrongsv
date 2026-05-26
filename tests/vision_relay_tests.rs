@@ -872,6 +872,174 @@ fn test_udp_large_payload() {
     drop(handle);
 }
 
+#[test]
+fn test_udp_max_payload() {
+    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let echo_addr = socket.local_addr().unwrap();
+    let socket = Arc::new(socket);
+    let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = running.clone();
+    let s = socket.try_clone().unwrap();
+    thread::spawn(move || {
+        let mut buf = [0u8; 65535];
+        while r.load(std::sync::atomic::Ordering::SeqCst) {
+            if let Ok((n, addr)) = s.recv_from(&mut buf) {
+                s.send_to(&buf[..n], addr).ok();
+            }
+        }
+    });
+
+    let addr_str = echo_addr.to_string();
+    let echo_parts: Vec<&str> = addr_str.split(':').collect();
+    let echo_port: u16 = echo_parts[1].parse().unwrap();
+
+    let (_, uuid) = make_test_validator();
+    let listen = format!("127.0.0.1:{}", 50000 + (rand::random::<u16>() % 10000));
+    let handle = spawn_wrongsv_server(&listen, &uuid.to_string(), "");
+    thread::sleep(Duration::from_millis(200));
+
+    let mut stream = vless_udp_connect(&listen, &uuid, "127.0.0.1", echo_port);
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+
+    // IPv4 max UDP payload: 65535 - 20 (IP) - 8 (UDP) = 65507 bytes
+    let payload: Vec<u8> = (0..65507u32)
+        .map(|i| (i.wrapping_mul(17).wrapping_add(3)) as u8)
+        .collect();
+    let mut writer = LengthPacketWriter::new(&mut stream);
+    writer.write_packet(&payload).unwrap();
+
+    let mut reader = LengthPacketReader::new(&mut stream);
+    let resp = reader.read_packet().unwrap();
+    assert_eq!(resp.len(), payload.len(), "max UDP payload size mismatch");
+    assert_eq!(resp, payload, "max UDP payload data mismatch");
+
+    running.store(false, std::sync::atomic::Ordering::SeqCst);
+    drop(handle);
+}
+
+#[test]
+fn test_udp_packet_boundary_integrity() {
+    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let echo_addr = socket.local_addr().unwrap();
+    let socket = Arc::new(socket);
+    let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = running.clone();
+    let s = socket.try_clone().unwrap();
+    thread::spawn(move || {
+        let mut buf = [0u8; 65535];
+        while r.load(std::sync::atomic::Ordering::SeqCst) {
+            if let Ok((n, addr)) = s.recv_from(&mut buf) {
+                s.send_to(&buf[..n], addr).ok();
+            }
+        }
+    });
+
+    let addr_str = echo_addr.to_string();
+    let echo_parts: Vec<&str> = addr_str.split(':').collect();
+    let echo_port: u16 = echo_parts[1].parse().unwrap();
+
+    let (_, uuid) = make_test_validator();
+    let listen = format!("127.0.0.1:{}", 50000 + (rand::random::<u16>() % 10000));
+    let handle = spawn_wrongsv_server(&listen, &uuid.to_string(), "");
+    thread::sleep(Duration::from_millis(200));
+
+    let mut stream = vless_udp_connect(&listen, &uuid, "127.0.0.1", echo_port);
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+
+    // Send packets of wildly different sizes back-to-back, verify boundaries
+    let sizes: &[usize] = &[1, 16, 64, 256, 1024, 4096, 8192, 1, 1400, 64, 32768];
+    for (i, &size) in sizes.iter().enumerate() {
+        let payload: Vec<u8> = (0..size)
+            .map(|j| ((i as u32).wrapping_mul(37).wrapping_add(j as u32) % 251) as u8)
+            .collect();
+        {
+            let mut writer = LengthPacketWriter::new(&mut stream);
+            writer.write_packet(&payload).unwrap();
+        }
+        {
+            let mut reader = LengthPacketReader::new(&mut stream);
+            let resp = reader.read_packet().unwrap();
+            assert_eq!(
+                resp.len(),
+                size,
+                "packet {i} size {size}: got {}",
+                resp.len()
+            );
+            assert_eq!(resp, payload, "packet {i} size {size}: data mismatch");
+        }
+    }
+
+    running.store(false, std::sync::atomic::Ordering::SeqCst);
+    drop(handle);
+}
+
+#[test]
+fn test_udp_concurrent_clients() {
+    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let echo_addr = socket.local_addr().unwrap();
+    let socket = Arc::new(socket);
+    let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = running.clone();
+    let s = socket.try_clone().unwrap();
+    thread::spawn(move || {
+        let mut buf = [0u8; 65535];
+        while r.load(std::sync::atomic::Ordering::SeqCst) {
+            if let Ok((n, addr)) = s.recv_from(&mut buf) {
+                s.send_to(&buf[..n], addr).ok();
+            }
+        }
+    });
+
+    let addr_str = echo_addr.to_string();
+    let echo_parts: Vec<&str> = addr_str.split(':').collect();
+    let echo_port: u16 = echo_parts[1].parse().unwrap();
+
+    let (_, uuid) = make_test_validator();
+    let listen = format!("127.0.0.1:{}", 50000 + (rand::random::<u16>() % 10000));
+    let handle = spawn_wrongsv_server(&listen, &uuid.to_string(), "");
+    thread::sleep(Duration::from_millis(200));
+
+    // 10 concurrent UDP clients, each sending 15 packets
+    let handles: Vec<_> = (0..10)
+        .map(|client_id| {
+            let listen = listen.clone();
+            thread::spawn(move || {
+                let mut stream = vless_udp_connect(&listen, &uuid, "127.0.0.1", echo_port);
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .unwrap();
+
+                for pkt_id in 0..15 {
+                    let seed: usize = (client_id << 8) | pkt_id;
+                    let size = (seed % 1400) + 1;
+                    let payload: Vec<u8> = (0..size)
+                        .map(|j| (seed.wrapping_add(j) % 251) as u8)
+                        .collect();
+
+                    let mut writer = LengthPacketWriter::new(&mut stream);
+                    writer.write_packet(&payload).unwrap();
+
+                    let mut reader = LengthPacketReader::new(&mut stream);
+                    let resp = reader.read_packet().unwrap();
+                    assert_eq!(resp.len(), size, "client {client_id} pkt {pkt_id}: size");
+                    assert_eq!(resp, payload, "client {client_id} pkt {pkt_id}: data");
+                }
+            })
+        })
+        .collect();
+
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    running.store(false, std::sync::atomic::Ordering::SeqCst);
+    drop(handle);
+}
+
 // ── Concurrent / Stress Tests ────────────────────────────────────────────────
 
 #[test]
