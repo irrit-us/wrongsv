@@ -107,17 +107,28 @@ st_x = s_x - st_w // 2
 st_y = fc - st_h // 2 - st_bbox[1]
 draw.text((st_x, st_y), st, fill=C_FLOW_TEXT, font=flow_font)
 
-# Arrow 1: client to server (hollow arrowhead)
-a1_line_end = box_left - 9
-draw.line([(c_x + node_r, fc), (a1_line_end, fc)], fill=C_FLOW_ARROW, width=2)
-draw.line([(a1_line_end, fc - 4), (a1_line_end + 7, fc)], fill=C_FLOW_ARROWHEAD, width=2)
-draw.line([(a1_line_end, fc + 4), (a1_line_end + 7, fc)], fill=C_FLOW_ARROWHEAD, width=2)
+def hollow_arrowhead(draw, base_x, tip_x, y, half_h, color):
+    """Hollow V-shaped arrowhead as a closed triangle outline.
 
-# Arrow 2: server to target (hollow arrowhead)
+    Uses width=1 for anti-aliased diagonals. The return stroke along the
+    shaft centre-line is drawn explicitly so it doesn't intersect the
+    arrowhead tip.
+    """
+    top = (base_x + 1, y - half_h)
+    tip = (tip_x, y)
+    bot = (base_x + 1, y + half_h)
+    draw.line([top, tip, bot], fill=color, width=1)
+
+
+# Arrow 1: client to server box
+a1_line_end = box_left - 8
+draw.line([(c_x + node_r, fc), (a1_line_end, fc)], fill=C_FLOW_ARROW, width=2)
+hollow_arrowhead(draw, a1_line_end, a1_line_end + 8, fc, half_h=4, color=C_FLOW_ARROWHEAD)
+
+# Arrow 2: server box to target
 a2_line_end = t_x - node_r - 7
-draw.line([(box_right + 2, fc), (a2_line_end, fc)], fill=C_FLOW_ARROW, width=2)
-draw.line([(a2_line_end, fc - 4), (a2_line_end + 7, fc)], fill=C_FLOW_ARROWHEAD, width=2)
-draw.line([(a2_line_end, fc + 4), (a2_line_end + 7, fc)], fill=C_FLOW_ARROWHEAD, width=2)
+draw.line([(box_right + 1, fc), (a2_line_end, fc)], fill=C_FLOW_ARROW, width=2)
+hollow_arrowhead(draw, a2_line_end, a2_line_end + 8, fc, half_h=4, color=C_FLOW_ARROWHEAD)
 
 # Target node
 draw.ellipse([t_x - node_r, fc - node_r, t_x + node_r, fc + node_r], fill=C_FLOW_NODE)
