@@ -486,27 +486,30 @@ fn test_vision_single_byte_writes() {
     }
     // Signal EOF so the server flushes the Vision-padded response.
     conn.shutdown(std::net::Shutdown::Write).unwrap();
-    // Give the server a moment to process the EOF and flush all response frames.
-    thread::sleep(Duration::from_millis(100));
+    conn.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
 
     let state = TrafficState::new(user_uuid.as_bytes());
     let mut reader = VisionReader::new(conn, state, true);
 
-    let mut received = vec![0u8; 512];
+    let mut received = vec![0u8; 600];
     let mut total = 0;
-    while total < 512 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while total < 512 && std::time::Instant::now() < deadline {
         match reader.read(&mut received[total..]) {
-            Ok(0) => break,
+            Ok(0) => {
+                thread::sleep(Duration::from_millis(10));
+            }
             Ok(n) => total += n,
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(5));
-                continue;
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
+                || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                thread::sleep(Duration::from_millis(10));
             }
             Err(_) => break,
         }
     }
     assert_eq!(total, 512, "expected 512 bytes, got {total}");
-    assert_eq!(&received[..total], &sent[..total]);
+    assert_eq!(&received[..512], &sent[..]);
 }
 
 // ── HTTP Protocol Tests ──────────────────────────────────────────────────────

@@ -499,7 +499,7 @@ fn relay_reality(
     mut target: TcpStream,
     initial_data: Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut buf = [0u8; 8192];
+    let mut buf = [0u8; 32768];
     target.set_read_timeout(Some(Duration::from_secs(1)))?;
 
     if !initial_data.is_empty() {
@@ -646,7 +646,7 @@ fn relay_reality_vision(
         }
         let inner = TlsReadHandle { inner: tls1 };
         let mut reader = VisionReader::new(inner, up_state, true);
-        let mut buf = [0u8; 8192];
+        let mut buf = [0u8; 32768];
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
@@ -669,7 +669,7 @@ fn relay_reality_vision(
     let t2 = thread::spawn(move || {
         let inner = TlsWriteHandle { inner: tls };
         let mut writer = VisionWriter::new(inner, down_state, false, up_seed);
-        let mut buf = [0u8; 8192];
+        let mut buf = [0u8; 32768];
         let mut tgt = t_read;
         loop {
             match tgt.read(&mut buf) {
@@ -775,7 +775,7 @@ fn relay_raw(
     let mut t2 = target.try_clone()?;
 
     let t1 = thread::spawn(move || {
-        let mut buf = [0u8; 8192];
+        let mut buf = [0u8; 32768];
         loop {
             match c2.read(&mut buf) {
                 Ok(0) => break,
@@ -795,7 +795,7 @@ fn relay_raw(
     });
 
     let t2 = thread::spawn(move || {
-        let mut buf = [0u8; 8192];
+        let mut buf = [0u8; 32768];
         loop {
             match target.read(&mut buf) {
                 Ok(0) => break,
@@ -920,7 +920,7 @@ fn relay_vision(
 
     let t1 = thread::spawn(move || {
         let mut reader = VisionReader::new(c_read, up_state, true);
-        let mut buf = [0u8; 8192];
+        let mut buf = [0u8; 32768];
         let mut tgt = t_write;
         loop {
             match reader.read(&mut buf) {
@@ -944,7 +944,7 @@ fn relay_vision(
     let down_state = TrafficState::new(user_sent_id);
     let t2 = thread::spawn(move || {
         let mut writer = VisionWriter::new(c_write, down_state, false, up_seed);
-        let mut buf = [0u8; 8192];
+        let mut buf = [0u8; 32768];
         let mut tgt = t_read;
         loop {
             match tgt.read(&mut buf) {

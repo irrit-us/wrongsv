@@ -362,7 +362,7 @@ impl<R: Read> VisionReader<R> {
             state,
             is_uplink,
             direct: false,
-            raw_buf: vec![0u8; 16384],
+            raw_buf: vec![0u8; 32768],
         }
     }
 

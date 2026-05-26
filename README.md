@@ -129,7 +129,7 @@ Runs 480 connections across 3 rounds and monitors RSS for memory leaks.
 ## Known Limitations
 
 - **UDP + Vision**: XTLS Vision does not support UDP relay (same limitation as xray-core). UDP connections use raw length-prefixed framing.
-- **REALITY UDP relay**: UDP over REALITY TLS connections uses a polling loop with 200ms sleep; throughput is lower than native UDP.
+- **REALITY UDP relay**: UDP over REALITY TLS uses a polling loop; throughput is lower than native UDP relay.
 
 ## License
 
