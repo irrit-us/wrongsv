@@ -39,20 +39,32 @@ impl RealityTlsStream {
 
 impl Read for RealityTlsStream {
     fn read(&mut self, buf: &mut [u8]) -> IoResult<usize> {
-        // Try TLS first, then pending plaintext
-        match self.conn.reader().read(buf) {
-            Ok(0) => {
-                // No decrypted data available — read more from socket
-                let n = self.conn.read_tls(&mut self.stream)?;
-                if n == 0 {
-                    return Ok(0);
+        loop {
+            match self.conn.reader().read(buf) {
+                Ok(0) => {
+                    // No decrypted data available — read more from socket
+                    match self.conn.read_tls(&mut self.stream) {
+                        Ok(0) => return Ok(0),
+                        Ok(_) => {
+                            self.conn.process_new_packets().map_err(|e| {
+                                std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+                            })?;
+                            // Loop back to try reader().read() again with
+                            // newly decrypted data
+                            continue;
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            // Socket has no data yet — yield and retry.
+                            // Go's TLS library handles EAGAIN internally via
+                            // the net poller; we match that with a short sleep.
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                            continue;
+                        }
+                        Err(e) => return Err(e),
+                    }
                 }
-                self.conn
-                    .process_new_packets()
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-                self.conn.reader().read(buf)
+                other => return other,
             }
-            other => other,
         }
     }
 }
@@ -145,14 +157,13 @@ impl rustls::KeyLog for DebugKeyLog {
             .map(|b| format!("{b:02x}"))
             .collect::<String>();
         tracing::info!("KEYLOG {label} {cr_hex} {secret_hex}");
-        if let Ok(path) = std::env::var("WRONGSV_KEYLOG_FILE") {
-            if let Ok(mut f) = std::fs::OpenOptions::new()
+        if let Ok(path) = std::env::var("WRONGSV_KEYLOG_FILE")
+            && let Ok(mut f) = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(&path)
-            {
-                let _ = writeln!(f, "KEYLOG {label} {cr_hex} {secret_hex}");
-            }
+        {
+            let _ = writeln!(f, "KEYLOG {label} {cr_hex} {secret_hex}");
         }
     }
 }

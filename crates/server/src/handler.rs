@@ -1,7 +1,7 @@
-use std::io::{Read, Write};
+use std::io::{Read, Result as IoResult, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use tracing::{debug, error, info, trace, warn};
@@ -479,12 +479,16 @@ fn handle_reality_connection(
     trace!("{peer} connected to target");
 
     if use_vision {
-        debug!("{peer} REALITY+Vision relay not yet wired, falling through");
+        relay_reality_vision(
+            tls_stream,
+            target,
+            &decoded.user_sent_id,
+            &account.testseed,
+            remaining_body,
+        )?;
+    } else {
+        relay_reality(tls_stream, target, remaining_body)?;
     }
-    // Relay: client is TLS, target is raw TCP.
-    // Pass remaining_body — bytes after the VLESS header that were already
-    // decrypted from the same TLS record (e.g. a pipelined HTTP request).
-    relay_reality(tls_stream, target, remaining_body)?;
     debug!("{peer} REALITY relay finished");
 
     Ok(())
@@ -559,6 +563,132 @@ fn relay_reality(
     }
     stream.get_mut().shutdown(std::net::Shutdown::Write)?;
     debug!("relay_reality: finished");
+    Ok(())
+}
+
+/// Thin `Read` handle for a mutex-protected `RealityTlsStream`.
+///
+/// Two of these can operate concurrently: one in the Vision-reader thread
+/// (client→target uplink) and one in the Vision-writer thread (target→client
+/// downlink). Each thread locks only for the duration of the I/O call, so
+/// they don't contend for long.
+struct TlsReadHandle {
+    inner: Arc<Mutex<wrongsv_reality::RealityTlsStream>>,
+}
+
+impl Read for TlsReadHandle {
+    fn read(&mut self, buf: &mut [u8]) -> IoResult<usize> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .read(buf)
+    }
+}
+
+/// Thin `Write` handle for a mutex-protected `RealityTlsStream`.
+struct TlsWriteHandle {
+    inner: Arc<Mutex<wrongsv_reality::RealityTlsStream>>,
+}
+
+impl Write for TlsWriteHandle {
+    fn write(&mut self, buf: &[u8]) -> IoResult<usize> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .write(buf)
+    }
+
+    fn flush(&mut self) -> IoResult<()> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).flush()
+    }
+}
+
+/// Vision-aware relay for REALITY TLS connections.
+///
+/// Mirrors `relay_vision` but the client side is a `RealityTlsStream` instead
+/// of a raw `TcpStream`. The TLS stream is shared via `Arc<Mutex<>>` so the
+/// two Vision threads (uplink and downlink) can read and write concurrently.
+fn relay_reality_vision(
+    tls: wrongsv_reality::RealityTlsStream,
+    target: TcpStream,
+    user_sent_id: &[u8],
+    testseed: &[u32],
+    initial_data: Vec<u8>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let tls = Arc::new(Mutex::new(tls));
+    let t_read = target.try_clone()?;
+    let t_write = target;
+
+    let mut up_state = TrafficState::new(user_sent_id);
+    let up_seed = if testseed.len() >= 4 {
+        testseed.to_vec()
+    } else {
+        vec![900, 500, 900, 256]
+    };
+
+    let tls1 = Arc::clone(&tls);
+    let t1 = thread::spawn(move || {
+        let mut tgt = t_write;
+        if !initial_data.is_empty() {
+            use wrongsv_vless::vision::xtls_unpadding;
+            let mut init_state = up_state.clone();
+            let unpadded = xtls_unpadding(&initial_data, &mut init_state, true);
+            trace!(
+                "Vision REALITY uplink initial_data={} unpadded={}",
+                initial_data.len(),
+                unpadded.len()
+            );
+            if !unpadded.is_empty() && tgt.write_all(&unpadded).is_err() {
+                let _ = tgt.shutdown(Shutdown::Write);
+                return;
+            }
+            up_state = init_state;
+        }
+        let inner = TlsReadHandle { inner: tls1 };
+        let mut reader = VisionReader::new(inner, up_state, true);
+        let mut buf = [0u8; 8192];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if tgt.write_all(&buf[..n]).is_err() {
+                        break;
+                    }
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    continue;
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = tgt.shutdown(Shutdown::Write);
+    });
+
+    let down_state = TrafficState::new(user_sent_id);
+    let t2 = thread::spawn(move || {
+        let inner = TlsWriteHandle { inner: tls };
+        let mut writer = VisionWriter::new(inner, down_state, false, up_seed);
+        let mut buf = [0u8; 8192];
+        let mut tgt = t_read;
+        loop {
+            match tgt.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if writer.write(&buf[..n]).is_err() {
+                        break;
+                    }
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(_) => break,
+            }
+        }
+        writer.flush().ok();
+        let _ = tgt.shutdown(Shutdown::Write);
+    });
+
+    t1.join().ok();
+    t2.join().ok();
     Ok(())
 }
 

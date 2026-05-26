@@ -426,6 +426,18 @@ impl<R: Read> VisionReader<R> {
             &mut self.state.outbound
         }
     }
+
+    /// Consume the reader, returning the inner state for reuse across
+    /// keep-alive requests where the Vision frame sequence must persist.
+    pub fn into_state(self) -> TrafficState {
+        self.state
+    }
+}
+
+impl<R: Read> Read for VisionReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.read(buf)
+    }
 }
 
 // ── Vision Writer ──────────────────────────────────────────────────────────

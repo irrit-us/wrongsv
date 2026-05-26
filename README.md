@@ -79,9 +79,10 @@ cargo run --release -- --write-client-config client.json --server-host YOUR_IP -
 ## Testing
 
 ```bash
-cargo test                          # all unit + integration tests
-cargo test --test integration       # integration tests only (62 tests, incl. 114 randomized scenarios)
-cargo bench                         # criterion benchmarks
+cargo test                                  # all unit + integration + vision tests
+cargo test --test integration               # integration tests (62 tests, incl. REALITY, cross-compat, randomized)
+cargo test --test vision_relay_tests        # Vision relay tests (25 tests: HTTP, TLS-in-TLS, UDP, concurrency, stress)
+cargo bench                                 # criterion benchmarks
 ```
 
 ### Stress test
@@ -123,10 +124,12 @@ Runs 480 connections across 3 rounds and monitors RSS for memory leaks.
 - **xray-core 26.5.9+** — REALITY handshake completes with `uConn.Verified: true`. Ed25519 cert verification succeeds even with Chrome fingerprint (no Ed25519 in `signature_algorithms`).
 - **Spider fallback** — unauthenticated probes are transparently forwarded to the configured `dest` target. Confirmed with `curl` -> `www.microsoft.com:443` (Microsoft's real TLS 1.3 cert returned).
 - **Concurrent connections** — 6+ simultaneous REALITY connections all authenticate and relay correctly.
+- **REALITY + Vision** — full XTLS Vision padding/unpadding now works over REALITY TLS connections. Large payloads (128KB), HTTP/1.0, HTTP/1.1 keep-alive, TLS-in-TLS passthrough, UDP, chunked writes, and sustained bidirectional traffic all verified via integration tests.
 
 ## Known Limitations
 
-- **REALITY + Vision relay**: The XTLS Vision flow is not yet wired for REALITY TLS connections. REALITY connections fall through to raw TCP relay. Small payloads that fit in a single TLS record work correctly, but larger payloads split across multiple records may be truncated when the target closes early. Standard VLESS + Vision (non-REALITY) handles all sizes correctly.
+- **UDP + Vision**: XTLS Vision does not support UDP relay (same limitation as xray-core). UDP connections use raw length-prefixed framing.
+- **REALITY UDP relay**: UDP over REALITY TLS connections uses a polling loop with 200ms sleep; throughput is lower than native UDP.
 
 ## License
 
