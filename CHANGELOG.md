@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.2.2] — 2026-05-27
+
+### Fixed
+
+- **Vision relay hang**: `RealityTlsStream::read` did not handle
+  `Err(WouldBlock)` from rustls `reader().read()`, causing XTLS Vision relay
+  to spin indefinitely without reading new TLS records from the socket.
+- **Security**: TLS 1.3 session secrets logged at `INFO` level via
+  `DebugKeyLog`. Secrets now only written to a file when
+  `WRONGSV_KEYLOG_FILE` env var is explicitly set.
+- **Log noise**: ClientHello cipher suite dump downgraded from `INFO` to
+  `DEBUG` level. Removed hex dump debug logging from handler and tls acceptor.
+
+### Docs
+
+- Fixed `short_ids` size in README, SETUP, and config.example.toml: 4 bytes
+  (8 hex chars), not 8 bytes (16 hex chars).
+
 ## [0.2.0] — 2026-05-26
 
 ### Added

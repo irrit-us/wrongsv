@@ -23,9 +23,9 @@ listen = "0.0.0.0:443"
 # X25519 32-byte private key, hex-encoded. Generate with:
 #   openssl rand -hex 32
 private_key = "60ec256ba191e9610dffc6cd4f9060089b023795cd81b63089bcbb593b955078"
-# Allowed short IDs: 8-byte hex strings. At least one required.
+# Allowed short IDs: 4-byte hex strings (8 hex chars). At least one required.
 # The client must include one of these in its encrypted REALITY session_id.
-short_ids = ["a1b2c3d4e5f6a7b8"]
+short_ids = ["a1b2c3d4"]
 # Maximum allowed clock skew between client and server (seconds). Default 300.
 max_time_diff = 300
 # Spider fallback: probes that fail REALITY auth get forwarded here.

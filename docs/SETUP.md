@@ -97,7 +97,7 @@ Add a `[reality]` section:
 ```toml
 [reality]
 private_key = "d75c6e2f7e8a1b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4"
-short_ids = ["aaaaaaaaaaaaaaaa"]
+short_ids = ["aaaaaaaa"]
 max_time_diff = 300                         # max clock skew, default 300s
 dest = "www.microsoft.com:443"              # spider fallback target
 ```
@@ -107,7 +107,7 @@ dest = "www.microsoft.com:443"              # spider fallback target
 | Field | Default | Description |
 |-------|---------|-------------|
 | `private_key` | required | X25519 32-byte private key (hex-encoded, 64 chars) |
-| `short_ids` | required | Allowed short IDs (8-byte hex, 16 chars each) |
+| `short_ids` | required | Allowed short IDs (4-byte hex, 8 chars each) |
 | `max_time_diff` | `300` | Max allowed clock skew between client and server (seconds) |
 | `dest` | none | Fallback target for unauthenticated probes (`"host:port"`) |
 
@@ -193,7 +193,7 @@ kyber_secret_key = "..."       # ML-KEM-512 64-byte seed, hex-encoded (128 chars
 # ── REALITY (mutually exclusive with AnyTLS) ──────────────────────────────────
 [reality]
 private_key = "..."            # X25519 32-byte hex (64 chars)
-short_ids = ["..."]            # allowed short IDs, 8-byte hex each (16 chars)
+short_ids = ["..."]            # allowed short IDs, 4-byte hex each (8 chars)
 max_time_diff = 300            # max clock skew in seconds
 dest = "host:port"             # spider fallback target
 

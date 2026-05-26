@@ -139,7 +139,7 @@ Runs 480 connections across 3 rounds and monitors RSS for memory leaks.
 | `kyber_secret_key` | string | ML-KEM-512 64-byte seed (hex-encoded) |
 | **REALITY** | | |
 | `reality.private_key` | string | X25519 32-byte private key (hex-encoded) |
-| `reality.short_ids` | []string | Allowed short IDs (8-byte hex strings) |
+| `reality.short_ids` | []string | Allowed short IDs (4-byte hex, 8 chars each) |
 | `reality.max_time_diff` | int | Max clock skew in seconds (default 300) |
 | `reality.dest` | string | Spider fallback target (e.g. `"www.microsoft.com:443"`) |
 | **AnyTLS** | | |

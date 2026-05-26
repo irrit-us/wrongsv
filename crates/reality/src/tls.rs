@@ -40,30 +40,29 @@ impl RealityTlsStream {
 impl Read for RealityTlsStream {
     fn read(&mut self, buf: &mut [u8]) -> IoResult<usize> {
         loop {
-            match self.conn.reader().read(buf) {
-                Ok(0) => {
-                    // No decrypted data available — read more from socket
-                    match self.conn.read_tls(&mut self.stream) {
-                        Ok(0) => return Ok(0),
-                        Ok(_) => {
-                            self.conn.process_new_packets().map_err(|e| {
-                                std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-                            })?;
-                            // Loop back to try reader().read() again with
-                            // newly decrypted data
-                            continue;
-                        }
-                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            // Socket has no data yet — yield and retry.
-                            // Go's TLS library handles EAGAIN internally via
-                            // the net poller; we match that with a short sleep.
-                            std::thread::sleep(std::time::Duration::from_millis(5));
-                            continue;
-                        }
-                        Err(e) => return Err(e),
-                    }
+            // Determine if we need more TLS data from the socket.
+            // rustls reader can signal "no data" via Ok(0) or Err(WouldBlock).
+            let need_more = match self.conn.reader().read(buf) {
+                Ok(0) => true,
+                Ok(n) => return Ok(n),
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => true,
+                Err(e) => return Err(e),
+            };
+            if !need_more {
+                unreachable!();
+            }
+            // Read more TLS records from the underlying stream
+            match self.conn.read_tls(&mut self.stream) {
+                Ok(0) => return Ok(0),
+                Ok(_) => {
+                    self.conn.process_new_packets()
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                    continue;
                 }
-                other => return other,
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    return Err(e.kind().into());
+                }
+                Err(e) => return Err(e),
             }
         }
     }
@@ -156,7 +155,6 @@ impl rustls::KeyLog for DebugKeyLog {
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect::<String>();
-        tracing::info!("KEYLOG {label} {cr_hex} {secret_hex}");
         if let Ok(path) = std::env::var("WRONGSV_KEYLOG_FILE")
             && let Ok(mut f) = std::fs::OpenOptions::new()
                 .create(true)
@@ -181,7 +179,7 @@ impl ResolvesServerCert for RealityCertResolver {
         if let Some(sni) = client_hello.server_name() {
             tracing::info!("RUSTLS_CH SNI={sni}");
         }
-        tracing::info!(
+        tracing::debug!(
             "RUSTLS_CH cipher_suites={:?} sig_schemes={:?} named_groups={:?}",
             client_hello.cipher_suites(),
             client_hello.signature_schemes(),
@@ -239,31 +237,6 @@ pub fn accept_reality(
             });
         }
     };
-
-    // Debug: log what we parsed vs what we're buffering for rustls
-    tracing::info!(
-        "REALITY parsed: client_random={} key_share={} sid_len={}",
-        parsed
-            .random
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>(),
-        parsed
-            .key_share
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>(),
-        parsed.session_id.len(),
-    );
-    // Log first 100 bytes of raw_body (the ClientHello handshake message we feed to rustls)
-    let body_preview: String = parsed
-        .raw_body
-        .iter()
-        .take(80)
-        .map(|b| format!("{b:02x}"))
-        .collect::<Vec<_>>()
-        .join("");
-    tracing::info!("REALITY raw_body[..80]={body_preview}");
 
     let auth_key = match authenticate(&parsed, config) {
         Ok(k) => k,

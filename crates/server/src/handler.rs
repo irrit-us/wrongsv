@@ -517,7 +517,7 @@ fn handle_reality_connection(
     let mut tls_stream = match wrongsv_reality::accept_reality(stream, reality_config) {
         Ok(tls) => tls,
         Err(accept_err) => {
-            debug!("{peer} REALITY auth failed, spider fallback");
+            debug!("{peer} REALITY auth failed: {} — spider fallback", accept_err.error);
             if let Some(ref dest) = reality_config.dest {
                 wrongsv_reality::spider_fallback(
                     accept_err.stream,
@@ -798,12 +798,21 @@ impl Write for TlsWriteHandle {
 /// of a raw `TcpStream`. The TLS stream is shared via `Arc<Mutex<>>` so the
 /// two Vision threads (uplink and downlink) can read and write concurrently.
 fn relay_reality_vision(
-    tls: wrongsv_reality::RealityTlsStream,
+    mut tls: wrongsv_reality::RealityTlsStream,
     target: TcpStream,
     user_sent_id: &[u8],
     testseed: &[u32],
     initial_data: Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Set the underlying TCP stream to blocking mode — it may be non-blocking
+    // because the listener uses set_nonblocking(true) and Linux propagates that
+    // to accepted sockets.
+    {
+        let (_, stream) = tls.get_mut();
+        stream.get_mut().set_nonblocking(false)?;
+        stream.get_mut().set_read_timeout(Some(Duration::from_secs(1)))?;
+    }
+
     let tls = Arc::new(Mutex::new(tls));
     let t_read = target.try_clone()?;
     let t_write = target;
@@ -822,11 +831,6 @@ fn relay_reality_vision(
             use wrongsv_vless::vision::xtls_unpadding;
             let mut init_state = up_state.clone();
             let unpadded = xtls_unpadding(&initial_data, &mut init_state, true);
-            trace!(
-                "Vision REALITY uplink initial_data={} unpadded={}",
-                initial_data.len(),
-                unpadded.len()
-            );
             if !unpadded.is_empty() && tgt.write_all(&unpadded).is_err() {
                 let _ = tgt.shutdown(Shutdown::Write);
                 return;

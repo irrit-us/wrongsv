@@ -45,7 +45,7 @@ dest = "download-porter.hoyoverse.com:443"
 Grab the musl static binary from GitHub Releases (no glibc dependency):
 
 ```bash
-curl -L -o wrongsv.xz https://github.com/irrit-us/wrongsv/releases/download/v0.2.0/wrongsv-linux-x86_64-musl.xz
+curl -L -o wrongsv.xz https://github.com/irrit-us/wrongsv/releases/download/v0.2.2/wrongsv-linux-x86_64-musl.xz
 xz -d wrongsv.xz
 chmod +x wrongsv
 ```
