@@ -15,6 +15,7 @@ members = [
     "crates/server",
     "crates/kyber",
     "crates/reality",
+    "crates/anytls",
 ]
 
 [workspace.package]
@@ -32,6 +33,7 @@ wrongsv-encryption = { path = "crates/encryption" }
 wrongsv-server = { path = "crates/server" }
 wrongsv-kyber = { path = "crates/kyber" }
 wrongsv-reality = { path = "crates/reality" }
+wrongsv-anytls = { path = "crates/anytls" }
 
 bytes = "1"
 thiserror = "2"

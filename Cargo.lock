@@ -1429,6 +1429,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustls-pemfile"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dce314e5fee3f39953d46bb63bb8a46d40c2f8fb7cc5a3b6cab2bde9721d6e50"
+dependencies = [
+ "rustls-pki-types",
+]
+
+[[package]]
 name = "rustls-pki-types"
 version = "1.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2195,6 +2204,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "wrongsv-anytls"
+version = "0.1.0"
+dependencies = [
+ "rand",
+ "rcgen",
+ "rustls",
+ "rustls-pemfile",
+ "sha2",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "wrongsv-encryption"
 version = "0.1.0"
 dependencies = [
@@ -2254,9 +2276,11 @@ dependencies = [
  "bytes",
  "ctrlc",
  "serde",
+ "sha2",
  "thiserror",
  "toml",
  "tracing",
+ "wrongsv-anytls",
  "wrongsv-encryption",
  "wrongsv-kyber",
  "wrongsv-net-types",

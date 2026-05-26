@@ -21,6 +21,9 @@ pub struct Config {
     /// REALITY configuration. When set, TLS REALITY is enabled.
     #[serde(default)]
     pub reality: Option<RealityServerConfig>,
+    /// AnyTLS configuration. When set, AnyTLS TLS disguise is enabled.
+    #[serde(default)]
+    pub anytls: Option<AnyTlsServerConfig>,
 }
 
 /// REALITY server-side configuration.
@@ -41,6 +44,25 @@ pub struct RealityServerConfig {
 
 fn default_max_time_diff() -> u64 {
     300
+}
+
+/// AnyTLS server-side configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AnyTlsServerConfig {
+    /// Password for SHA-256 authentication.
+    pub password: String,
+    /// Fallback destination for unauthenticated probes (e.g. "127.0.0.1:8080").
+    #[serde(default)]
+    pub dest: Option<String>,
+    /// Optional TLS certificate PEM (self-signed if not provided).
+    #[serde(default)]
+    pub certificate: Option<String>,
+    /// Optional TLS key PEM.
+    #[serde(default)]
+    pub key: Option<String>,
+    /// Optional padding scheme string (same format as anytls-go).
+    #[serde(default)]
+    pub padding_scheme: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -128,6 +150,7 @@ flow = "xtls-rprx-vision"
             flow: None,
             kyber_secret_key: None,
             reality: None,
+            anytls: None,
         };
         assert!(config.validate().is_err());
     }
@@ -147,6 +170,7 @@ flow = "xtls-rprx-vision"
             flow: None,
             kyber_secret_key: None,
             reality: None,
+            anytls: None,
         };
         assert!(config.validate().is_err());
     }
