@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            suffix: ""
+            rustflags: "-Ctarget-cpu=x86-64"
+            target_cflags: ""
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            suffix: "-musl"
+            rustflags: "-Ctarget-cpu=x86-64"
+            target_cflags: "-march=x86-64 -mtune=generic"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install musl tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y musl-tools
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+        env:
+          CARGO_BUILD_RUSTFLAGS: ${{ matrix.rustflags }}
+          TARGET_CFLAGS: ${{ matrix.target_cflags }}
+          TARGET_CXXFLAGS: ${{ matrix.target_cflags }}
+
+      - name: Strip
+        run: |
+          strip target/${{ matrix.target }}/release/wrongsv \
+            -o wrongsv-${{ matrix.target }}${{ matrix.suffix }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wrongsv-${{ matrix.target }}${{ matrix.suffix }}
+          path: wrongsv-${{ matrix.target }}${{ matrix.suffix }}
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wrongsv-*
+          merge-multiple: true
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          # Extract the annotated tag message body, or commit subject if lightweight
+          TAG_MSG=$(git tag -l --format='%(contents:body)' "${{ github.ref_name }}")
+          if [ -z "$TAG_MSG" ]; then
+            TAG_MSG=$(git log -1 --format='%B' "${{ github.ref_name }}")
+          fi
+          # Use the first line as short description, rest as body
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          echo "$TAG_MSG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body: ${{ steps.notes.outputs.body }}
+          files: |
+            wrongsv-x86_64-unknown-linux-gnu
+            wrongsv-x86_64-unknown-linux-musl
