@@ -1249,41 +1249,9 @@ fn relay_anytls_raw(
     Ok(())
 }
 
-/// Thin `Read` handle for a mutex-protected `AnyTlsStream`.
-struct AnyTlsReadHandle {
-    inner: Arc<Mutex<wrongsv_anytls::AnyTlsStream>>,
-}
-
-impl Read for AnyTlsReadHandle {
-    fn read(&mut self, buf: &mut [u8]) -> IoResult<usize> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .read(buf)
-    }
-}
-
-/// Thin `Write` handle for a mutex-protected `AnyTlsStream`.
-struct AnyTlsWriteHandle {
-    inner: Arc<Mutex<wrongsv_anytls::AnyTlsStream>>,
-}
-
-impl Write for AnyTlsWriteHandle {
-    fn write(&mut self, buf: &[u8]) -> IoResult<usize> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .write(buf)
-    }
-
-    fn flush(&mut self) -> IoResult<()> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).flush()
-    }
-}
-
 fn relay_anytls_vision(
-    tls: wrongsv_anytls::AnyTlsStream,
-    target: TcpStream,
+    mut tls: wrongsv_anytls::AnyTlsStream,
+    mut target: TcpStream,
     user_sent_id: &[u8],
     testseed: &[u32],
     initial_data: Vec<u8>,
@@ -1293,79 +1261,109 @@ fn relay_anytls_vision(
     } else {
         vec![900, 500, 900, 256]
     };
-    let up_state = TrafficState::new(user_sent_id);
-    let down_state = TrafficState::new(user_sent_id);
+    let mut up_state = TrafficState::new(user_sent_id);
+    let mut down_state = TrafficState::new(user_sent_id);
+    let mut down_user_uuid: Option<[u8; 16]> = Some(down_state.user_uuid);
 
-    let tls1 = Arc::new(Mutex::new(tls));
-
-    // Write initial data
+    // Write initial data to target (after Vision uplink decoding)
     if !initial_data.is_empty() {
-        let mut locked = tls1.lock().unwrap_or_else(|e| e.into_inner());
-        locked.write_all(&initial_data)?;
-        locked.flush()?;
+        use wrongsv_vless::vision::xtls_unpadding;
+        let unpadded = xtls_unpadding(&initial_data, &mut up_state, true);
+        if !unpadded.is_empty() {
+            target.write_all(&unpadded)?;
+        }
     }
 
-    let t_read = target.try_clone()?;
+    target.set_read_timeout(Some(Duration::from_millis(200)))?;
+    let (conn, stream) = tls.get_mut();
+    stream.set_read_timeout(Some(Duration::from_millis(200)))?;
 
-    // Uplink: VisionReader (TLS) → target
-    let tls_uplink = Arc::clone(&tls1);
-    let t1 = thread::spawn(move || {
-        let inner = AnyTlsReadHandle { inner: tls_uplink };
-        let mut reader = VisionReader::new(inner, up_state, true);
-        let mut buf = [0u8; 32768];
-        let mut tgt = t_read;
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    if tgt.write_all(&buf[..n]).is_err() {
-                        break;
+    let mut buf = [0u8; 32768];
+    loop {
+        // Uplink: read from TLS → Vision decode → write raw to target
+        let uplink_done = loop {
+            match conn.read_tls(stream) {
+                Ok(0) => break true,
+                Ok(_) => {
+                    conn.process_new_packets()
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                    // Read all available plaintext, decode with Vision, forward to target
+                    loop {
+                        match conn.reader().read(&mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                let unpadded =
+                                    wrongsv_vless::vision::xtls_unpadding(&buf[..n], &mut up_state, true);
+                                if !unpadded.is_empty() {
+                                    target.write_all(&unpadded)?;
+                                }
+                            }
+                            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                            Err(e) => return Err(e.into()),
+                        }
                     }
                 }
-                Err(ref e)
-                    if e.kind() == std::io::ErrorKind::WouldBlock
-                        || e.kind() == std::io::ErrorKind::TimedOut =>
-                {
-                    std::thread::sleep(Duration::from_millis(5));
-                    continue;
-                }
-                Err(_) => break,
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break false,
+                Err(e) => return Err(e.into()),
             }
-        }
-        let _ = tgt.shutdown(Shutdown::Write);
-    });
-
-    // Downlink: target → VisionWriter (TLS)
-    let tls_downlink = Arc::clone(&tls1);
-    let t2 = thread::spawn(move || {
-        let inner = AnyTlsWriteHandle {
-            inner: tls_downlink,
         };
-        let mut writer = VisionWriter::new(inner, down_state, false, up_seed);
-        let mut buf = [0u8; 32768];
-        let mut tgt = target;
-        loop {
-            match tgt.read(&mut buf) {
-                Ok(0) => break,
+
+        // Downlink: read from target → Vision encode → write to TLS
+        let downlink_done = loop {
+            match target.read(&mut buf) {
+                Ok(0) => break true,
                 Ok(n) => {
-                    if writer.write(&buf[..n]).is_err() {
-                        break;
+                    let mut encoded = Vec::with_capacity(n + 256);
+                    {
+                        use wrongsv_vless::vision::VisionWriter;
+                        struct BufWriter<'a>(&'a mut Vec<u8>);
+                        impl Write for BufWriter<'_> {
+                            fn write(&mut self, data: &[u8]) -> IoResult<usize> {
+                                self.0.extend_from_slice(data);
+                                Ok(data.len())
+                            }
+                            fn flush(&mut self) -> IoResult<()> {
+                                Ok(())
+                            }
+                        }
+                        let mut w = VisionWriter::new(
+                            BufWriter(&mut encoded),
+                            down_state.clone(),
+                            false,
+                            up_seed.clone(),
+                        );
+                        w.user_uuid = down_user_uuid.take();
+                        w.write(&buf[..n])?;
+                        w.flush()?;
+                        down_state = w.state;
+                        // Preserve consumed uuid state (don't let clone restore it)
+                        down_user_uuid = w.user_uuid;
+                    }
+                    if !encoded.is_empty() {
+                        conn.writer().write_all(&encoded)?;
+                        while conn.wants_write() {
+                            conn.write_tls(stream)?;
+                        }
                     }
                 }
                 Err(ref e)
                     if e.kind() == std::io::ErrorKind::WouldBlock
                         || e.kind() == std::io::ErrorKind::TimedOut =>
                 {
-                    continue;
+                    break false
                 }
-                Err(_) => break,
+                Err(e) => return Err(e.into()),
             }
-        }
-        let _ = writer.flush();
-    });
+        };
 
-    t1.join().ok();
-    t2.join().ok();
+        if uplink_done && downlink_done {
+            break;
+        }
+        if uplink_done {
+            break;
+        }
+    }
+    let _ = target.shutdown(Shutdown::Write);
     Ok(())
 }
 

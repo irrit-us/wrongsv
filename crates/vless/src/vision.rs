@@ -444,10 +444,10 @@ impl<R: Read> Read for VisionReader<R> {
 
 /// Wraps a Write sink, applying XTLS padding to outgoing data.
 pub struct VisionWriter<W: Write> {
-    inner: W,
-    state: TrafficState,
+    pub inner: W,
+    pub state: TrafficState,
     is_uplink: bool,
-    user_uuid: Option<[u8; 16]>,
+    pub user_uuid: Option<[u8; 16]>,
     testseed: Vec<u32>,
     /// Whether to pass through directly.
     pub direct: bool,
