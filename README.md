@@ -50,7 +50,7 @@ wrongsv (binary)
 
 ## Quick Start
 
-[SETUP.md](SETUP.md) has the full build, configuration, and troubleshooting guide.
+[docs/SETUP.md](docs/SETUP.md) has the full build, configuration, and troubleshooting guide.
 
 ### Build
 
@@ -98,7 +98,7 @@ cargo run --release
 
 ### Client config generation
 
-The server can generate a v2rayN/v2rayNG-compatible client config JSON:
+Generate FlClash/mihomo/sing-box-compatible client config JSON (kebab-case keys, `client-fingerprint`):
 
 ```bash
 cargo run --release -- --print-client-config --server-host YOUR_IP --servername YOUR_SNI
@@ -160,12 +160,14 @@ Runs 480 connections across 3 rounds and monitors RSS for memory leaks.
 ## Verified Interop
 
 - **xray-core 26.5.9+** — REALITY handshake completes with `uConn.Verified: true`. Ed25519 certs work with Chrome fingerprint.
+- **sing-box** — REALITY+Vision lifecycle tests passing: HTTP relay, multi-request, multi-user, restart, wrong credential rejection.
+- **mihomo (ClashMeta) / FlClash** — REALITY+Vision full proxy cycle verified. Use `client-fingerprint`, `public-key`, `short-id` (kebab-case) in config. Generated client JSON uses these keys.
 - **REALITY spider fallback** — unauthenticated probes forwarded to `dest` target. Confirmed with `curl` → `www.microsoft.com:443`.
 - **AnyTLS echo relay** — TLS 1.3 handshake, password auth, VLESS header exchange, and bidirectional data relay verified end-to-end.
 - **AnyTLS + Vision** — full XTLS Vision padding/unpadding over AnyTLS TLS connections. Small (14B) and large (16KB) payloads verified.
 - **AnyTLS fallback** — wrong password → connection forwarded to fallback destination.
 - **AnyTLS UDP** — length-prefixed UDP relay over AnyTLS TLS.
-- **Concurrent connections** — 6+ simultaneous REALITY connections all authenticate and relay correctly.
+- **Concurrent connections** — 6+ simultaneous REALITY connections all authenticate and relay correctly. 30 rapid-fire requests, 5×1MB concurrent downloads verified.
 
 ## License
 

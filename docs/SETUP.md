@@ -230,7 +230,7 @@ RUST_LOG=trace ./target/release/wrongsv --config config.toml   # very verbose
 
 ### Client config generation
 
-Generate v2rayN/v2rayNG-compatible client JSON:
+Generate FlClash/mihomo/sing-box-compatible client JSON (kebab-case keys):
 
 ```bash
 # Print to stdout
@@ -243,7 +243,9 @@ Generate v2rayN/v2rayNG-compatible client JSON:
     --server-host YOUR_IP --servername example.com --client-name "my-server"
 ```
 
-The generated JSON includes REALITY options (publicKey, shortId) when REALITY is configured, derived from the config or compile-time build.rs defaults.
+The generated JSON uses `client-fingerprint`, `public-key`, `short-id` (kebab-case matching
+Go struct tags in mihomo/sing-box) and includes `"tls": true`. REALITY options are
+included when REALITY is configured.
 
 ## Testing
 
@@ -284,7 +286,8 @@ wrongsv/
 ├── Cargo.toml                  # workspace root
 ├── build.rs                    # compile-time key generation (UUID, X25519, Kyber)
 ├── README.md                   # project overview, features, interop
-├── SETUP.md                    # this file — build and config guide
+├── docs/
+│   └── SETUP.md                # this file — build and config guide
 ├── configs/                    # ready-to-use TOML config examples
 │   ├── basic-tcp.toml
 │   ├── vision.toml
