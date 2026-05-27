@@ -24,6 +24,11 @@ pub struct Config {
     /// AnyTLS configuration. When set, AnyTLS TLS disguise is enabled.
     #[serde(default)]
     pub anytls: Option<AnyTlsServerConfig>,
+    /// Standard TLS configuration. When set, plain TLS 1.3 + VLESS is enabled.
+    /// Compatible with clients that support VLESS + tls transport
+    /// (sing-box, mihomo/flclash, xray-core).
+    #[serde(default)]
+    pub tls: Option<TlsServerConfig>,
 }
 
 /// REALITY server-side configuration.
@@ -63,6 +68,23 @@ pub struct AnyTlsServerConfig {
     /// Optional padding scheme string (same format as anytls-go).
     #[serde(default)]
     pub padding_scheme: Option<String>,
+}
+
+/// Standard TLS server-side configuration.
+///
+/// Enables plain TLS 1.3 + VLESS — compatible with sing-box, mihomo/flclash,
+/// and xray-core clients using `tls` transport (not REALITY, not AnyTLS).
+#[derive(Debug, Clone, Deserialize)]
+pub struct TlsServerConfig {
+    /// Optional TLS certificate PEM (self-signed if not provided).
+    #[serde(default)]
+    pub certificate: Option<String>,
+    /// Optional TLS key PEM.
+    #[serde(default)]
+    pub key: Option<String>,
+    /// Fallback destination for probes (optional).
+    #[serde(default)]
+    pub dest: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -151,6 +173,7 @@ flow = "xtls-rprx-vision"
             kyber_secret_key: None,
             reality: None,
             anytls: None,
+            tls: None,
         };
         assert!(config.validate().is_err());
     }
@@ -171,6 +194,7 @@ flow = "xtls-rprx-vision"
             kyber_secret_key: None,
             reality: None,
             anytls: None,
+            tls: None,
         };
         assert!(config.validate().is_err());
     }

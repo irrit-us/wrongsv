@@ -14,7 +14,7 @@ use wrongsv_vless_encoding::{
     self as encoding, Addons, LengthPacketReader, LengthPacketWriter, PacketReadError,
 };
 
-use crate::config::{AnyTlsServerConfig, Config, RealityServerConfig};
+use crate::config::{AnyTlsServerConfig, Config, RealityServerConfig, TlsServerConfig};
 
 /// Decode a hex string into a fixed-size byte array.
 fn decode_hex<const N: usize>(hex: &str) -> Result<[u8; N], String> {
@@ -89,12 +89,37 @@ fn parse_anytls_config(ac: &AnyTlsServerConfig) -> Result<wrongsv_anytls::AnyTls
     })
 }
 
+/// Plain TLS configuration — standard TLS 1.3 + VLESS, no password or REALITY.
+#[derive(Clone)]
+pub(crate) struct TlsConfig {
+    pub tls_config: Arc<rustls::ServerConfig>,
+    pub dest: Option<String>,
+}
+
+fn parse_tls_config(tc: &TlsServerConfig) -> Result<TlsConfig, String> {
+    let (cert_pem, key_pem) = match (&tc.certificate, &tc.key) {
+        (Some(c), Some(k)) => (c.clone(), k.clone()),
+        _ => {
+            let (cert, key) = wrongsv_anytls::generate_self_signed_cert()
+                .map_err(|e| format!("tls cert: {e}"))?;
+            (cert, key)
+        }
+    };
+    let server_config = wrongsv_anytls::build_tls_config(&cert_pem, &key_pem)
+        .map_err(|e| format!("tls config: {e}"))?;
+    Ok(TlsConfig {
+        tls_config: Arc::new(server_config),
+        dest: tc.dest.clone(),
+    })
+}
+
 pub struct InboundServer {
     config: Config,
     validator: Arc<MemoryValidator>,
     kyber_sk: Option<[u8; 64]>,
     reality_config: Option<wrongsv_reality::RealityConfig>,
     anytls_config: Option<wrongsv_anytls::AnyTlsConfig>,
+    tls_config: Option<TlsConfig>,
 }
 
 impl InboundServer {
@@ -112,6 +137,10 @@ impl InboundServer {
             Some(ac) => Some(parse_anytls_config(ac)?),
             None => None,
         };
+        let tls_config = match &config.tls {
+            Some(tc) => Some(parse_tls_config(tc)?),
+            None => None,
+        };
         if let Some(ref rc) = reality_config {
             let rpk_hex: String = rc
                 .cert_material
@@ -123,6 +152,9 @@ impl InboundServer {
         }
         if anytls_config.is_some() {
             info!("AnyTLS enabled");
+        }
+        if tls_config.is_some() {
+            info!("TLS enabled");
         }
         let validator = Arc::new(MemoryValidator::new());
         for user in &config.users {
@@ -155,6 +187,7 @@ impl InboundServer {
             kyber_sk,
             reality_config,
             anytls_config,
+            tls_config,
         })
     }
 
@@ -184,6 +217,7 @@ impl InboundServer {
         let kyber_sk = self.kyber_sk;
         let reality_config = self.reality_config.clone();
         let anytls_config = self.anytls_config.clone();
+        let tls_config = self.tls_config.clone();
 
         loop {
             if !running.load(Ordering::SeqCst) {
@@ -196,12 +230,15 @@ impl InboundServer {
                     let v = Arc::clone(&validator);
                     let rc = reality_config.clone();
                     let ac = anytls_config.clone();
+                    let tc = tls_config.clone();
                     thread::spawn(move || {
                         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                             if let Some(ref rc) = rc {
                                 handle_reality_connection(stream, v, kyber_sk, rc)
                             } else if let Some(ref ac) = ac {
                                 handle_anytls_connection(stream, v, kyber_sk, ac)
+                            } else if let Some(ref tc) = tc {
+                                handle_tls_connection(stream, v, kyber_sk, tc)
                             } else {
                                 handle_connection(stream, v, kyber_sk)
                             }
@@ -233,6 +270,173 @@ impl InboundServer {
         }
         Ok(())
     }
+}
+
+/// Complete a standard TLS 1.3 handshake and return an `AnyTlsStream` for VLESS.
+///
+/// Unlike AnyTLS, there is no password auth — the TLS layer only provides
+/// encryption and DPI resistance. VLESS UUID authentication is still enforced
+/// when the subsequent VLESS header is read.
+fn accept_tls(
+    stream: TcpStream,
+    config: &TlsConfig,
+) -> Result<wrongsv_anytls::AnyTlsStream, Box<dyn std::error::Error>> {
+    let mut conn = rustls::ServerConnection::new(Arc::clone(&config.tls_config))
+        .map_err(|e| format!("tls create: {e}"))?;
+    let mut stream = stream;
+    loop {
+        match conn.complete_io(&mut stream) {
+            Ok((_, _)) if !conn.is_handshaking() => break,
+            Ok(_) => {}
+            Err(e) => return Err(format!("tls handshake: {e}").into()),
+        }
+    }
+    Ok(wrongsv_anytls::AnyTlsStream::from_parts(conn, stream))
+}
+
+fn handle_tls_connection(
+    stream: TcpStream,
+    validator: Arc<MemoryValidator>,
+    kyber_sk: Option<[u8; 64]>,
+    tls_config: &TlsConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let peer = stream.peer_addr()?;
+    trace!("{peer} TLS connection");
+
+    let mut tls_stream = match accept_tls(stream, tls_config) {
+        Ok(tls) => tls,
+        Err(e) => {
+            debug!("{peer} TLS handshake failed: {e}");
+            return Err(e);
+        }
+    };
+    info!("{peer} TLS handshake complete");
+
+    // Read VLESS header from TLS stream (same as AnyTLS path)
+    let mut first = vec![0u8; 8192];
+    let (read_conn, write_conn) = tls_stream.get_mut();
+    loop {
+        let result = read_conn.reader().read(&mut first);
+        match result {
+            Ok(0) => {
+                let n = read_conn.read_tls(write_conn)?;
+                if n == 0 {
+                    return Err("connection closed before VLESS header".into());
+                }
+                read_conn
+                    .process_new_packets()
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            }
+            Ok(n) => {
+                first.truncate(n);
+                break;
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                let n = read_conn.read_tls(write_conn)?;
+                if n == 0 {
+                    return Err("connection closed before VLESS header".into());
+                }
+                read_conn
+                    .process_new_packets()
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    let n = first.len();
+    trace!("{peer} TLS read {n} bytes VLESS header");
+
+    if n < 18 {
+        debug!("{peer} connection too short ({n} bytes), dropping");
+        return Err("connection too short for VLESS header".into());
+    }
+
+    let (decoded, remaining_body) = {
+        let v = validator.clone();
+        let mut cursor = std::io::Cursor::new(first);
+        let decoded = encoding::decode_request_header(&mut cursor, move |id| v.get(id))?;
+        let pos = cursor.position() as usize;
+        let inner = cursor.into_inner();
+        let remaining = if pos < inner.len() {
+            inner[pos..].to_vec()
+        } else {
+            Vec::new()
+        };
+        (decoded, remaining)
+    };
+
+    let request = &decoded.header;
+    let account = &request.user.account;
+
+    info!(
+        "{} {} {} -> {}:{}",
+        peer,
+        if request.command == RequestCommand::Tcp {
+            "TCP"
+        } else {
+            "UDP"
+        },
+        request.user.email,
+        request.address,
+        request.port,
+    );
+
+    let use_vision = decoded.addons.flow == XRV && account.flow == XRV;
+
+    if !decoded.addons.kyber_ct.is_empty()
+        && let Some(sk) = kyber_sk
+    {
+        match wrongsv_kyber::decapsulate(&sk, &decoded.addons.kyber_ct) {
+            Ok(_) => info!("{peer} Kyber session established"),
+            Err(e) => warn!("{peer} Kyber decapsulation failed: {e}"),
+        }
+    }
+
+    if request.command == RequestCommand::Udp && use_vision {
+        return Err("XTLS Vision does not support UDP".into());
+    }
+
+    // Send response header
+    let response_addons = Addons {
+        flow: String::new(),
+        ..Default::default()
+    };
+    let mut resp_buf = bytes::BytesMut::new();
+    encoding::encode_response_header(&mut resp_buf, request, &response_addons)?;
+    read_conn.writer().write_all(&resp_buf)?;
+    while read_conn.wants_write() {
+        read_conn.write_tls(write_conn)?;
+    }
+
+    if request.command == RequestCommand::Udp {
+        if !account.udp {
+            return Err("UDP not enabled for this user".into());
+        }
+        relay_anytls_udp(tls_stream, request, remaining_body)?;
+        debug!("{peer} TLS UDP relay finished");
+        return Ok(());
+    }
+
+    let target_addr = format!("{}:{}", request.address, request.port);
+    debug!("{peer} connecting to target {target_addr}");
+    let target = TcpStream::connect(&target_addr)?;
+    target.set_read_timeout(Some(Duration::from_secs(60)))?;
+
+    if use_vision {
+        let user_sent_id = account.id.bytes();
+        relay_anytls_vision(
+            tls_stream,
+            target,
+            user_sent_id,
+            &account.testseed,
+            remaining_body,
+        )?;
+    } else {
+        relay_anytls_raw(tls_stream, target, remaining_body)?;
+    }
+    debug!("{peer} TLS TCP relay finished");
+    Ok(())
 }
 
 fn handle_anytls_connection(
@@ -554,6 +758,7 @@ fn handle_reality_connection(
     info!("{peer} REALITY handshake complete");
 
     // Read VLESS header from TLS stream
+    trace!("{peer} reading VLESS header from TLS...");
     let mut first = vec![0u8; 8192];
     let (read_conn, write_conn) = tls_stream.get_mut();
     loop {
@@ -679,7 +884,7 @@ fn handle_reality_connection(
 
     // Connect to target
     let target_addr = format!("{}:{}", request.address, request.port);
-    debug!("{peer} connecting to target {target_addr}");
+    trace!("{peer} connecting to target {target_addr}");
     let addr = target_addr
         .to_socket_addrs()?
         .next()
@@ -689,6 +894,7 @@ fn handle_reality_connection(
     trace!("{peer} connected to target");
 
     if use_vision {
+        trace!("{peer} starting REALITY Vision relay (initial={}B)", remaining_body.len());
         relay_reality_vision(
             tls_stream,
             target,
@@ -697,9 +903,10 @@ fn handle_reality_connection(
             remaining_body,
         )?;
     } else {
+        trace!("{peer} starting REALITY raw relay (initial={}B)", remaining_body.len());
         relay_reality(tls_stream, target, remaining_body)?;
     }
-    debug!("{peer} REALITY relay finished");
+    trace!("{peer} REALITY relay finished");
 
     Ok(())
 }
@@ -709,11 +916,13 @@ fn relay_reality(
     mut target: TcpStream,
     initial_data: Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    trace!("relay_reality: start, initial_data={}B", initial_data.len());
     let mut buf = [0u8; 32768];
     target.set_read_timeout(Some(Duration::from_secs(1)))?;
 
     if !initial_data.is_empty() {
         target.write_all(&initial_data)?;
+        trace!("relay_reality: wrote {}B initial data to target", initial_data.len());
     }
 
     let (conn, stream) = tls.get_mut();
@@ -721,11 +930,14 @@ fn relay_reality(
         .get_mut()
         .set_read_timeout(Some(Duration::from_secs(1)))?;
 
+    let mut c2t_bytes: u64 = 0;
+    let mut t2c_bytes: u64 = 0;
+
     loop {
         // Client → Target: read TLS records, then drain plaintext
         match conn.read_tls(stream) {
             Ok(0) => {
-                debug!("relay_reality: client EOF");
+                trace!("relay_reality: client EOF (c2t={c2t_bytes} t2c={t2c_bytes})");
                 break;
             }
             Ok(_) => {
@@ -736,6 +948,7 @@ fn relay_reality(
                         Ok(0) => break,
                         Ok(n) => {
                             target.write_all(&buf[..n])?;
+                            c2t_bytes += n as u64;
                         }
                         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                         Err(e) => return Err(e.into()),
@@ -749,7 +962,7 @@ fn relay_reality(
         // Target → Client: read from target, encrypt and send to client
         match target.read(&mut buf) {
             Ok(0) => {
-                debug!("relay_reality: target EOF");
+                trace!("relay_reality: target EOF (c2t={c2t_bytes} t2c={t2c_bytes})");
                 break;
             }
             Ok(n) => {
@@ -757,6 +970,7 @@ fn relay_reality(
                 while conn.wants_write() {
                     conn.write_tls(stream)?;
                 }
+                t2c_bytes += n as u64;
             }
             Err(ref e)
                 if matches!(
@@ -772,7 +986,7 @@ fn relay_reality(
         conn.write_tls(stream)?;
     }
     stream.get_mut().shutdown(std::net::Shutdown::Write)?;
-    debug!("relay_reality: finished");
+    trace!("relay_reality: finished (c2t={c2t_bytes} t2c={t2c_bytes})");
     Ok(())
 }
 
@@ -989,14 +1203,14 @@ fn relay_anytls_raw(
     initial_data: Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = [0u8; 32768];
-    target.set_read_timeout(Some(Duration::from_secs(1)))?;
+    target.set_read_timeout(Some(Duration::from_millis(100)))?;
 
     if !initial_data.is_empty() {
         target.write_all(&initial_data)?;
     }
 
     let (conn, stream) = tls.get_mut();
-    stream.set_read_timeout(Some(Duration::from_secs(1)))?;
+    stream.set_read_timeout(Some(Duration::from_millis(100)))?;
 
     loop {
         match conn.read_tls(stream) {

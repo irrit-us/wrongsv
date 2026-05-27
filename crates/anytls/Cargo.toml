@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-rustls = { version = "0.23", default-features = false, features = ["std", "aws_lc_rs"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 rustls-pemfile = "2"
 rcgen = "0.13"
 sha2.workspace = true

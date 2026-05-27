@@ -95,6 +95,11 @@ pub struct AnyTlsStream {
 }
 
 impl AnyTlsStream {
+    /// Construct an `AnyTlsStream` from an already-handshaked TLS connection.
+    pub fn from_parts(conn: rustls::ServerConnection, stream: TcpStream) -> Self {
+        Self { conn, stream }
+    }
+
     pub fn get_mut(&mut self) -> (&mut rustls::ServerConnection, &mut TcpStream) {
         (&mut self.conn, &mut self.stream)
     }
@@ -324,9 +329,9 @@ pub fn build_tls_config(cert_pem: &str, key_pem: &str) -> Result<ServerConfig, A
         .map_err(|e| AnyTlsError::Tls(format!("parse key: {e}")))?
         .ok_or_else(|| AnyTlsError::Tls("no private key found".into()))?;
 
-    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
     let mut tls_config = ServerConfig::builder_with_provider(provider)
-        .with_protocol_versions(&[&rustls::version::TLS13])
+        .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
         .map_err(|e| AnyTlsError::Tls(format!("protocol versions: {e}")))?
         .with_no_client_auth()
         .with_single_cert(certs, key)
@@ -337,10 +342,11 @@ pub fn build_tls_config(cert_pem: &str, key_pem: &str) -> Result<ServerConfig, A
 
 /// Generate a self-signed TLS certificate and key for AnyTLS.
 ///
-/// Uses `rcgen` (same as REALITY) to produce a self-signed Ed25519 cert
-/// with a realistic-looking SAN.
+/// Uses `rcgen` to produce a self-signed ECDSA P-256 cert
+/// with a realistic-looking SAN. ECDSA is used instead of Ed25519
+/// because Chrome uTLS fingerprints don't include Ed25519 sig algs.
 pub fn generate_self_signed_cert() -> Result<(String, String), AnyTlsError> {
-    let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519)
+    let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)
         .map_err(|e| AnyTlsError::Tls(format!("key gen: {e}")))?;
     let mut params = rcgen::CertificateParams::new(Vec::new())
         .map_err(|e| AnyTlsError::Tls(format!("params: {e}")))?;

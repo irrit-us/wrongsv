@@ -111,6 +111,7 @@ fn build_default_config() -> Config {
         kyber_secret_key: kyber,
         reality: None,
         anytls: None,
+        tls: None,
     }
 }
 

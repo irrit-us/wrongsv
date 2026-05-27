@@ -17,6 +17,7 @@ use std::time::Duration;
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 use rustls::{ServerConfig, ServerConnection};
+use tracing::trace;
 
 use crate::RealityAcceptError;
 use crate::RealityConfig;
@@ -201,6 +202,7 @@ pub fn accept_reality(
     mut stream: TcpStream,
     config: &RealityConfig,
 ) -> Result<RealityTlsStream, RealityAcceptError> {
+    trace!("accept_reality: reading ClientHello...");
     // The listener uses set_nonblocking(true) which propagates to accepted
     // sockets on Linux. Switch to blocking so reads wait for data.
     let _ = stream.set_nonblocking(false);
@@ -214,6 +216,7 @@ pub fn accept_reality(
     while n < 5 {
         match stream.read(&mut buf[n..]) {
             Ok(0) => {
+                trace!("read EOF after {n} header bytes");
                 let got = buf[..n].to_vec();
                 return Err(RealityAcceptError {
                     error: RealityError::TlsParse(format!(
@@ -226,6 +229,7 @@ pub fn accept_reality(
             }
             Ok(m) => n += m,
             Err(e) => {
+                trace!("read error after {n} header bytes: {e}");
                 let got = buf[..n].to_vec();
                 return Err(RealityAcceptError {
                     error: RealityError::TlsParse(format!("read error after {n} bytes: {e}")),
@@ -236,7 +240,12 @@ pub fn accept_reality(
         }
     }
 
+    let record_type = buf[0];
+    let tls_version = u16::from_be_bytes([buf[1], buf[2]]);
     let record_len = u16::from_be_bytes([buf[3], buf[4]]) as usize;
+    trace!(
+        "TLS record header: type=0x{record_type:02x} version=0x{tls_version:04x} len={record_len}"
+    );
     if record_len > 65531 {
         return Err(RealityAcceptError {
             error: RealityError::TlsParse(format!("TLS record too large: {record_len}")),
@@ -253,6 +262,11 @@ pub fn accept_reality(
         match stream.read_exact(&mut buf[n..total]) {
             Ok(()) => {}
             Err(e) => {
+                trace!(
+                    "TLS body read failed: {e} (got {}/{} header bytes, expected {total} total)",
+                    n,
+                    buf.len(),
+                );
                 return Err(RealityAcceptError {
                     error: RealityError::TlsParse(format!("read TLS record body: {e}")),
                     stream,
@@ -262,13 +276,22 @@ pub fn accept_reality(
         }
     }
     buf.truncate(total);
+    trace!("read {} bytes for ClientHello (record_len={record_len})", total);
 
     let _ = stream.set_read_timeout(None);
 
     // Parse ClientHello and run REALITY auth
     let parsed = match parse_client_hello(&buf) {
-        Ok(p) => p,
+        Ok(p) => {
+            trace!(
+                "ClientHello parsed: session_id={}B key_share={}B",
+                p.session_id.len(),
+                p.key_share.len()
+            );
+            p
+        }
         Err(e) => {
+            trace!("ClientHello parse failed: {e}");
             return Err(RealityAcceptError {
                 error: e,
                 stream,
@@ -278,8 +301,12 @@ pub fn accept_reality(
     };
 
     let auth_key = match authenticate(&parsed, config) {
-        Ok(k) => k,
+        Ok(k) => {
+            trace!("REALITY auth succeeded");
+            k
+        }
         Err(e) => {
+            trace!("REALITY auth failed: {e}");
             return Err(RealityAcceptError {
                 error: e,
                 stream,
@@ -290,7 +317,10 @@ pub fn accept_reality(
 
     // Generate dynamic certificate: clone template, patch signature with HMAC
     let certified_key = match generate_reality_cert(&auth_key, &config.cert_material) {
-        Ok(ck) => ck,
+        Ok(ck) => {
+            trace!("dynamic cert generated");
+            ck
+        }
         Err(e) => {
             return Err(RealityAcceptError {
                 error: e,
@@ -344,15 +374,18 @@ pub fn accept_reality(
 ///
 /// Must be called after `accept_reality` before reading/writing.
 pub fn complete_handshake(tls: &mut RealityTlsStream) -> Result<(), RealityError> {
+    trace!("completing TLS handshake...");
     loop {
         match tls.conn.complete_io(&mut tls.stream) {
             Ok((_, _)) if !tls.conn.is_handshaking() => break,
             Ok(_) => continue,
             Err(e) => {
+                trace!("TLS handshake failed: {e}");
                 return Err(RealityError::TlsHandshake(format!("handshake: {e}")));
             }
         }
     }
+    trace!("TLS handshake complete");
     Ok(())
 }
 
