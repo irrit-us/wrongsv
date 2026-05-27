@@ -421,6 +421,7 @@ fn handle_tls_connection(
     let target_addr = format!("{}:{}", request.address, request.port);
     debug!("{peer} connecting to target {target_addr}");
     let target = TcpStream::connect(&target_addr)?;
+    target.set_nodelay(true)?;
     target.set_read_timeout(Some(Duration::from_secs(60)))?;
 
     if use_vision {
@@ -576,6 +577,7 @@ fn handle_anytls_connection(
     let target_addr = format!("{}:{}", request.address, request.port);
     debug!("{peer} connecting to target {target_addr}");
     let target = TcpStream::connect(&target_addr)?;
+    target.set_nodelay(true)?;
     target.set_read_timeout(Some(Duration::from_secs(60)))?;
 
     if use_vision {
@@ -708,6 +710,7 @@ fn handle_connection(
         .next()
         .ok_or_else(|| format!("DNS resolution failed for {target_addr}"))?;
     let target = TcpStream::connect_timeout(&addr, Duration::from_secs(10))?;
+    target.set_nodelay(true)?;
     target.set_read_timeout(Some(Duration::from_secs(300)))?;
     trace!("{peer} connected to target");
 
@@ -890,6 +893,7 @@ fn handle_reality_connection(
         .next()
         .ok_or_else(|| format!("DNS resolution failed for {target_addr}"))?;
     let target = TcpStream::connect_timeout(&addr, Duration::from_secs(10))?;
+    target.set_nodelay(true)?;
     target.set_read_timeout(Some(Duration::from_secs(300)))?;
     trace!("{peer} connected to target");
 
@@ -1203,16 +1207,48 @@ fn relay_anytls_raw(
     initial_data: Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = [0u8; 32768];
-    target.set_read_timeout(Some(Duration::from_millis(100)))?;
+    target.set_nodelay(true)?;
+    // Fast path to Google/local targets: 2s is generous for slow-start on
+    // fresh connections without wasting cycles on WouldBlock spins.
+    target.set_read_timeout(Some(Duration::from_secs(2)))?;
 
     if !initial_data.is_empty() {
         target.write_all(&initial_data)?;
     }
 
     let (conn, stream) = tls.get_mut();
-    stream.set_read_timeout(Some(Duration::from_millis(100)))?;
+    // High-latency client link (600ms+ RTT): 5s timeout so we don't spin
+    // on WouldBlock while waiting for the next TLS record to arrive.
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
 
     loop {
+        // Drain target first — it's the fast, low-latency side.
+        // When downloading a large response we want to pull as much
+        // data from the target as we can before checking for new
+        // client requests.
+        match target.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                conn.writer().write_all(&buf[..n])?;
+                while conn.wants_write() {
+                    conn.write_tls(stream)?;
+                }
+                // Don't move to client-side yet — keep draining target
+                // while data is available.
+                target.set_read_timeout(Some(Duration::from_millis(10)))?;
+                continue;
+            }
+            Err(ref e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                // Target has nothing more — restore timeout and check client
+                target.set_read_timeout(Some(Duration::from_secs(2)))?;
+            }
+            Err(e) => return Err(e.into()),
+        }
+
+        // Client side
         match conn.read_tls(stream) {
             Ok(0) => break,
             Ok(_) => {
@@ -1221,27 +1257,17 @@ fn relay_anytls_raw(
                 loop {
                     match conn.reader().read(&mut buf) {
                         Ok(0) => break,
-                        Ok(n) => target.write_all(&buf[..n])?,
+                        Ok(n) => {
+                            target.write_all(&buf[..n])?;
+                            // Forward to target immediately, then drain response
+                            target.set_read_timeout(Some(Duration::from_millis(10)))?;
+                        }
                         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                         Err(e) => return Err(e.into()),
                     }
                 }
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(e) => return Err(e.into()),
-        }
-
-        match target.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                conn.writer().write_all(&buf[..n])?;
-                while conn.wants_write() {
-                    conn.write_tls(stream)?;
-                }
-            }
-            Err(ref e)
-                if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut => {}
             Err(e) => return Err(e.into()),
         }
     }
@@ -1274,41 +1300,19 @@ fn relay_anytls_vision(
         }
     }
 
-    target.set_read_timeout(Some(Duration::from_millis(200)))?;
+    target.set_nodelay(true)?;
+    // Fast local/remote targets: generous timeout to avoid spinning on
+    // WouldBlock while waiting for the first TLS response bytes.
+    target.set_read_timeout(Some(Duration::from_secs(2)))?;
     let (conn, stream) = tls.get_mut();
-    stream.set_read_timeout(Some(Duration::from_millis(200)))?;
+    // High-latency client link: 5s timeout.
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
 
     let mut buf = [0u8; 32768];
     loop {
-        // Uplink: read from TLS → Vision decode → write raw to target
-        let uplink_done = loop {
-            match conn.read_tls(stream) {
-                Ok(0) => break true,
-                Ok(_) => {
-                    conn.process_new_packets()
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-                    // Read all available plaintext, decode with Vision, forward to target
-                    loop {
-                        match conn.reader().read(&mut buf) {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                let unpadded =
-                                    wrongsv_vless::vision::xtls_unpadding(&buf[..n], &mut up_state, true);
-                                if !unpadded.is_empty() {
-                                    target.write_all(&unpadded)?;
-                                }
-                            }
-                            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                            Err(e) => return Err(e.into()),
-                        }
-                    }
-                }
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break false,
-                Err(e) => return Err(e.into()),
-            }
-        };
-
-        // Downlink: read from target → Vision encode → write to TLS
+        // Downlink first: drain target aggressively — it's the fast side.
+        // For large responses we want to pull all available data before
+        // checking the high-latency client side.
         let downlink_done = loop {
             match target.read(&mut buf) {
                 Ok(0) => break true,
@@ -1336,7 +1340,6 @@ fn relay_anytls_vision(
                         w.write(&buf[..n])?;
                         w.flush()?;
                         down_state = w.state;
-                        // Preserve consumed uuid state (don't let clone restore it)
                         down_user_uuid = w.user_uuid;
                     }
                     if !encoded.is_empty() {
@@ -1345,13 +1348,45 @@ fn relay_anytls_vision(
                             conn.write_tls(stream)?;
                         }
                     }
+                    // Keep draining target while data is available
+                    target.set_read_timeout(Some(Duration::from_millis(10)))?;
                 }
                 Err(ref e)
                     if e.kind() == std::io::ErrorKind::WouldBlock
                         || e.kind() == std::io::ErrorKind::TimedOut =>
                 {
+                    target.set_read_timeout(Some(Duration::from_secs(2)))?;
                     break false
                 }
+                Err(e) => return Err(e.into()),
+            }
+        };
+
+        // Uplink: read from TLS → Vision decode → write raw to target
+        let uplink_done = loop {
+            match conn.read_tls(stream) {
+                Ok(0) => break true,
+                Ok(_) => {
+                    conn.process_new_packets()
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                    loop {
+                        match conn.reader().read(&mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                let unpadded =
+                                    wrongsv_vless::vision::xtls_unpadding(&buf[..n], &mut up_state, true);
+                                if !unpadded.is_empty() {
+                                    target.write_all(&unpadded)?;
+                                    // Forward to target then immediately drain response
+                                    target.set_read_timeout(Some(Duration::from_millis(10)))?;
+                                }
+                            }
+                            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                            Err(e) => return Err(e.into()),
+                        }
+                    }
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break false,
                 Err(e) => return Err(e.into()),
             }
         };
