@@ -1,5 +1,43 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Plain TLS transport** (`[tls]` config section): Standard TLS 1.3 + VLESS,
+  compatible with sing-box, mihomo, and xray-core `tls` transport. Auto-generated
+  ECDSA P-256 self-signed certificates with uTLS Chrome fingerprint support.
+- Config examples: `tls-vision.toml`, `tls-tcp.toml`.
+- **Client config generation** now supports all transport types: REALITY, AnyTLS,
+  TLS, and raw. Auto-detection from TOML config file + `--transport` override.
+- **sing-box format** (`--format sing-box`): Generates nested `tls` object with
+  `utls`, `reality` sub-blocks. Default is mihomo/FlClash flat-key format.
+- Plain TLS deployment guide in `docs/simple-deploy.md`.
+
+### Fixed
+
+- **TLS+Vision deadlock**: Replaced `Arc<Mutex<AnyTlsStream>>` threaded relay
+  with sequential relay using `get_mut()`. Uplink (TLS → Vision decode → target)
+  and downlink (target → Vision encode → TLS) alternate in a single thread,
+  eliminating the mutex deadlock that blocked HTTPS traffic.
+- **Vision user_uuid corruption**: UUID is now consumed (`take()`) on first
+  downlink write only. Previously, cloning `TrafficState` per iteration
+  re-injected the UUID prefix, corrupting inner TLS data.
+- **ECDSA P-256 certificates**: Cert generation uses `PKCS_ECDSA_P256_SHA256`
+  instead of Ed25519, matching the signature algorithms advertised by Chrome
+  uTLS fingerprint (ECDSA/RSA, not Ed25519).
+- **ring crypto provider**: Switched from `aws-lc-rs` to `ring` for broader
+  signature scheme support in rustls.
+
+### Changed
+
+- `VisionWriter.state` and `VisionWriter.user_uuid` fields are now `pub` for
+  external state management in sequential relay.
+- `config.example.toml` updated with all three transport sections (REALITY,
+  AnyTLS, TLS) documented.
+- README and SETUP docs updated with TLS transport, config reference, and
+  client config generation for all formats.
+
 ## [0.2.3] — 2026-05-27
 
 ### Fixed

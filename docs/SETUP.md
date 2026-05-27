@@ -48,6 +48,8 @@ The server reads a TOML config file passed via `--config`. Pre-built examples ar
 |------|-----------|------|-------------|
 | `basic-tcp.toml` | raw TCP | none | Minimal setup |
 | `vision.toml` | raw TCP | Vision | Traffic analysis resistance |
+| `tls-tcp.toml` | Plain TLS | none | TLS 1.3 encryption |
+| `tls-vision.toml` | Plain TLS | Vision | TLS + Vision, DPI resistant |
 | `reality-vision.toml` | REALITY TLS 1.3 | Vision | ECDH auth, spider fallback |
 | `reality-udp.toml` | REALITY TLS 1.3 | none | With UDP relay |
 | `anytls-vision.toml` | AnyTLS | Vision | Password auth via TLS |
@@ -152,7 +154,33 @@ SHA256(password)[32 bytes] || padding_len(u16 BE)[2 bytes] || random_padding[N b
 
 If the hash matches, the connection proceeds to VLESS relay. Otherwise it is forwarded to the fallback destination (if configured) or closed.
 
-**Note:** REALITY and AnyTLS are mutually exclusive — configure one, not both.
+**Note:** REALITY and AnyTLS are mutually exclusive — configure one, not both. Plain TLS is also mutually exclusive with REALITY and AnyTLS.
+
+### Plain TLS configuration
+
+Plain TLS provides standard TLS 1.3 encryption without password auth or ECDH key agreement. This is the simplest TLS option — compatible with sing-box, mihomo, and xray-core clients using `tls` transport (not REALITY).
+
+Add a `[tls]` section:
+
+```toml
+[tls]
+# All fields optional — auto-generated ECDSA P-256 cert if omitted
+# certificate = """-----BEGIN CERTIFICATE-----..."""
+# key = """-----BEGIN PRIVATE KEY-----..."""
+# dest = "127.0.0.1:8080"
+```
+
+**Fields:**
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `certificate` | auto-generated | TLS certificate PEM (ECDSA P-256, self-signed) |
+| `key` | auto-generated | TLS key PEM |
+| `dest` | none | Fallback target for probes |
+
+**Client compatibility:** sing-box uses nested `tls.enabled`, `tls.server_name`, `tls.utls.fingerprint`. Mihomo/FlClash uses flat `tls: true`, `servername`, `client-fingerprint`. The `--print-client-config` command with `--format sing-box` or `--format mihomo` generates the appropriate format.
+
+Use `--servername` to set the SNI (e.g., `cloudfront.net`) for DPI resistance. Enable uTLS Chrome fingerprint to mimic browser TLS behavior.
 
 ### Post-quantum key exchange (ML-KEM-512)
 
@@ -197,7 +225,7 @@ short_ids = ["..."]            # allowed short IDs, 4-byte hex each (8 chars)
 max_time_diff = 300            # max clock skew in seconds
 dest = "host:port"             # spider fallback target
 
-# ── AnyTLS (mutually exclusive with REALITY) ──────────────────────────────────
+# ── AnyTLS (mutually exclusive with REALITY and TLS) ──────────────────────────
 [anytls]
 password = "..."               # SHA-256 auth password
 dest = "host:port"             # fallback for failed auth
@@ -206,6 +234,12 @@ dest = "host:port"             # fallback for failed auth
 # padding_scheme = """stop=8                           # optional padding
 # 0=30-30
 # 1=100-400"""
+
+# ── Plain TLS (mutually exclusive with REALITY and AnyTLS) ─────────────────────
+[tls]
+# certificate = """-----BEGIN CERTIFICATE-----..."""   # optional custom cert
+# key = """-----BEGIN PRIVATE KEY-----..."""           # optional custom key
+# dest = "host:port"                                   # optional fallback
 ```
 
 ## Running the Server
@@ -230,22 +264,34 @@ RUST_LOG=trace ./target/release/wrongsv --config config.toml   # very verbose
 
 ### Client config generation
 
-Generate FlClash/mihomo/sing-box-compatible client JSON (kebab-case keys):
+Generate client config JSON in mihomo/FlClash format (default) or sing-box format:
 
 ```bash
-# Print to stdout
+# mihomo/FlClash format (flat keys: tls, client-fingerprint, servername)
 ./target/release/wrongsv --print-client-config \
     --server-host YOUR_SERVER_IP \
-    --servername YOUR_SNI
+    --servername cloudfront.net
+
+# sing-box format (nested tls object with utls/reality)
+./target/release/wrongsv --print-client-config \
+    --server-host YOUR_IP --servername cloudfront.net --format sing-box
 
 # Write to file with custom label
 ./target/release/wrongsv --write-client-config client.json \
-    --server-host YOUR_IP --servername example.com --client-name "my-server"
+    --server-host YOUR_IP --servername cloudfront.net --client-name "my-server"
+
+# Auto-detect transport type from TOML config
+./target/release/wrongsv --config configs/tls-vision.toml \
+    --print-client-config --server-host YOUR_IP --servername cloudfront.net
+
+# Explicit transport override (reality, anytls, tls, raw)
+./target/release/wrongsv --transport tls \
+    --print-client-config --server-host YOUR_IP --servername cloudfront.net
 ```
 
-The generated JSON uses `client-fingerprint`, `public-key`, `short-id` (kebab-case matching
-Go struct tags in mihomo/sing-box) and includes `"tls": true`. REALITY options are
-included when REALITY is configured.
+Transport type is auto-detected from the TOML config file (reality → `reality-opts`, tls/anytls → `tls`, none → raw). Use `--transport` to override.
+
+The generated JSON keys match Go struct tags in mihomo/sing-box (`client-fingerprint`, `public-key`, `short-id` in kebab-case). For REALITY transport, `reality-opts` block is included.
 
 ## Testing
 
@@ -291,6 +337,8 @@ wrongsv/
 ├── configs/                    # ready-to-use TOML config examples
 │   ├── basic-tcp.toml
 │   ├── vision.toml
+│   ├── tls-tcp.toml
+│   ├── tls-vision.toml
 │   ├── kyber-vision.toml
 │   ├── reality-vision.toml
 │   ├── reality-udp.toml

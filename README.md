@@ -12,12 +12,13 @@
   <img src="https://img.shields.io/badge/flow-xtls--rprx--vision-purple?style=for-the-badge" alt="Flow: XTLS Vision">
   <img src="https://img.shields.io/badge/TLS-REALITY%201.3-brightgreen?style=for-the-badge" alt="TLS: REALITY 1.3">
   <img src="https://img.shields.io/badge/TLS-AnyTLS-7c91db?style=for-the-badge" alt="TLS: AnyTLS">
+  <img src="https://img.shields.io/badge/TLS-Plain%201.3-8787af?style=for-the-badge" alt="TLS: Plain 1.3">
   <img src="https://img.shields.io/badge/KEM-ML--KEM--512-darkslateblue?style=for-the-badge" alt="KEM: ML-KEM-512">
 </p>
 
 ---
 
-A minimal, high-performance VLESS proxy server with XTLS Vision flow, REALITY and AnyTLS authentication, and NIST ML-KEM post-quantum key encapsulation. Built as a terminal-based runtime that accepts VLESS connections, validates users, decodes XTLS Vision traffic, and forwards to target destinations.
+A minimal, high-performance VLESS proxy server with XTLS Vision flow, REALITY / AnyTLS / plain TLS transport layers, and NIST ML-KEM post-quantum key encapsulation. Built as a terminal-based runtime that accepts VLESS connections, validates users, decodes XTLS Vision traffic, and forwards to target destinations.
 
 ## Architecture
 
@@ -40,6 +41,7 @@ wrongsv (binary)
 - **VLESS protocol** — stateless proxy wire format with version + UUID + addons + command + address
 - **REALITY** — TLS 1.3 handshake hijacking with X25519 ECDH auth, dynamic Ed25519 cert generation, spider fallback. Compatible with xray-core clients.
 - **AnyTLS** — TLS 1.3 disguise with SHA-256 password authentication and configurable padding. Simpler alternative to REALITY: uses a standard TLS handshake + password instead of ECDH key agreement.
+- **Plain TLS** — Standard TLS 1.3 + VLESS. Compatible with sing-box, mihomo, and xray-core TLS transport. Auto-generated ECDSA P-256 certificates for uTLS Chrome fingerprint support.
 - **XTLS Vision** (`xtls-rprx-vision`) — traffic analysis resistance via padding/unpadding
 - **TLS 1.3 record disguise** — AEAD-encrypted transport that appears as TLS 1.3 application data
 - **AEAD ciphers** — AES-256-GCM and ChaCha20-Poly1305 with BLAKE3 key derivation
@@ -66,6 +68,8 @@ Pick an example from [`configs/`](configs/):
 |--------|-----------|------|-------|
 | [`configs/basic-tcp.toml`](configs/basic-tcp.toml) | raw TCP | none | Simplest setup |
 | [`configs/vision.toml`](configs/vision.toml) | raw TCP | Vision | Traffic analysis resistance |
+| [`configs/tls-tcp.toml`](configs/tls-tcp.toml) | Plain TLS | none | TLS 1.3 encryption |
+| [`configs/tls-vision.toml`](configs/tls-vision.toml) | Plain TLS | Vision | TLS + Vision, DPI resistant |
 | [`configs/reality-vision.toml`](configs/reality-vision.toml) | REALITY TLS | Vision | ECDH auth + spider fallback |
 | [`configs/reality-udp.toml`](configs/reality-udp.toml) | REALITY TLS | none | With UDP relay |
 | [`configs/anytls-vision.toml`](configs/anytls-vision.toml) | AnyTLS | Vision | Password auth |
@@ -98,12 +102,23 @@ cargo run --release
 
 ### Client config generation
 
-Generate FlClash/mihomo/sing-box-compatible client config JSON (kebab-case keys, `client-fingerprint`):
+Generate client config JSON for mihomo/FlClash (default) or sing-box format:
 
 ```bash
-cargo run --release -- --print-client-config --server-host YOUR_IP --servername YOUR_SNI
+# mihomo/FlClash format (flat keys: tls, client-fingerprint, servername)
+cargo run --release -- --print-client-config --server-host YOUR_IP --servername cloudfront.net
 
-cargo run --release -- --write-client-config client.json --server-host YOUR_IP --servername YOUR_SNI
+# sing-box format (nested tls object with utls/reality)
+cargo run --release -- --print-client-config --server-host YOUR_IP --servername cloudfront.net --format sing-box
+
+# Write to file
+cargo run --release -- --write-client-config client.json --server-host YOUR_IP --servername cloudfront.net
+
+# Auto-detect transport from config file
+cargo run --release -- --config configs/tls-vision.toml --print-client-config --server-host YOUR_IP --servername cloudfront.net
+
+# Override transport type
+cargo run --release -- --transport tls --server-host YOUR_IP --servername cloudfront.net --print-client-config
 ```
 
 ## Testing
@@ -148,6 +163,10 @@ Runs 480 connections across 3 rounds and monitors RSS for memory leaks.
 | `anytls.certificate` | string | Optional TLS cert PEM (auto-generated if omitted) |
 | `anytls.key` | string | Optional TLS key PEM |
 | `anytls.padding_scheme` | string | Optional padding scheme (anytls-go format) |
+| **Plain TLS** | | |
+| `tls.certificate` | string | Optional TLS cert PEM (auto-generated ECDSA P-256 if omitted) |
+| `tls.key` | string | Optional TLS key PEM |
+| `tls.dest` | string | Fallback target for probes |
 
 ## Security
 
@@ -160,8 +179,8 @@ Runs 480 connections across 3 rounds and monitors RSS for memory leaks.
 ## Verified Interop
 
 - **xray-core 26.5.9+** — REALITY handshake completes with `uConn.Verified: true`. Ed25519 certs work with Chrome fingerprint.
-- **sing-box** — REALITY+Vision lifecycle tests passing: HTTP relay, multi-request, multi-user, restart, wrong credential rejection.
-- **mihomo (ClashMeta) / FlClash** — REALITY+Vision full proxy cycle verified. Use `client-fingerprint`, `public-key`, `short-id` (kebab-case) in config. Generated client JSON uses these keys.
+- **sing-box** — REALITY+Vision and TLS+uTLS lifecycle tests passing: HTTP relay, HTTPS relay, multi-request, multi-user, restart, wrong credential rejection.
+- **mihomo (ClashMeta) / FlClash** — REALITY+Vision and TLS+uTLS full proxy cycle verified. Use `client-fingerprint`, `public-key`, `short-id` (kebab-case) in config. Generated client JSON uses these keys.
 - **REALITY spider fallback** — unauthenticated probes forwarded to `dest` target. Confirmed with `curl` → `www.microsoft.com:443`.
 - **AnyTLS echo relay** — TLS 1.3 handshake, password auth, VLESS header exchange, and bidirectional data relay verified end-to-end.
 - **AnyTLS + Vision** — full XTLS Vision padding/unpadding over AnyTLS TLS connections. Small (14B) and large (16KB) payloads verified.

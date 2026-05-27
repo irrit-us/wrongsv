@@ -1,0 +1,11 @@
+# Plain TLS 1.3 + XTLS Vision — compatible with sing-box/mihomo TLS transport
+# Uses auto-generated self-signed ECDSA P-256 cert. Client connects with
+# `tls.enabled: true, utls.fingerprint: chrome` (or any TLS transport).
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+email = "user@example.com"
+flow = "xtls-rprx-vision"
+
+[tls]

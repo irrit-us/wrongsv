@@ -1,8 +1,30 @@
 use std::process;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use tracing::{error, info};
 use wrongsv_server::Config;
+
+#[derive(ValueEnum, Clone, Copy, PartialEq)]
+enum Transport {
+    /// REALITY TLS (X25519 ECDH + HKDF auth)
+    Reality,
+    /// AnyTLS (SHA-256 password auth over TLS)
+    #[clap(name = "anytls")]
+    AnyTls,
+    /// Plain TLS 1.3 (compatible with sing-box/mihomo TLS transport)
+    Tls,
+    /// Raw TCP (no TLS layer)
+    Raw,
+}
+
+#[derive(ValueEnum, Clone, Copy, PartialEq)]
+enum ClientFormat {
+    /// mihomo / FlClash / v2rayN format (flat keys)
+    Mihomo,
+    /// sing-box format (nested tls object)
+    #[clap(name = "sing-box")]
+    SingBox,
+}
 
 #[derive(Parser)]
 #[command(name = "wrongsv", about = "VLESS proxy server")]
@@ -11,11 +33,11 @@ struct Cli {
     #[arg(short, long)]
     config: Option<String>,
 
-    /// Write a v2rayN-compatible client config JSON to the given path
+    /// Write a client config JSON to the given path
     #[arg(long)]
     write_client_config: Option<String>,
 
-    /// Print a v2rayN-compatible client config JSON to stdout
+    /// Print a client config JSON to stdout
     #[arg(long)]
     print_client_config: bool,
 
@@ -23,13 +45,21 @@ struct Cli {
     #[arg(long, default_value = "YOUR_SERVER_IP")]
     server_host: String,
 
-    /// REALITY SNI for the generated client config
+    /// TLS SNI / server_name for the generated client config
     #[arg(long, default_value = "YOUR_SNI")]
     servername: String,
 
     /// Label for the generated client config
     #[arg(long, default_value = "wrongsv")]
     client_name: String,
+
+    /// Override transport type detection (reality, anytls, tls, raw)
+    #[arg(long)]
+    transport: Option<Transport>,
+
+    /// Client config format: mihomo (default) or sing-box
+    #[arg(long, default_value = "mihomo")]
+    format: ClientFormat,
 }
 
 fn main() {
@@ -122,7 +152,7 @@ fn load_config(path: &str) -> Result<wrongsv_server::Config, Box<dyn std::error:
 }
 
 // ---------------------------------------------------------------------------
-// client config generation (Xray-compatible JSON)
+// client config generation
 // ---------------------------------------------------------------------------
 
 struct ClientConfigValues {
@@ -131,23 +161,31 @@ struct ClientConfigValues {
     short_id: String,
     x25519_pk: String,
     servername: String,
+    transport: Transport,
 }
 
-/// Resolve values for the generated client config.
-///
-/// If a TOML config is provided AND the user hasn't overridden --servername
-/// from its default, TOML values for uuid/port/reality are used. Otherwise
-/// compile-time BUILD_* defaults are used.
+/// Resolve values for the generated client config from TOML config or defaults.
 fn resolve_client_values(cli: &Cli) -> ClientConfigValues {
-    let build_uuid = || option_env!("BUILD_UUID").unwrap_or("00000000-0000-4000-8000-000000000000");
+    let build_uuid =
+        || option_env!("BUILD_UUID").unwrap_or("00000000-0000-4000-8000-000000000000");
     let build_port = || option_env!("BUILD_PORT").unwrap_or("443");
     let build_sid = || option_env!("BUILD_SHORT_ID").unwrap_or("00000000");
-    let build_pk =
-        || option_env!("BUILD_X25519_PK").unwrap_or("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    let build_pk = || {
+        option_env!("BUILD_X25519_PK")
+            .unwrap_or("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+    };
 
     let toml_config = cli.config.as_ref().and_then(|path| {
         let content = std::fs::read_to_string(path).ok()?;
         toml::from_str::<wrongsv_server::Config>(&content).ok()
+    });
+
+    // Determine transport: explicit --transport flag, or detect from config
+    let transport = cli.transport.unwrap_or_else(|| match &toml_config {
+        Some(cfg) if cfg.reality.is_some() => Transport::Reality,
+        Some(cfg) if cfg.anytls.is_some() => Transport::AnyTls,
+        Some(cfg) if cfg.tls.is_some() => Transport::Tls,
+        _ => Transport::Raw,
     });
 
     match toml_config {
@@ -171,7 +209,7 @@ fn resolve_client_values(cli: &Cli) -> ClientConfigValues {
                 }
                 None => (build_pk().to_string(), build_sid().to_string()),
             };
-            // Default servername from reality.dest hostname if user didn't override
+            // Default servername from reality.dest or tls servername
             let servername = if cli.servername == "YOUR_SNI" {
                 cfg.reality
                     .as_ref()
@@ -189,6 +227,7 @@ fn resolve_client_values(cli: &Cli) -> ClientConfigValues {
                 short_id: sid,
                 x25519_pk: pk,
                 servername,
+                transport,
             }
         }
         None => ClientConfigValues {
@@ -197,12 +236,36 @@ fn resolve_client_values(cli: &Cli) -> ClientConfigValues {
             short_id: build_sid().to_string(),
             x25519_pk: build_pk().to_string(),
             servername: cli.servername.clone(),
+            transport,
         },
     }
 }
 
 fn client_config_json(cli: &Cli) -> String {
     let vals = resolve_client_values(cli);
+    match cli.format {
+        ClientFormat::Mihomo => mihomo_format(cli, &vals),
+        ClientFormat::SingBox => singbox_format(cli, &vals),
+    }
+}
+
+// -- mihomo / FlClash / v2rayN format (flat keys) --
+
+fn mihomo_format(cli: &Cli, vals: &ClientConfigValues) -> String {
+    let reality_opts = match vals.transport {
+        Transport::Reality => format!(
+            ",\n  \"reality-opts\": {{\n    \"public-key\": \"{}\",\n    \"short-id\": \"{}\"\n  }}",
+            vals.x25519_pk, vals.short_id
+        ),
+        _ => String::new(),
+    };
+    let tls_line = match vals.transport {
+        Transport::Raw => String::new(),
+        _ => format!(
+            ",\n  \"tls\": true,\n  \"client-fingerprint\": \"chrome\",\n  \"servername\": \"{sni}\"",
+            sni = vals.servername,
+        ),
+    };
 
     format!(
         r#"{{
@@ -213,23 +276,70 @@ fn client_config_json(cli: &Cli) -> String {
   "uuid": "{uuid}",
   "encryption": "none",
   "flow": "xtls-rprx-vision",
-  "tls": true,
-  "udp": true,
-  "client-fingerprint": "chrome",
-  "servername": "{sni}",
-  "reality-opts": {{
-    "public-key": "{pk}",
-    "short-id": "{sid}"
-  }}
+  "udp": true{tls}{reality}
 }}"#,
         name = cli.client_name,
         server = cli.server_host,
         port = vals.port,
         uuid = vals.uuid,
-        sni = vals.servername,
-        pk = vals.x25519_pk,
-        sid = vals.short_id,
+        tls = tls_line,
+        reality = reality_opts,
     )
+}
+
+// -- sing-box format (nested tls object) --
+
+fn singbox_format(cli: &Cli, vals: &ClientConfigValues) -> String {
+    let tls_lines = match vals.transport {
+        Transport::Reality => vec![
+            r#"      "tls": {"#.to_string(),
+            r#"        "enabled": true,"#.to_string(),
+            format!(r#"        "server_name": "{}","#, vals.servername),
+            r#"        "utls": { "enabled": true, "fingerprint": "chrome" },"#.to_string(),
+            r#"        "reality": {"#.to_string(),
+            r#"          "enabled": true,"#.to_string(),
+            format!(r#"          "public_key": "{}","#, vals.x25519_pk),
+            format!(r#"          "short_id": "{}""#, vals.short_id),
+            r#"        }"#.to_string(),
+            r#"      }"#.to_string(),
+        ],
+        Transport::Tls | Transport::AnyTls => vec![
+            r#"      "tls": {"#.to_string(),
+            r#"        "enabled": true,"#.to_string(),
+            format!(r#"        "server_name": "{}","#, vals.servername),
+            r#"        "insecure": true,"#.to_string(),
+            r#"        "utls": { "enabled": true, "fingerprint": "chrome" }"#.to_string(),
+            r#"      }"#.to_string(),
+        ],
+        Transport::Raw => vec![],
+    };
+
+    let flow_line = format!(
+        r#"      "flow": ""{}"#,
+        if !tls_lines.is_empty() { "," } else { "" }
+    );
+
+    let mut lines = vec![
+        r#"{"#.to_string(),
+        r#"  "inbounds": [{ "type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": 10809 }],"#.to_string(),
+        r#"  "outbounds": ["#.to_string(),
+        r#"    {"#.to_string(),
+        format!(r#"      "type": "vless","#),
+        format!(r#"      "tag": "proxy","#),
+        format!(r#"      "server": "{}","#, cli.server_host),
+        format!(r#"      "server_port": {},"#, vals.port),
+        format!(r#"      "uuid": "{}","#, vals.uuid),
+        flow_line,
+    ];
+    for line in tls_lines {
+        lines.push(line);
+    }
+    lines.push(r#"    },"#.to_string());
+    lines.push(r#"    {"type": "direct", "tag": "direct"}"#.to_string());
+    lines.push(r#"  ]"#.to_string());
+    lines.push(r#"}"#.to_string());
+
+    lines.join("\n")
 }
 
 fn print_client_config(cli: &Cli) {
