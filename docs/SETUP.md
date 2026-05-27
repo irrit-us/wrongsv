@@ -295,35 +295,9 @@ The generated JSON keys match Go struct tags in mihomo/sing-box (`client-fingerp
 
 ## Testing
 
-```bash
-# All tests across workspace
-cargo test
-
-# Specific crates
-cargo test -p wrongsv-reality
-cargo test -p wrongsv-anytls
-cargo test -p wrongsv-kyber
-cargo test -p wrongsv-vless
-
-# Integration tests
-cargo test --test integration          # REALITY, cross-compat, randomized
-cargo test --test vision_relay_tests   # Vision relay (HTTP, TLS-in-TLS, UDP, concurrency)
-cargo test --test anytls_tests         # AnyTLS (echo, Vision, fallback, UDP)
-
-# With output
-cargo test --test integration -- --nocapture
-
-# Memory stress test (480 connections × 3 rounds)
-cargo run --example stress
-```
-
-## Benchmarks
-
-```bash
-cargo bench
-```
-
-Covers request header encoding/decoding and XTLS Vision padding/unpadding throughput.
+See [docs/TESTING.md](TESTING.md) for the complete test suite — unit tests,
+integration tests, lifecycle tests (sing-box, mihomo, xray-core), stress tests,
+benchmarks, and manual proxy testing.
 
 ## Project Structure
 
@@ -332,8 +306,13 @@ wrongsv/
 ├── Cargo.toml                  # workspace root
 ├── build.rs                    # compile-time key generation (UUID, X25519, Kyber)
 ├── README.md                   # project overview, features, interop
+├── CHANGELOG.md
+├── CONTRIBUTING.md
+├── SECURITY.md
 ├── docs/
-│   └── SETUP.md                # this file — build and config guide
+│   ├── SETUP.md                # this file — build and config guide
+│   ├── TESTING.md              # complete test suite reference
+│   └── simple-deploy.md        # TLS/REALITY deployment walkthrough
 ├── configs/                    # ready-to-use TOML config examples
 │   ├── basic-tcp.toml
 │   ├── vision.toml
@@ -354,9 +333,14 @@ wrongsv/
 ├── examples/
 │   └── stress.rs               # memory stress test (RSS monitoring)
 ├── tests/
-│   ├── integration.rs          # end-to-end REALITY integration tests
-│   ├── vision_relay_tests.rs   # XTLS Vision relay tests
-│   └── anytls_tests.rs         # AnyTLS protocol tests
+│   ├── common/
+│   │   └── mod.rs               # shared test helpers
+│   ├── integration.rs           # end-to-end REALITY integration tests
+│   ├── vision_relay_tests.rs    # XTLS Vision relay tests
+│   ├── anytls_tests.rs          # AnyTLS protocol tests
+│   ├── singbox_lifecycle.rs     # sing-box REALITY+VLESS lifecycle
+│   ├── mihomo_lifecycle.rs      # mihomo REALITY+VLESS lifecycle
+│   └── xray_lifecycle.rs        # xray-core REALITY+VLESS lifecycle
 └── crates/
     ├── uuid/                   # UUID v4/v5, ProcessUUID
     ├── net-types/              # Address, Port, AddressFamily

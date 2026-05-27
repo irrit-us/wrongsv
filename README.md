@@ -18,7 +18,7 @@
 
 ---
 
-A minimal, high-performance VLESS proxy server with XTLS Vision flow, REALITY / AnyTLS / plain TLS transport layers, and NIST ML-KEM post-quantum key encapsulation. Built as a terminal-based runtime that accepts VLESS connections, validates users, decodes XTLS Vision traffic, and forwards to target destinations.
+A minimal, high-performance VLESS proxy server with XTLS Vision flow, REALITY / AnyTLS / plain TLS transport layers, and NIST ML-KEM post-quantum key encapsulation.
 
 ## Architecture
 
@@ -29,7 +29,7 @@ wrongsv (binary)
 ├── anytls          — AnyTLS TLS disguise with SHA-256 password auth + fallback
 ├── vless           — user validator, XTLS Vision padding/unpadding
 ├── vless-encoding  — VLESS header codec, addons protobuf, body framing
-├── encryption      — TLS-1.3-disguised AEAD (AES-256-GCM / ChaCha20-Poly1305)
+├── encryption      — AEAD (AES-256-GCM / ChaCha20-Poly1305)
 ├── kyber           — NIST ML-KEM-512 post-quantum key encapsulation
 ├── protocol        — shared types (RequestHeader, MemoryUser, ID, AddressParser)
 ├── net-types       — Address, Port, AddressFamily
@@ -38,21 +38,19 @@ wrongsv (binary)
 
 ## Features
 
-- **VLESS protocol** — stateless proxy wire format with version + UUID + addons + command + address
-- **REALITY** — TLS 1.3 handshake hijacking with X25519 ECDH auth, dynamic Ed25519 cert generation, spider fallback. Compatible with xray-core clients.
-- **AnyTLS** — TLS 1.3 disguise with SHA-256 password authentication and configurable padding. Simpler alternative to REALITY: uses a standard TLS handshake + password instead of ECDH key agreement.
-- **Plain TLS** — Standard TLS 1.3 + VLESS. Compatible with sing-box, mihomo, and xray-core TLS transport. Auto-generated ECDSA P-256 certificates for uTLS Chrome fingerprint support.
-- **XTLS Vision** (`xtls-rprx-vision`) — traffic analysis resistance via padding/unpadding
-- **TLS 1.3 record disguise** — AEAD-encrypted transport that appears as TLS 1.3 application data
-- **AEAD ciphers** — AES-256-GCM and ChaCha20-Poly1305 with BLAKE3 key derivation
-- **NIST ML-KEM-512** — post-quantum session key establishment (FIPS 203)
-- **Protobuf addons** — extensible handshake metadata (flow, Kyber ciphertext)
-- **Probe resistance** — unauthenticated connections are transparently forwarded to fallback destinations
-- **Config examples** — ready-to-use TOML files in [`configs/`](configs/) covering REALITY, AnyTLS, Vision, Kyber, UDP, and fallback
+- **VLESS** — stateless proxy with UUID authentication and extensible addons
+- **REALITY** — TLS 1.3 handshake hijacking, X25519 ECDH auth, dynamic certs, spider fallback
+- **AnyTLS** — TLS 1.3 + SHA-256 password auth with configurable padding
+- **Plain TLS** — Standard TLS 1.3, compatible with sing-box/mihomo/xray-core `tls` transport
+- **XTLS Vision** — traffic analysis resistance via padding/unpadding
+- **ML-KEM-512** — NIST FIPS 203 post-quantum key encapsulation
+- **Probe resistance** — unauthenticated connections forwarded to fallback destinations
+- **Client config generation** — auto-generate config JSON for sing-box and mihomo/FlClash
 
 ## Quick Start
 
-[docs/SETUP.md](docs/SETUP.md) has the full build, configuration, and troubleshooting guide.
+[docs/SETUP.md](docs/SETUP.md) has the full build and configuration guide.
+[docs/simple-deploy.md](docs/simple-deploy.md) has step-by-step TLS and REALITY deployment walkthroughs.
 
 ### Build
 
@@ -66,20 +64,14 @@ Pick an example from [`configs/`](configs/):
 
 | Config | Transport | Flow | Notes |
 |--------|-----------|------|-------|
-| [`configs/basic-tcp.toml`](configs/basic-tcp.toml) | raw TCP | none | Simplest setup |
-| [`configs/vision.toml`](configs/vision.toml) | raw TCP | Vision | Traffic analysis resistance |
-| [`configs/tls-tcp.toml`](configs/tls-tcp.toml) | Plain TLS | none | TLS 1.3 encryption |
-| [`configs/tls-vision.toml`](configs/tls-vision.toml) | Plain TLS | Vision | TLS + Vision, DPI resistant |
-| [`configs/reality-vision.toml`](configs/reality-vision.toml) | REALITY TLS | Vision | ECDH auth + spider fallback |
-| [`configs/reality-udp.toml`](configs/reality-udp.toml) | REALITY TLS | none | With UDP relay |
-| [`configs/anytls-vision.toml`](configs/anytls-vision.toml) | AnyTLS | Vision | Password auth |
-| [`configs/anytls-tcp.toml`](configs/anytls-tcp.toml) | AnyTLS | none | Password auth + raw |
-| [`configs/anytls-udp.toml`](configs/anytls-udp.toml) | AnyTLS | none | Password auth + UDP |
-| [`configs/anytls-fallback.toml`](configs/anytls-fallback.toml) | AnyTLS | Vision | With fallback dest |
-| [`configs/kyber-vision.toml`](configs/kyber-vision.toml) | raw TCP | Vision | Post-quantum KEM |
-| [`configs/anytls-custom.toml`](configs/anytls-custom.toml) | AnyTLS | Vision | Custom cert + padding |
+| [`tls-vision.toml`](configs/tls-vision.toml) | Plain TLS | Vision | Recommended — TLS + DPI resistant |
+| [`reality-vision.toml`](configs/reality-vision.toml) | REALITY TLS | Vision | ECDH auth + spider fallback |
+| [`anytls-vision.toml`](configs/anytls-vision.toml) | AnyTLS | Vision | Password auth |
+| [`tls-tcp.toml`](configs/tls-tcp.toml) | Plain TLS | none | TLS encryption, no Vision |
+| [`basic-tcp.toml`](configs/basic-tcp.toml) | raw TCP | none | Simplest setup |
+| [`kyber-vision.toml`](configs/kyber-vision.toml) | raw TCP | Vision | Post-quantum KEM |
 
-Or create your own:
+Or create a minimal config:
 
 ```toml
 listen = "0.0.0.0:443"
@@ -93,100 +85,44 @@ flow = "xtls-rprx-vision"
 ### Run
 
 ```bash
-# With a config file
-cargo run --release -- --config config.toml
-
-# Zero-config mode (compile-time defaults from build.rs)
-cargo run --release
+./target/release/wrongsv --config config.toml
 ```
 
-### Client config generation
-
-Generate client config JSON for mihomo/FlClash (default) or sing-box format:
+### Generate client config
 
 ```bash
-# mihomo/FlClash format (flat keys: tls, client-fingerprint, servername)
-cargo run --release -- --print-client-config --server-host YOUR_IP --servername cloudfront.net
+# sing-box format
+./target/release/wrongsv --config config.toml --print-client-config \
+  --server-host YOUR_IP --servername cloudfront.net --format sing-box
 
-# sing-box format (nested tls object with utls/reality)
-cargo run --release -- --print-client-config --server-host YOUR_IP --servername cloudfront.net --format sing-box
-
-# Write to file
-cargo run --release -- --write-client-config client.json --server-host YOUR_IP --servername cloudfront.net
-
-# Auto-detect transport from config file
-cargo run --release -- --config configs/tls-vision.toml --print-client-config --server-host YOUR_IP --servername cloudfront.net
-
-# Override transport type
-cargo run --release -- --transport tls --server-host YOUR_IP --servername cloudfront.net --print-client-config
+# mihomo/FlClash format
+./target/release/wrongsv --config config.toml --print-client-config \
+  --server-host YOUR_IP --servername cloudfront.net
 ```
+
+See [docs/SETUP.md](docs/SETUP.md) for all transport options, REALITY keypair
+generation, AnyTLS padding configuration, and Kyber setup.
 
 ## Testing
 
 ```bash
-cargo test                                    # all unit + integration + vision + anytls tests
-cargo test --test integration                 # integration tests (REALITY, cross-compat, randomized)
-cargo test --test vision_relay_tests          # Vision relay tests (HTTP, TLS-in-TLS, UDP, concurrency)
-cargo test --test anytls_tests                # AnyTLS tests (echo, Vision, fallback, UDP)
-cargo bench                                   # criterion benchmarks
+cargo test                      # all unit + integration tests
+cargo clippy --workspace --all-targets
+cargo fmt --all -- --check
 ```
 
-### Stress test
+See [docs/TESTING.md](docs/TESTING.md) for the complete test suite including
+lifecycle tests (sing-box, mihomo, xray-core), stress tests, benchmarks, and
+manual proxy testing procedures.
 
-```bash
-cargo run --example stress
-```
+## Interop
 
-Runs 480 connections across 3 rounds and monitors RSS for memory leaks.
-
-## Config Reference
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `listen` | string | Address to listen on (e.g. `"0.0.0.0:443"`) |
-| `users` | array | List of VLESS user entries |
-| `users[].id` | string | UUID in hex format |
-| `users[].email` | string | Optional email label |
-| `users[].flow` | string | `""` (raw) or `"xtls-rprx-vision"` |
-| `users[].udp` | bool | Enable UDP relay (default: `true`) |
-| `users[].encryption` | string | Per-user encryption key |
-| `flow` | string | Default flow for all users |
-| `kyber_secret_key` | string | ML-KEM-512 64-byte seed (hex-encoded) |
-| **REALITY** | | |
-| `reality.private_key` | string | X25519 32-byte private key (hex-encoded) |
-| `reality.short_ids` | []string | Allowed short IDs (4-byte hex, 8 chars each) |
-| `reality.max_time_diff` | int | Max clock skew in seconds (default 300) |
-| `reality.dest` | string | Spider fallback target (e.g. `"www.microsoft.com:443"`) |
-| **AnyTLS** | | |
-| `anytls.password` | string | Password for SHA-256 auth |
-| `anytls.dest` | string | Fallback target for failed auth |
-| `anytls.certificate` | string | Optional TLS cert PEM (auto-generated if omitted) |
-| `anytls.key` | string | Optional TLS key PEM |
-| `anytls.padding_scheme` | string | Optional padding scheme (anytls-go format) |
-| **Plain TLS** | | |
-| `tls.certificate` | string | Optional TLS cert PEM (auto-generated ECDSA P-256 if omitted) |
-| `tls.key` | string | Optional TLS key PEM |
-| `tls.dest` | string | Fallback target for probes |
-
-## Security
-
-- **Encryption in transit**: AEAD with TLS 1.3 record disguise prevents DPI-based protocol identification
-- **Post-quantum KEM**: ML-KEM-512 (NIST FIPS 203) for forward-secure session keys resistant to quantum attacks
-- **Traffic analysis resistance**: XTLS Vision padding eliminates length-based fingerprinting
-- **No pre-shared keys required**: Kyber key exchange establishes session keys without prior key distribution
-- **Password authentication**: AnyTLS uses SHA-256 password verification in constant time
-
-## Verified Interop
-
-- **xray-core 26.5.9+** — REALITY handshake completes with `uConn.Verified: true`. Ed25519 certs work with Chrome fingerprint.
-- **sing-box** — REALITY+Vision and TLS+uTLS lifecycle tests passing: HTTP relay, HTTPS relay, multi-request, multi-user, restart, wrong credential rejection.
-- **mihomo (ClashMeta) / FlClash** — REALITY+Vision and TLS+uTLS full proxy cycle verified. Use `client-fingerprint`, `public-key`, `short-id` (kebab-case) in config. Generated client JSON uses these keys.
-- **REALITY spider fallback** — unauthenticated probes forwarded to `dest` target. Confirmed with `curl` → `www.microsoft.com:443`.
-- **AnyTLS echo relay** — TLS 1.3 handshake, password auth, VLESS header exchange, and bidirectional data relay verified end-to-end.
-- **AnyTLS + Vision** — full XTLS Vision padding/unpadding over AnyTLS TLS connections. Small (14B) and large (16KB) payloads verified.
-- **AnyTLS fallback** — wrong password → connection forwarded to fallback destination.
-- **AnyTLS UDP** — length-prefixed UDP relay over AnyTLS TLS.
-- **Concurrent connections** — 6+ simultaneous REALITY connections all authenticate and relay correctly. 30 rapid-fire requests, 5×1MB concurrent downloads verified.
+- **xray-core 26.5.9+** — REALITY handshake, Ed25519 certs, Chrome fingerprint
+- **sing-box** — REALITY+Vision and TLS+uTLS lifecycle tests passing
+- **mihomo / FlClash** — REALITY+Vision and TLS+uTLS full proxy cycle verified
+- **REALITY spider fallback** — unauthenticated probes forwarded to `dest`
+- **AnyTLS echo, Vision, UDP, fallback** — all verified end-to-end
+- **Concurrent connections** — 6+ simultaneous REALITY connections, 30 rapid-fire requests, 5×1MB concurrent downloads
 
 ## License
 

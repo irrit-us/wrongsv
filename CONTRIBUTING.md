@@ -1,28 +1,30 @@
 # Contributing
 
-## Development
+## Code standards
+
+All code must pass the following before submission:
 
 ```bash
-cargo build
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test
-cargo clippy --workspace --all-targets
 ```
 
-Run the full test suite before submitting:
+- Zero clippy warnings (treated as errors via `-D warnings`).
+- Zero formatting drift (`cargo fmt --all -- --check`).
+- All existing tests pass. Add tests for new behavior.
 
-```bash
-cargo test --test integration
-cargo test --test vision_relay_tests
-cargo test --test anytls_tests
-```
+See [docs/TESTING.md](docs/TESTING.md) for the full test suite and pre-commit
+checklist.
 
-## Pull Requests
+## Pull requests
 
 - Keep changes focused and minimal.
-- Match existing code style (rustfmt, clippy clean).
+- Match existing code style (rustfmt default, no custom rustfmt.toml).
 - Update tests if changing behavior.
 - No unrelated refactoring or formatting changes.
+- Commit messages should explain *why*, not *what*.
 
-## Reporting Issues
+## Reporting issues
 
 Use the issue templates — bug report or feature request.
