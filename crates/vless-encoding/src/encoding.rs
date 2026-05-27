@@ -276,4 +276,95 @@ mod tests {
         let result = decode_request_header(&mut cursor, |_| None);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_decode_invalid_command() {
+        let user = make_test_user();
+        let user_id = user.account.id.clone();
+        let request = RequestHeader {
+            version: 0,
+            command: RequestCommand::Tcp,
+            address: Address::Domain("example.com".into()),
+            port: Port(443),
+            user,
+        };
+        let addons = empty_addons();
+
+        let mut buf = BytesMut::new();
+        encode_request_header(&mut buf, &request, &addons).unwrap();
+
+        // Corrupt the command byte (located after version(1) + id(16) + addons)
+        // For empty addons, command is at byte 18
+        buf[18] = 99; // invalid command
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let result = decode_request_header(&mut cursor, |id| {
+            if id == user_id.bytes() {
+                Some(make_test_user())
+            } else {
+                None
+            }
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_request_header_roundtrip_udp() {
+        let user = make_test_user();
+        let user_id = user.account.id.clone();
+        let request = RequestHeader {
+            version: 0,
+            command: RequestCommand::Udp,
+            address: Address::Domain("example.com".into()),
+            port: Port(12345),
+            user,
+        };
+        let addons = empty_addons();
+
+        let mut buf = BytesMut::new();
+        encode_request_header(&mut buf, &request, &addons).unwrap();
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let decoded = decode_request_header(&mut cursor, |id| {
+            if id == user_id.bytes() {
+                Some(make_test_user())
+            } else {
+                None
+            }
+        })
+        .unwrap();
+
+        assert_eq!(decoded.header.command, RequestCommand::Udp);
+        assert_eq!(decoded.header.port, Port(12345));
+    }
+
+    #[test]
+    fn test_decode_invalid_version() {
+        let user = make_test_user();
+        let user_id = user.account.id.clone();
+        let request = RequestHeader {
+            version: 0,
+            command: RequestCommand::Tcp,
+            address: Address::Domain("example.com".into()),
+            port: Port(443),
+            user,
+        };
+        let addons = empty_addons();
+
+        let mut buf = BytesMut::new();
+        encode_request_header(&mut buf, &request, &addons).unwrap();
+
+        // Corrupt version byte
+        buf[0] = 5;
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let result = decode_request_header(&mut cursor, |id| {
+            if id == user_id.bytes() {
+                Some(make_test_user())
+            } else {
+                None
+            }
+        });
+        assert!(result.is_err());
+    }
 }

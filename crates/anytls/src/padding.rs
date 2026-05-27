@@ -47,11 +47,11 @@ impl PaddingScheme {
             let key = key.trim();
             if key == "stop" {
                 stop = Some(value.trim().parse().ok()?);
-            } else if let Ok(stage) = key.parse::<usize>() {
-                if stage < 8 {
-                    let rules = parse_rules(value.trim())?;
-                    stage_rules[stage] = Some(rules);
-                }
+            } else if let Ok(stage) = key.parse::<usize>()
+                && stage < 8
+            {
+                let rules = parse_rules(value.trim())?;
+                stage_rules[stage] = Some(rules);
             }
         }
 

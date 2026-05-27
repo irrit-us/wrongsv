@@ -78,4 +78,19 @@ mod tests {
         let decoded = decode_header_addons(&mut cursor).unwrap();
         assert_eq!(decoded.flow, "xtls-rprx-vision");
     }
+
+    #[test]
+    fn test_roundtrip_with_kyber_ct() {
+        let addons = Addons {
+            flow: "xtls-rprx-vision".to_string(),
+            kyber_ct: b"0123456789ABCDEF".to_vec(),
+        };
+        let mut buf = BytesMut::new();
+        encode_header_addons(&mut buf, &addons).unwrap();
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let decoded = decode_header_addons(&mut cursor).unwrap();
+        assert_eq!(decoded.flow, "xtls-rprx-vision");
+        assert_eq!(decoded.kyber_ct, b"0123456789ABCDEF");
+    }
 }

@@ -134,6 +134,8 @@ pub fn authenticate(
     let auth_key = derive_auth_key(&server_sk, &hello.key_share, &hello.random)?;
 
     // AAD is the ClientHello body with the session_id zeroed out.
+
+    // AAD is the ClientHello body with the session_id zeroed out.
     // Both client and server agree on this so the session_id content doesn't affect AAD.
     let mut aad = hello.raw_body.clone();
     // session_id is at offset 39 within the ClientHello body
@@ -158,11 +160,11 @@ pub fn authenticate(
 /// `raw_pubkey` is the 32-byte raw Ed25519 public key (not DER-encoded).
 /// The server writes this into the cert's trailing 64-byte signature field;
 /// the client compares it against `cert.Signature`.
-pub fn compute_cert_hmac(auth_key: &[u8], raw_pubkey: &[u8; 32]) -> Vec<u8> {
+pub fn compute_cert_hmac(auth_key: &[u8], raw_pubkey: &[u8; 32]) -> Result<Vec<u8>, RealityError> {
     let mut mac = <HmacSha512 as KeyInit>::new_from_slice(auth_key)
-        .expect("HMAC-SHA512 key must be >= 32 bytes");
+        .map_err(|e| RealityError::AuthFailed(format!("hmac key: {e}")))?;
     mac.update(raw_pubkey);
-    mac.finalize().into_bytes().to_vec()
+    Ok(mac.finalize().into_bytes().to_vec())
 }
 
 #[cfg(test)]

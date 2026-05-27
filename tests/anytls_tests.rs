@@ -649,8 +649,7 @@ fn anytls_vision_echo(mut tls: TlsClient, user_uuid: &Uuid, payload: &[u8]) -> V
                 }
             }
             Err(ref e)
-                if e.kind() == io::ErrorKind::WouldBlock
-                    || e.kind() == io::ErrorKind::TimedOut =>
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
             {
                 if !response.is_empty() {
                     break;
@@ -673,9 +672,7 @@ fn anytls_vision_echo(mut tls: TlsClient, user_uuid: &Uuid, payload: &[u8]) -> V
 
 #[test]
 fn test_anytls_basic_echo() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .try_init();
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
 
     let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
     let listen_str = reserve.local_addr().unwrap().to_string();
@@ -707,9 +704,7 @@ fn test_anytls_basic_echo() {
 
 #[test]
 fn test_anytls_kb_payload() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .try_init();
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
 
     let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
     let listen_str = reserve.local_addr().unwrap().to_string();
@@ -762,9 +757,7 @@ fn test_anytls_kb_payload() {
 
 #[test]
 fn test_anytls_vision_small() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .try_init();
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
 
     let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
     let listen_str = reserve.local_addr().unwrap().to_string();
@@ -797,9 +790,7 @@ fn test_anytls_vision_small() {
 
 #[test]
 fn test_anytls_vision_16kb() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .try_init();
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
 
     let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
     let listen_str = reserve.local_addr().unwrap().to_string();
@@ -834,9 +825,7 @@ fn test_anytls_vision_16kb() {
 
 #[test]
 fn test_anytls_auth_failure() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .try_init();
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
 
     let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
     let listen_str = reserve.local_addr().unwrap().to_string();
@@ -850,8 +839,7 @@ fn test_anytls_auth_failure() {
 
     // Connect with WRONG password
     let server: std::net::SocketAddr = listen_str.parse().unwrap();
-    let mut sock =
-        TcpStream::connect_timeout(&server, Duration::from_millis(500)).unwrap();
+    let mut sock = TcpStream::connect_timeout(&server, Duration::from_millis(500)).unwrap();
 
     let server_name = rustls::pki_types::ServerName::try_from("cloudfront.net").unwrap();
     let mut conn =
@@ -885,9 +873,7 @@ fn test_anytls_auth_failure() {
 
 #[test]
 fn test_anytls_auth_failure_fallback() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .try_init();
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
 
     // Start a fallback echo server
     let fallback = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -924,8 +910,7 @@ fn test_anytls_auth_failure_fallback() {
 
     // Connect with WRONG password — should be forwarded to fallback
     let server: std::net::SocketAddr = listen_str.parse().unwrap();
-    let mut sock =
-        TcpStream::connect_timeout(&server, Duration::from_millis(500)).unwrap();
+    let mut sock = TcpStream::connect_timeout(&server, Duration::from_millis(500)).unwrap();
 
     let server_name = rustls::pki_types::ServerName::try_from("cloudfront.net").unwrap();
     let mut conn =
@@ -962,9 +947,7 @@ fn test_anytls_auth_failure_fallback() {
 
 #[test]
 fn test_anytls_udp_echo() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .try_init();
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
 
     let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
     let listen_str = reserve.local_addr().unwrap().to_string();
@@ -1008,9 +991,7 @@ fn test_anytls_udp_echo() {
 
 #[test]
 fn test_anytls_custom_cert() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .try_init();
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
 
     let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
     let listen_str = reserve.local_addr().unwrap().to_string();
@@ -1049,9 +1030,7 @@ fn test_anytls_custom_cert() {
 
 #[test]
 fn test_anytls_with_padding() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .try_init();
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
 
     let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
     let listen_str = reserve.local_addr().unwrap().to_string();
@@ -1084,9 +1063,7 @@ fn test_anytls_with_padding() {
 
 #[test]
 fn test_anytls_large_padding() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .try_init();
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
 
     let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
     let listen_str = reserve.local_addr().unwrap().to_string();
@@ -1119,9 +1096,7 @@ fn test_anytls_large_padding() {
 
 #[test]
 fn test_anytls_multi_user() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .try_init();
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
 
     let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
     let listen_str = reserve.local_addr().unwrap().to_string();
@@ -1171,9 +1146,7 @@ fn test_anytls_multi_user() {
 
 #[test]
 fn test_anytls_concurrent() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .try_init();
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
 
     let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
     let listen_str = reserve.local_addr().unwrap().to_string();
@@ -1194,14 +1167,7 @@ fn test_anytls_concurrent() {
             let pw = password.to_string();
             let ea = echo_addr;
             thread::spawn(move || {
-                let mut tls = anytls_connect(
-                    &addr,
-                    &uid,
-                    "127.0.0.1",
-                    ea.port(),
-                    "",
-                    &pw,
-                );
+                let mut tls = anytls_connect(&addr, &uid, "127.0.0.1", ea.port(), "", &pw);
                 let msg = format!("concurrent-{i}");
                 tls.tls_write(msg.as_bytes()).unwrap();
                 let mut buf = [0u8; 256];
@@ -1218,9 +1184,7 @@ fn test_anytls_concurrent() {
 
 #[test]
 fn test_anytls_auth_failure_with_padding() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .try_init();
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
 
     let fallback = TcpListener::bind("127.0.0.1:0").unwrap();
     let fallback_addr = fallback.local_addr().unwrap();
@@ -1229,7 +1193,9 @@ fn test_anytls_auth_failure_with_padding() {
             thread::spawn(move || {
                 let mut s = stream;
                 let mut buf = [0u8; 8192];
-                if let Ok(n) = s.read(&mut buf) && n > 0 {
+                if let Ok(n) = s.read(&mut buf)
+                    && n > 0
+                {
                     let _ = s.write_all(b"fallback-got-it");
                 }
             });
@@ -1253,8 +1219,7 @@ fn test_anytls_auth_failure_with_padding() {
 
     // Wrong password + padding -- fallback should get buffered auth data
     let server: std::net::SocketAddr = listen_str.parse().unwrap();
-    let mut sock =
-        TcpStream::connect_timeout(&server, Duration::from_millis(500)).unwrap();
+    let mut sock = TcpStream::connect_timeout(&server, Duration::from_millis(500)).unwrap();
 
     let server_name = rustls::pki_types::ServerName::try_from("cloudfront.net").unwrap();
     let mut conn =
@@ -1273,7 +1238,8 @@ fn test_anytls_auth_failure_with_padding() {
     let wrong_hash: [u8; 32] = Sha256::digest(b"wrong-password").into();
     let padding = vec![0xDD; 500];
     tls.tls_write(&wrong_hash).unwrap();
-    tls.tls_write(&(padding.len() as u16).to_be_bytes()).unwrap();
+    tls.tls_write(&(padding.len() as u16).to_be_bytes())
+        .unwrap();
     tls.tls_write(&padding).unwrap();
 
     // Server forwards buffered data to fallback (raw), client TLS sees close/error
@@ -1288,9 +1254,7 @@ fn test_anytls_auth_failure_with_padding() {
 
 #[test]
 fn test_anytls_kyber_combo() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .try_init();
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
 
     let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
     let listen_str = reserve.local_addr().unwrap().to_string();
@@ -1301,14 +1265,12 @@ fn test_anytls_kyber_combo() {
     let password = "kyber-anytls-pw";
 
     // Valid Kyber-512 seed: 64 bytes hex-encoded
-    let kyber_key: String = (0..64).map(|_| format!("{:02x}", rand::random::<u8>())).collect();
+    let kyber_key: String = (0..64)
+        .map(|_| format!("{:02x}", rand::random::<u8>()))
+        .collect();
 
-    let _server = spawn_anytls_server_kyber(
-        &listen_str,
-        &user_uuid.to_string(),
-        password,
-        &kyber_key,
-    );
+    let _server =
+        spawn_anytls_server_kyber(&listen_str, &user_uuid.to_string(), password, &kyber_key);
     thread::sleep(Duration::from_millis(100));
 
     let mut tls = anytls_connect(

@@ -1699,7 +1699,7 @@ fn test_cross_cert_hmac() {
         .try_into()
         .unwrap();
 
-    let our_hmac = wrongsv_reality::compute_cert_hmac(&auth_key, &raw_pubkey);
+    let our_hmac = wrongsv_reality::compute_cert_hmac(&auth_key, &raw_pubkey).unwrap();
 
     assert_eq!(
         hex::encode(&our_hmac),
@@ -1722,7 +1722,7 @@ fn test_cross_cert_generation() {
 
     // Verify the last 64 bytes of patched cert = HMAC-SHA512(auth_key, raw_pubkey)
     let auth_key = hex::decode(&v.cert_hmac.auth_key).unwrap();
-    let expected_hmac = wrongsv_reality::compute_cert_hmac(&auth_key, &raw_pubkey);
+    let expected_hmac = wrongsv_reality::compute_cert_hmac(&auth_key, &raw_pubkey).unwrap();
 
     let sig_start = patched_cert.len() - 64;
     assert_eq!(
@@ -1811,7 +1811,7 @@ fn test_cross_full_auth_flow() {
         .unwrap()
         .try_into()
         .unwrap();
-    let our_hmac = wrongsv_reality::compute_cert_hmac(&auth_key, &raw_pubkey);
+    let our_hmac = wrongsv_reality::compute_cert_hmac(&auth_key, &raw_pubkey).unwrap();
     assert_eq!(hex::encode(&our_hmac), v.cert_hmac.hmac_sha512);
 
     // Step 6: Verify patched cert

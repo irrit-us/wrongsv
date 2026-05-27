@@ -88,7 +88,7 @@ pub fn generate_reality_cert(
     auth_key: &[u8],
     material: &RealityCertMaterial,
 ) -> Result<CertifiedKey, RealityError> {
-    let hmac_sig = crate::auth::compute_cert_hmac(auth_key, &material.raw_pubkey);
+    let hmac_sig = crate::auth::compute_cert_hmac(auth_key, &material.raw_pubkey)?;
 
     let mut cert_der = material.cert_template_der.clone();
     let len = cert_der.len();

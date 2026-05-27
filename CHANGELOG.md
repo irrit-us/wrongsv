@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.2.3] — 2026-05-27
+
+### Fixed
+
+- **Panic prevention in REALITY TLS**: Removed `unreachable!()` in
+  `RealityTlsStream::read()` (tls.rs:52) that could trigger if rustls returned
+  unexpected I/O states. Replaced `.expect()` in `compute_cert_hmac` with proper
+  `Result` propagation.
+- **Worker thread panic isolation**: Connection handler threads are now wrapped in
+  `std::panic::catch_unwind` with `AssertUnwindSafe`. Panics in worker threads
+  are logged via `error!()` instead of silently terminating the thread or
+  (on older Rust editions) aborting the process.
+- **FlClash/mihomo config generation**: Fixed generated JSON format in
+  `client_config_json` — keys now match mihomo Go struct tags:
+  `"fingerprint"` → `"client-fingerprint"`, `"publicKey"` → `"public-key"`,
+  `"shortId"` → `"short-id"`. Added missing `"tls": true` field.
+
+### Changed
+
+- Clippy clean on all library crates; `rustfmt` applied across workspace.
+
 ## [0.2.2] — 2026-05-27
 
 ### Fixed

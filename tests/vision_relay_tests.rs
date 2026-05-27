@@ -486,7 +486,8 @@ fn test_vision_single_byte_writes() {
     }
     // Signal EOF so the server flushes the Vision-padded response.
     conn.shutdown(std::net::Shutdown::Write).unwrap();
-    conn.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+    conn.set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
 
     let state = TrafficState::new(user_uuid.as_bytes());
     let mut reader = VisionReader::new(conn, state, true);
@@ -500,8 +501,9 @@ fn test_vision_single_byte_writes() {
                 thread::sleep(Duration::from_millis(10));
             }
             Ok(n) => total += n,
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
-                || e.kind() == std::io::ErrorKind::TimedOut =>
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
             {
                 thread::sleep(Duration::from_millis(10));
             }

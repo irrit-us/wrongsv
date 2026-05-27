@@ -1,5 +1,6 @@
 use std::io::{Read, Result as IoResult, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -59,9 +60,7 @@ fn parse_reality_config(
     ))
 }
 
-fn parse_anytls_config(
-    ac: &AnyTlsServerConfig,
-) -> Result<wrongsv_anytls::AnyTlsConfig, String> {
+fn parse_anytls_config(ac: &AnyTlsServerConfig) -> Result<wrongsv_anytls::AnyTlsConfig, String> {
     use sha2::{Digest, Sha256};
     let password_sha256: [u8; 32] = Sha256::digest(ac.password.as_bytes()).into();
 
@@ -176,10 +175,9 @@ impl InboundServer {
                 eprintln!("second interrupt — forcing exit");
                 std::process::exit(1);
             }
-        }) {
-            if !matches!(e, ctrlc::Error::MultipleHandlers) {
-                return Err(format!("failed to set Ctrl-C handler: {e}").into());
-            }
+        }) && !matches!(e, ctrlc::Error::MultipleHandlers)
+        {
+            return Err(format!("failed to set Ctrl-C handler: {e}").into());
         }
 
         let validator = Arc::clone(&self.validator);
@@ -199,15 +197,26 @@ impl InboundServer {
                     let rc = reality_config.clone();
                     let ac = anytls_config.clone();
                     thread::spawn(move || {
-                        let result = if let Some(ref rc) = rc {
-                            handle_reality_connection(stream, v, kyber_sk, rc)
-                        } else if let Some(ref ac) = ac {
-                            handle_anytls_connection(stream, v, kyber_sk, ac)
-                        } else {
-                            handle_connection(stream, v, kyber_sk)
-                        };
-                        if let Err(e) = result {
-                            warn!("connection error: {}", e);
+                        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                            if let Some(ref rc) = rc {
+                                handle_reality_connection(stream, v, kyber_sk, rc)
+                            } else if let Some(ref ac) = ac {
+                                handle_anytls_connection(stream, v, kyber_sk, ac)
+                            } else {
+                                handle_connection(stream, v, kyber_sk)
+                            }
+                        }));
+                        match result {
+                            Ok(Ok(())) => {}
+                            Ok(Err(e)) => warn!("connection error: {}", e),
+                            Err(panic) => {
+                                let msg = panic
+                                    .downcast_ref::<&str>()
+                                    .copied()
+                                    .or_else(|| panic.downcast_ref::<String>().map(|s| s.as_str()))
+                                    .unwrap_or("unknown panic");
+                                error!("connection thread panicked: {msg}");
+                            }
                         }
                         trace!("connection thread finished");
                     });
@@ -241,11 +250,7 @@ fn handle_anytls_connection(
         Err(accept_err) => {
             debug!("{peer} AnyTLS auth failed, fallback");
             if let Some(ref dest) = anytls_config.dest {
-                wrongsv_anytls::anytls_fallback(
-                    accept_err.stream,
-                    accept_err.buffered_data,
-                    dest,
-                )?;
+                wrongsv_anytls::anytls_fallback(accept_err.stream, accept_err.buffered_data, dest)?;
                 return Ok(());
             }
             return Err(accept_err.error.into());
@@ -314,7 +319,11 @@ fn handle_anytls_connection(
     info!(
         "{} {} {} -> {}:{}",
         peer,
-        if request.command == RequestCommand::Tcp { "TCP" } else { "UDP" },
+        if request.command == RequestCommand::Tcp {
+            "TCP"
+        } else {
+            "UDP"
+        },
         request.user.email,
         request.address,
         request.port,
@@ -323,12 +332,12 @@ fn handle_anytls_connection(
     let use_vision = decoded.addons.flow == XRV && account.flow == XRV;
 
     // Kyber decapsulation
-    if !decoded.addons.kyber_ct.is_empty() {
-        if let Some(sk) = kyber_sk {
-            match wrongsv_kyber::decapsulate(&sk, &decoded.addons.kyber_ct) {
-                Ok(_) => info!("{peer} Kyber session established"),
-                Err(e) => warn!("{peer} Kyber decapsulation failed: {e}"),
-            }
+    if !decoded.addons.kyber_ct.is_empty()
+        && let Some(sk) = kyber_sk
+    {
+        match wrongsv_kyber::decapsulate(&sk, &decoded.addons.kyber_ct) {
+            Ok(_) => info!("{peer} Kyber session established"),
+            Err(e) => warn!("{peer} Kyber decapsulation failed: {e}"),
         }
     }
 
@@ -338,7 +347,10 @@ fn handle_anytls_connection(
     }
 
     // Send response header
-    let response_addons = Addons { flow: String::new(), ..Default::default() };
+    let response_addons = Addons {
+        flow: String::new(),
+        ..Default::default()
+    };
     let mut resp_buf = bytes::BytesMut::new();
     encoding::encode_response_header(&mut resp_buf, request, &response_addons)?;
     read_conn.writer().write_all(&resp_buf)?;
@@ -364,7 +376,13 @@ fn handle_anytls_connection(
 
     if use_vision {
         let user_sent_id = account.id.bytes();
-        relay_anytls_vision(tls_stream, target, user_sent_id, &account.testseed, remaining_body)?;
+        relay_anytls_vision(
+            tls_stream,
+            target,
+            user_sent_id,
+            &account.testseed,
+            remaining_body,
+        )?;
     } else {
         relay_anytls_raw(tls_stream, target, remaining_body)?;
     }
@@ -517,7 +535,10 @@ fn handle_reality_connection(
     let mut tls_stream = match wrongsv_reality::accept_reality(stream, reality_config) {
         Ok(tls) => tls,
         Err(accept_err) => {
-            debug!("{peer} REALITY auth failed: {} — spider fallback", accept_err.error);
+            debug!(
+                "{peer} REALITY auth failed: {} — spider fallback",
+                accept_err.error
+            );
             if let Some(ref dest) = reality_config.dest {
                 wrongsv_reality::spider_fallback(
                     accept_err.stream,
@@ -810,7 +831,9 @@ fn relay_reality_vision(
     {
         let (_, stream) = tls.get_mut();
         stream.get_mut().set_nonblocking(false)?;
-        stream.get_mut().set_read_timeout(Some(Duration::from_secs(1)))?;
+        stream
+            .get_mut()
+            .set_read_timeout(Some(Duration::from_secs(1)))?;
     }
 
     let tls = Arc::new(Mutex::new(tls));
@@ -1019,7 +1042,10 @@ struct AnyTlsReadHandle {
 
 impl Read for AnyTlsReadHandle {
     fn read(&mut self, buf: &mut [u8]) -> IoResult<usize> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).read(buf)
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .read(buf)
     }
 }
 
@@ -1030,7 +1056,10 @@ struct AnyTlsWriteHandle {
 
 impl Write for AnyTlsWriteHandle {
     fn write(&mut self, buf: &[u8]) -> IoResult<usize> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).write(buf)
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .write(buf)
     }
 
     fn flush(&mut self) -> IoResult<()> {
@@ -1095,7 +1124,9 @@ fn relay_anytls_vision(
     // Downlink: target → VisionWriter (TLS)
     let tls_downlink = Arc::clone(&tls1);
     let t2 = thread::spawn(move || {
-        let inner = AnyTlsWriteHandle { inner: tls_downlink };
+        let inner = AnyTlsWriteHandle {
+            inner: tls_downlink,
+        };
         let mut writer = VisionWriter::new(inner, down_state, false, up_seed);
         let mut buf = [0u8; 32768];
         let mut tgt = target;
@@ -1150,26 +1181,22 @@ fn relay_anytls_udp(
                 tls_buf.extend_from_slice(&tmp[..n]);
                 did_work = true;
             }
-            Ok(_) => {
-                match conn.read_tls(stream) {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        conn.process_new_packets().map_err(|e| {
-                            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-                        })?;
-                        continue;
-                    }
-                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                    Err(_) => break,
+            Ok(_) => match conn.read_tls(stream) {
+                Ok(0) => break,
+                Ok(_) => {
+                    conn.process_new_packets()
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                    continue;
                 }
-            }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(_) => break,
+            },
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 match conn.read_tls(stream) {
                     Ok(0) => break,
                     Ok(_) => {
-                        conn.process_new_packets().map_err(|e| {
-                            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-                        })?;
+                        conn.process_new_packets()
+                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
                         continue;
                     }
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}

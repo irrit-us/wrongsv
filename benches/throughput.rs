@@ -184,8 +184,7 @@ fn bench_xtls_unpadding_sizes(c: &mut Criterion) {
         let mut padded = Vec::new();
         {
             let state = TrafficState::new(user_sent_id);
-            let mut writer =
-                VisionWriter::new(&mut padded, state, false, vec![900, 500, 900, 256]);
+            let mut writer = VisionWriter::new(&mut padded, state, false, vec![900, 500, 900, 256]);
             writer.write(&data).unwrap();
             writer.flush().unwrap();
         }
@@ -215,12 +214,8 @@ fn bench_vision_roundtrip(c: &mut Criterion) {
                 let state = TrafficState::new(user_sent_id);
                 let mut padded = Vec::with_capacity(size + 1024);
                 {
-                    let mut writer = VisionWriter::new(
-                        &mut padded,
-                        state,
-                        false,
-                        vec![900, 500, 900, 256],
-                    );
+                    let mut writer =
+                        VisionWriter::new(&mut padded, state, false, vec![900, 500, 900, 256]);
                     writer.write(&data).unwrap();
                     writer.flush().unwrap();
                 }

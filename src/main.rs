@@ -212,12 +212,13 @@ fn client_config_json(cli: &Cli) -> String {
   "uuid": "{uuid}",
   "encryption": "none",
   "flow": "xtls-rprx-vision",
+  "tls": true,
   "udp": true,
-  "fingerprint": "chrome",
+  "client-fingerprint": "chrome",
   "servername": "{sni}",
   "reality-opts": {{
-    "publicKey": "{pk}",
-    "shortId": "{sid}"
+    "public-key": "{pk}",
+    "short-id": "{sid}"
   }}
 }}"#,
         name = cli.client_name,

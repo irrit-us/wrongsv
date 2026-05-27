@@ -117,15 +117,15 @@ impl Read for AnyTlsStream {
         match self.conn.read_tls(&mut self.stream) {
             Ok(0) => return Ok(0),
             Ok(_) => {
-                self.conn.process_new_packets().map_err(|e| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-                })?;
+                self.conn
+                    .process_new_packets()
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::WouldBlock,
                     "TLS would block",
-                ))
+                ));
             }
             Err(e) => return Err(e),
         }
@@ -235,7 +235,10 @@ pub fn accept_anytls(
 
     tracing::info!(
         "AnyTLS auth OK from {}, padding={padding_len}B",
-        stream.peer_addr().map(|a| a.to_string()).unwrap_or_default()
+        stream
+            .peer_addr()
+            .map(|a| a.to_string())
+            .unwrap_or_default()
     );
 
     Ok(AnyTlsStream { conn, stream })
@@ -266,7 +269,9 @@ fn tls_read_exact(
         match conn.reader().read(&mut buf[pos..]) {
             Ok(0) => match conn.read_tls(stream) {
                 Ok(0) => {
-                    return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "TLS EOF").into())
+                    return Err(
+                        std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "TLS EOF").into(),
+                    );
                 }
                 Ok(_) => {
                     conn.process_new_packets()
@@ -287,7 +292,7 @@ fn tls_read_exact(
                             std::io::ErrorKind::UnexpectedEof,
                             "TLS EOF",
                         )
-                        .into())
+                        .into());
                     }
                     Ok(_) => {
                         conn.process_new_packets()
@@ -345,7 +350,9 @@ pub fn generate_self_signed_cert() -> Result<(String, String), AnyTlsError> {
     let dns_name: rcgen::Ia5String = "*.cloudfront.net"
         .try_into()
         .map_err(|e| AnyTlsError::Tls(format!("dns name: {e}")))?;
-    params.subject_alt_names.push(rcgen::SanType::DnsName(dns_name));
+    params
+        .subject_alt_names
+        .push(rcgen::SanType::DnsName(dns_name));
     let cert = params
         .self_signed(&key)
         .map_err(|e| AnyTlsError::Tls(format!("self-sign: {e}")))?;

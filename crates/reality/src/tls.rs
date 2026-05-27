@@ -40,22 +40,20 @@ impl RealityTlsStream {
 impl Read for RealityTlsStream {
     fn read(&mut self, buf: &mut [u8]) -> IoResult<usize> {
         loop {
-            // Determine if we need more TLS data from the socket.
-            // rustls reader can signal "no data" via Ok(0) or Err(WouldBlock).
-            let need_more = match self.conn.reader().read(buf) {
-                Ok(0) => true,
+            // If reader has no data (Ok(0) or WouldBlock), pull more TLS
+            // records from the socket and retry.
+            match self.conn.reader().read(buf) {
+                Ok(0) => {}
                 Ok(n) => return Ok(n),
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => true,
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(e) => return Err(e),
             };
-            if !need_more {
-                unreachable!();
-            }
             // Read more TLS records from the underlying stream
             match self.conn.read_tls(&mut self.stream) {
                 Ok(0) => return Ok(0),
                 Ok(_) => {
-                    self.conn.process_new_packets()
+                    self.conn
+                        .process_new_packets()
                         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
                     continue;
                 }
@@ -204,32 +202,68 @@ pub fn accept_reality(
     config: &RealityConfig,
 ) -> Result<RealityTlsStream, RealityAcceptError> {
     // The listener uses set_nonblocking(true) which propagates to accepted
-    // sockets on Linux. Switch to blocking so read() waits for the full
-    // ClientHello instead of returning a partial frame.
+    // sockets on Linux. Switch to blocking so reads wait for data.
     let _ = stream.set_nonblocking(false);
+    stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
 
-    // Read initial bytes (ClientHello typically 200-600 bytes, could be larger
-    // with uTLS fingerprints). Read up to 4096.
+    // Read into a 4096-byte buffer, looping until we have at least the
+    // 5-byte TLS record header. TCP is a stream — even in blocking mode
+    // a single read() can return partial data.
     let mut buf = vec![0u8; 4096];
-    let n = match stream.read(&mut buf) {
-        Ok(n) => n,
-        Err(e) => {
-            return Err(RealityAcceptError {
-                error: e.into(),
-                stream,
-                buffered_data: Vec::new(),
-            });
+    let mut n = 0;
+    while n < 5 {
+        match stream.read(&mut buf[n..]) {
+            Ok(0) => {
+                let got = buf[..n].to_vec();
+                return Err(RealityAcceptError {
+                    error: RealityError::TlsParse(format!(
+                        "EOF after {n} bytes: {:02x?}",
+                        &buf[..n]
+                    )),
+                    stream,
+                    buffered_data: got,
+                });
+            }
+            Ok(m) => n += m,
+            Err(e) => {
+                let got = buf[..n].to_vec();
+                return Err(RealityAcceptError {
+                    error: RealityError::TlsParse(format!("read error after {n} bytes: {e}")),
+                    stream,
+                    buffered_data: got,
+                });
+            }
         }
-    };
-    buf.truncate(n);
+    }
 
-    if n < 5 {
+    let record_len = u16::from_be_bytes([buf[3], buf[4]]) as usize;
+    if record_len > 65531 {
         return Err(RealityAcceptError {
-            error: RealityError::TlsParse("connection too short".into()),
+            error: RealityError::TlsParse(format!("TLS record too large: {record_len}")),
             stream,
-            buffered_data: buf,
+            buffered_data: buf[..n].to_vec(),
         });
     }
+
+    let total = 5 + record_len;
+    if total > buf.len() {
+        buf.resize(total, 0);
+    }
+    if n < total {
+        match stream.read_exact(&mut buf[n..total]) {
+            Ok(()) => {}
+            Err(e) => {
+                return Err(RealityAcceptError {
+                    error: RealityError::TlsParse(format!("read TLS record body: {e}")),
+                    stream,
+                    buffered_data: buf[..n].to_vec(),
+                });
+            }
+        }
+    }
+    buf.truncate(total);
+
+    let _ = stream.set_read_timeout(None);
 
     // Parse ClientHello and run REALITY auth
     let parsed = match parse_client_hello(&buf) {
