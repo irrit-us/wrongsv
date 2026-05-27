@@ -146,6 +146,24 @@ curl -x socks5h://127.0.0.1:10809 -s -o /dev/null \
   --connect-timeout 10 -m 30 "https://en.wikipedia.org/wiki/Network_proxy"
 ```
 
+### Headless browser test
+
+```bash
+# Requires: google-chrome, websocket-client (pip install)
+# Uses socks5-host:// for remote DNS through proxy
+./scripts/headless-gmail-test.py [proxy_host:port] [timeout_seconds]
+
+# Custom proxy scheme (socks5 for local DNS, socks5-host for remote DNS)
+PROXY_SCHEME=socks5 ./scripts/headless-gmail-test.py 127.0.0.1:10809
+```
+
+Two-phase test:
+1. Chrome `--dump-dom` + `--screenshot` — loads httpbin (warm-up) then
+   mail.google.com through the proxy. Verifies DOM content and captures
+   screenshots to `$SCREENSHOT_DIR` (default `/tmp/wrongsv-headless-test`).
+2. CDP WebSocket interaction — scroll, click, type. Falls back gracefully if
+   CDP is unavailable (known Chrome+SOCKS5 limitation in some versions).
+
 ### Server log monitoring
 
 ```bash
