@@ -28,6 +28,10 @@
   uTLS fingerprint (ECDSA/RSA, not Ed25519).
 - **ring crypto provider**: Switched from `aws-lc-rs` to `ring` for broader
   signature scheme support in rustls.
+- **Relay timeout for high-RTT links**: Raised TLS stream read timeout from
+  100ms to 5s and reordered relay loops to drain the target side first with
+  aggressive 10ms retry. Eliminates WouldBlock spin cycles on links with
+  600ms+ RTT. Added TCP_NODELAY on all target connections.
 
 ### Changed
 
