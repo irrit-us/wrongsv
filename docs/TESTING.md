@@ -149,20 +149,49 @@ curl -x socks5h://127.0.0.1:10809 -s -o /dev/null \
 ### Headless browser test
 
 ```bash
-# Requires: google-chrome, websocket-client (pip install)
-# Uses socks5-host:// for remote DNS through proxy
+# Requires: google-chrome, websocket-client (pip install websocket-client)
+# Default proxy: socks5://127.0.0.1:10809
 ./scripts/headless-gmail-test.py [proxy_host:port] [timeout_seconds]
 
-# Custom proxy scheme (socks5 for local DNS, socks5-host for remote DNS)
-PROXY_SCHEME=socks5 ./scripts/headless-gmail-test.py 127.0.0.1:10809
+# Custom proxy
+./scripts/headless-gmail-test.py 127.0.0.1:7891 120
 ```
 
-Two-phase test:
-1. Chrome `--dump-dom` + `--screenshot` — loads httpbin (warm-up) then
-   mail.google.com through the proxy. Verifies DOM content and captures
-   screenshots to `$SCREENSHOT_DIR` (default `/tmp/wrongsv-headless-test`).
-2. CDP WebSocket interaction — scroll, click, type. Falls back gracefully if
-   CDP is unavailable (known Chrome+SOCKS5 limitation in some versions).
+Screenshots saved to `$SCREENSHOT_DIR` (default `/tmp/wrongsv-headless-test`).
+
+**Two-phase test:**
+
+1. **Phase 1 (dump-dom)** — Launches headless Chrome through the SOCKS5 proxy.
+   Loads httpbin.org/get (warm-up, proxy chain verification) then
+   mail.google.com. Verifies:
+   - httpbin: JSON markers (`"headers"`, `"url"`) in response
+   - Gmail: `<title>Gmail</title>`, form `input` elements, page size >50KB
+   - Screenshots captured at each stage (`.png`)
+
+2. **Phase 2 (CDP)** — Connects via Chrome DevTools Protocol WebSocket for
+   interaction: scroll, find clickable elements, text input, CDP screenshot.
+   Falls back gracefully when CDP `Page.navigate` is unavailable (known
+   Chrome+SOCKS5 limitation in headless mode — Phase 1 already validates
+   the critical path).
+
+**Expected output (all checks passing):**
+```
+[1/5] Phase 1: Loading pages via socks5://127.0.0.1:10809 ...
+  OK httpbin warm-up: JSON response
+  OK httpbin warm-up: url field
+  OK httpbin warm-up: 1108B (9.7s)
+  OK httpbin warm-up: screenshot (63KB)
+  OK Gmail: page title
+  OK Gmail: form elements
+  OK Gmail: 840294B (56.1s)
+  OK Gmail: screenshot (37KB)
+[2/5] Phase 2: ...
+  OK CDP connected
+  OK Page load verified in Phase 1
+
+Results: 10 ok, 0 failed
+OVERALL: PASS
+```
 
 ### Server log monitoring
 
