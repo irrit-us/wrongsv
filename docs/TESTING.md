@@ -193,6 +193,35 @@ Results: 10 ok, 0 failed
 OVERALL: PASS
 ```
 
+### AnyTLS client test
+
+```bash
+# Direct AnyTLS + VLESS test (no proxy needed)
+# Default server: <SERVER_IP>:443
+./scripts/anytls-test.py [server_host] [port]
+```
+
+End-to-end verification of the AnyTLS protocol:
+1. TCP connect → TLS 1.3 handshake (self-signed cert)
+2. Send AnyTLS auth frame: `SHA256(password)[32B] || padding_len(0)[2B]`
+3. Server verifies auth → connection stays alive
+4. Send VLESS TCP header (httpbin.org:80) + HTTP request
+5. Read VLESS response header + HTTP response from httpbin
+
+**Expected output (all checks passing):**
+```
+=== AnyTLS client test ===
+[1/5] TCP connect ... OK Connected (358ms)
+[2/5] TLS handshake ... OK TLS handshake complete (411ms)
+[3/5] Sending AnyTLS auth frame ... OK AnyTLS auth accepted
+[4/5] Sending VLESS header + HTTP request ... OK
+[5/5] Reading response ...
+  OK VLESS response: version=0, addons_len=0
+  OK Response: 423B (1.7s)
+  OK Got valid HTTP response through AnyTLS + VLESS
+OVERALL: PASS — AnyTLS auth + VLESS relay works
+```
+
 ### Server log monitoring
 
 ```bash
