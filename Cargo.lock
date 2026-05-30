@@ -2209,6 +2209,7 @@ dependencies = [
 name = "wrongsv-anytls"
 version = "0.1.0"
 dependencies = [
+ "md-5",
  "rand",
  "rcgen",
  "rustls",
@@ -2216,6 +2217,7 @@ dependencies = [
  "sha2",
  "thiserror",
  "tracing",
+ "wrongsv-net-types",
 ]
 
 [[package]]

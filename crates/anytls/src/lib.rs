@@ -26,6 +26,9 @@
 
 mod auth;
 mod padding;
+pub mod socks;
+pub mod session;
+pub mod stream;
 
 use std::io::{Read, Result as IoResult, Write};
 use std::net::{Shutdown, TcpStream};
@@ -103,6 +106,11 @@ impl AnyTlsStream {
     pub fn get_mut(&mut self) -> (&mut rustls::ServerConnection, &mut TcpStream) {
         (&mut self.conn, &mut self.stream)
     }
+
+    /// Consume the stream, returning the inner TLS connection and TCP stream.
+    pub fn into_parts(self) -> (rustls::ServerConnection, TcpStream) {
+        (self.conn, self.stream)
+    }
 }
 
 impl Read for AnyTlsStream {
@@ -173,9 +181,39 @@ impl Write for AnyTlsStream {
 /// 1. Completes TLS handshake
 /// 2. Reads auth frame: SHA256(password) + padding_len + padding
 /// 3. Verifies password hash
-/// 4. Returns `AnyTlsStream` ready for VLESS relay
+/// 4. Returns `AnyTlsStream` ready for protocol detection
 ///
 /// On auth failure, returns `Err(AnyTlsAcceptError)` for fallback forwarding.
+
+/// Protocol variant detected after AnyTLS auth.
+#[derive(Debug, PartialEq)]
+pub enum PostAuthProtocol {
+    /// Standard VLESS header follows (version byte 0x00).
+    Vless,
+    /// sing-anytls session protocol follows (cmdSettings 0x04).
+    SingAnyTls,
+}
+
+/// Read the first post-auth byte to determine which protocol the client uses.
+///
+/// Returns the protocol variant and the first byte already read. The caller
+/// should pass this byte to the appropriate protocol handler.
+///
+/// On WouldBlock, pulls more data from the TLS stream.
+pub fn detect_post_auth_protocol(
+    conn: &mut rustls::ServerConnection,
+    stream: &mut TcpStream,
+) -> Result<(PostAuthProtocol, u8), AnyTlsError> {
+    let mut first_byte = [0u8; 1];
+    tls_read_exact(conn, stream, &mut first_byte)?;
+    let proto = match first_byte[0] {
+        session::CMD_SETTINGS => PostAuthProtocol::SingAnyTls,
+        _ => PostAuthProtocol::Vless,
+    };
+    Ok((proto, first_byte[0]))
+}
+
+/// Accept an AnyTLS connection on a raw TCP stream.
 pub fn accept_anytls(
     mut stream: TcpStream,
     config: &AnyTlsConfig,
@@ -264,7 +302,7 @@ fn complete_tls_handshake(
 }
 
 /// Read exactly `buf.len()` bytes of decrypted data from the TLS session.
-fn tls_read_exact(
+pub(crate) fn tls_read_exact(
     conn: &mut rustls::ServerConnection,
     stream: &mut TcpStream,
     buf: &mut [u8],

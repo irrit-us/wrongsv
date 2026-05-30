@@ -450,7 +450,7 @@ fn handle_anytls_connection(
     trace!("{peer} AnyTLS connection");
 
     // AnyTLS accept: TLS handshake + password auth
-    let mut tls_stream = match wrongsv_anytls::accept_anytls(stream, anytls_config) {
+    let tls_stream = match wrongsv_anytls::accept_anytls(stream, anytls_config) {
         Ok(tls) => tls,
         Err(accept_err) => {
             debug!("{peer} AnyTLS auth failed, fallback");
@@ -463,38 +463,23 @@ fn handle_anytls_connection(
     };
     info!("{peer} AnyTLS handshake complete");
 
-    // Read VLESS header from TLS stream
-    let mut first = vec![0u8; 8192];
-    let (read_conn, write_conn) = tls_stream.get_mut();
-    loop {
-        let result = read_conn.reader().read(&mut first);
-        match result {
-            Ok(0) => {
-                let n = read_conn.read_tls(write_conn)?;
-                if n == 0 {
-                    return Err("connection closed before VLESS header".into());
-                }
-                read_conn
-                    .process_new_packets()
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-            }
-            Ok(n) => {
-                first.truncate(n);
-                break;
-            }
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                let n = read_conn.read_tls(write_conn)?;
-                if n == 0 {
-                    return Err("connection closed before VLESS header".into());
-                }
-                read_conn
-                    .process_new_packets()
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-            }
-            Err(e) => return Err(e.into()),
-        }
+    // Protocol detection: read first post-auth byte
+    let (mut conn, mut stream_sock) = tls_stream.into_parts();
+    let (proto, first_byte) =
+        wrongsv_anytls::detect_post_auth_protocol(&mut conn, &mut stream_sock)?;
+
+    if proto == wrongsv_anytls::PostAuthProtocol::SingAnyTls {
+        return handle_sing_anytls_session(conn, stream_sock, peer, validator, kyber_sk);
     }
 
+    // VLESS path: reconstruct AnyTlsStream and read the full header.
+    // Pre-allocate buffer, put first_byte at position 0, read the rest.
+    let mut tls_stream = wrongsv_anytls::AnyTlsStream::from_parts(conn, stream_sock);
+
+    let mut first = vec![0u8; 8192];
+    first[0] = first_byte;
+    let extra = tls_stream.read(&mut first[1..])?;
+    first.truncate(1 + extra);
     let n = first.len();
     trace!("{peer} AnyTLS read {n} bytes VLESS header");
 
@@ -502,6 +487,8 @@ fn handle_anytls_connection(
         debug!("{peer} connection too short ({n} bytes), dropping");
         return Err("connection too short for VLESS header".into());
     }
+
+    let (read_conn, write_conn) = tls_stream.get_mut();
 
     // Decode VLESS header
     let (decoded, remaining_body) = {
@@ -593,6 +580,388 @@ fn handle_anytls_connection(
         relay_anytls_raw(tls_stream, target, remaining_body)?;
     }
     debug!("{peer} TCP relay finished");
+    Ok(())
+}
+
+// ── sing-anytls session handler ─────────────────────────────────────────────
+
+fn handle_sing_anytls_session(
+    mut conn: rustls::ServerConnection,
+    mut stream_sock: TcpStream,
+    peer: std::net::SocketAddr,
+    validator: Arc<MemoryValidator>,
+    kyber_sk: Option<[u8; 64]>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use wrongsv_anytls::session::{self, SessionWriter, WriteJob};
+
+    let settings = session::complete_settings_handshake(&mut conn, &mut stream_sock)?;
+    info!(
+        "{peer} sing-anytls session from {} v{}",
+        settings.client_name, settings.version
+    );
+
+    let (write_tx, write_rx) = std::sync::mpsc::channel::<WriteJob>();
+    let writer = SessionWriter::new(write_tx);
+
+    session::session_reader_loop(
+        conn,
+        stream_sock,
+        write_rx,
+        writer.clone(),
+        move |stream, w| {
+            handle_sing_stream(stream, w, peer, validator.clone(), kyber_sk);
+        },
+    )?;
+
+    info!("{peer} sing-anytls session ended");
+    Ok(())
+}
+
+fn handle_sing_stream(
+    mut stream: wrongsv_anytls::stream::SingStream,
+    writer: wrongsv_anytls::session::SessionWriter,
+    peer: std::net::SocketAddr,
+    validator: Arc<MemoryValidator>,
+    kyber_sk: Option<[u8; 64]>,
+) {
+    let sid = stream.id;
+
+    let first_data = match stream.read_chunk() {
+        Some(d) => d,
+        None => {
+            let _ = writer.send_fin(sid);
+            return;
+        }
+    };
+
+    if first_data.is_empty() {
+        let _ = writer.send_synack_error(sid, "empty stream");
+        return;
+    }
+
+    // Protocol detection: first byte determines the addressing scheme.
+    // 0x00 = VLESS header (anytls-as-transport mode)
+    // 0x01/0x03/0x04 = SOCKS5 address (standalone anytls protocol)
+    let result = if first_data[0] == 0x00 {
+        handle_sing_stream_vless(stream, writer, first_data, peer, validator, kyber_sk)
+    } else {
+        handle_sing_stream_socks(stream, writer, first_data, peer)
+    };
+
+    if let Err(e) = result {
+        warn!("{peer} sing stream sid={sid}: {e}");
+    }
+}
+
+fn handle_sing_stream_socks(
+    stream: wrongsv_anytls::stream::SingStream,
+    writer: wrongsv_anytls::session::SessionWriter,
+    first_data: Vec<u8>,
+    peer: std::net::SocketAddr,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let sid = stream.id;
+
+    let (target_addr, target_port, consumed) =
+        wrongsv_anytls::socks::parse_socks_addr(&first_data)
+            .ok_or_else(|| format!("invalid SOCKS5 address in first PSH"))?;
+
+    let addr_str = format!("{}:{}", target_addr, target_port);
+    info!("{peer} sing-anytls SOCKS5 sid={sid} -> {addr_str}");
+
+    let target = TcpStream::connect(&addr_str)?;
+    target.set_nodelay(true)?;
+    target.set_read_timeout(Some(Duration::from_secs(60)))?;
+
+    // Send SYNACK after successful target connection
+    writer.send_synack(sid)?;
+
+    // If there's data after the SOCKS5 address, forward it to target
+    let remaining = if consumed < first_data.len() {
+        first_data[consumed..].to_vec()
+    } else {
+        Vec::new()
+    };
+
+    relay_sing_raw(stream, writer, target, remaining)?;
+    Ok(())
+}
+
+fn handle_sing_stream_vless(
+    stream: wrongsv_anytls::stream::SingStream,
+    writer: wrongsv_anytls::session::SessionWriter,
+    first_data: Vec<u8>,
+    peer: std::net::SocketAddr,
+    validator: Arc<MemoryValidator>,
+    kyber_sk: Option<[u8; 64]>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let sid = stream.id;
+
+    // Decode VLESS header from first PSH data
+    let (decoded, remaining_body) = {
+        let v = validator.clone();
+        let mut cursor = std::io::Cursor::new(first_data);
+        let decoded = encoding::decode_request_header(&mut cursor, move |id| v.get(id))?;
+        let pos = cursor.position() as usize;
+        let inner = cursor.into_inner();
+        let remaining = if pos < inner.len() {
+            inner[pos..].to_vec()
+        } else {
+            Vec::new()
+        };
+        (decoded, remaining)
+    };
+
+    let request = &decoded.header;
+    let account = &request.user.account;
+
+    info!(
+        "{peer} sing-anytls {} {} -> {}:{}",
+        if request.command == RequestCommand::Tcp {
+            "TCP"
+        } else {
+            "UDP"
+        },
+        request.user.email,
+        request.address,
+        request.port,
+    );
+
+    let use_vision = decoded.addons.flow == XRV && account.flow == XRV;
+
+    if !decoded.addons.kyber_ct.is_empty()
+        && let Some(sk) = kyber_sk
+    {
+        match wrongsv_kyber::decapsulate(&sk, &decoded.addons.kyber_ct) {
+            Ok(_) => info!("{peer} sing-anytls Kyber session established"),
+            Err(e) => warn!("{peer} sing-anytls Kyber decapsulation failed: {e}"),
+        }
+    }
+
+    if request.command == RequestCommand::Udp && use_vision {
+        writer.send_synack_error(sid, "Vision does not support UDP")?;
+        return Ok(());
+    }
+
+    // Send VLESS response header via PSH
+    let response_addons = Addons {
+        flow: String::new(),
+        ..Default::default()
+    };
+    let mut resp_buf = bytes::BytesMut::new();
+    encoding::encode_response_header(&mut resp_buf, request, &response_addons)?;
+
+    writer.send_synack(sid)?;
+    if !resp_buf.is_empty() {
+        writer.send_psh(sid, &resp_buf)?;
+    }
+    info!("{peer} sing-anytls SYNACK sent sid={sid}, resp_len={}", resp_buf.len());
+
+    if request.command == RequestCommand::Udp {
+        if !account.udp {
+            writer.send_fin(sid)?;
+            return Ok(());
+        }
+        relay_sing_udp(stream, writer, request, remaining_body)?;
+        return Ok(());
+    }
+
+    // Connect to target
+    let target_addr = format!("{}:{}", request.address, request.port);
+    let target = TcpStream::connect(&target_addr)?;
+    target.set_nodelay(true)?;
+    target.set_read_timeout(Some(Duration::from_secs(60)))?;
+
+    if use_vision {
+        let user_sent_id = account.id.bytes();
+        relay_sing_vision(
+            stream,
+            writer,
+            target,
+            user_sent_id,
+            &account.testseed,
+            remaining_body,
+        )?;
+    } else {
+        relay_sing_raw(stream, writer, target, remaining_body)?;
+    }
+
+    debug!("{peer} sing-anytls stream sid={sid} relay finished");
+    Ok(())
+}
+
+fn relay_sing_raw(
+    mut stream: wrongsv_anytls::stream::SingStream,
+    writer: wrongsv_anytls::session::SessionWriter,
+    mut target: TcpStream,
+    initial_data: Vec<u8>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let sid = stream.id;
+    let mut buf = [0u8; 32768];
+    target.set_nodelay(true)?;
+    target.set_read_timeout(Some(Duration::from_secs(2)))?;
+
+    if !initial_data.is_empty() {
+        target.write_all(&initial_data)?;
+    }
+
+    loop {
+        // Target → client (PSH frames)
+        match target.read(&mut buf) {
+            Ok(0) => {
+                let _ = writer.send_fin(sid);
+                break;
+            }
+            Ok(n) => {
+                writer.send_psh(sid, &buf[..n])?;
+                target.set_read_timeout(Some(Duration::from_millis(10)))?;
+            }
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                target.set_read_timeout(Some(Duration::from_secs(2)))?;
+            }
+            Err(e) => return Err(e.into()),
+        }
+
+        // Client → target (from SingStream channel)
+        match stream.try_read_chunk() {
+            Some(data) => {
+                target.write_all(&data)?;
+                target.set_read_timeout(Some(Duration::from_millis(10)))?;
+            }
+            None if stream.is_closed() => {
+                let _ = writer.send_fin(sid);
+                let _ = target.shutdown(Shutdown::Write);
+                break;
+            }
+            None => {}
+        }
+    }
+
+    let _ = target.shutdown(Shutdown::Write);
+    Ok(())
+}
+
+fn relay_sing_vision(
+    mut stream: wrongsv_anytls::stream::SingStream,
+    writer: wrongsv_anytls::session::SessionWriter,
+    mut target: TcpStream,
+    user_sent_id: &[u8],
+    testseed: &[u32],
+    initial_data: Vec<u8>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let sid = stream.id;
+    let up_seed = if testseed.len() >= 4 {
+        testseed.to_vec()
+    } else {
+        vec![900, 500, 900, 256]
+    };
+    let mut up_state = TrafficState::new(user_sent_id);
+    let mut down_state = TrafficState::new(user_sent_id);
+    let mut down_user_uuid: Option<[u8; 16]> = Some(down_state.user_uuid);
+
+    if !initial_data.is_empty() {
+        let unpadded =
+            wrongsv_vless::vision::xtls_unpadding(&initial_data, &mut up_state, true);
+        if !unpadded.is_empty() {
+            target.write_all(&unpadded)?;
+        }
+    }
+
+    target.set_nodelay(true)?;
+    target.set_read_timeout(Some(Duration::from_secs(2)))?;
+
+    let mut buf = [0u8; 32768];
+    loop {
+        // Downlink: target → Vision encode → PSH
+        let downlink_done = loop {
+            match target.read(&mut buf) {
+                Ok(0) => break true,
+                Ok(n) => {
+                    let mut encoded = Vec::with_capacity(n + 256);
+                    {
+                        struct BufWriter<'a>(&'a mut Vec<u8>);
+                        impl Write for BufWriter<'_> {
+                            fn write(&mut self, data: &[u8]) -> IoResult<usize> {
+                                self.0.extend_from_slice(data);
+                                Ok(data.len())
+                            }
+                            fn flush(&mut self) -> IoResult<()> {
+                                Ok(())
+                            }
+                        }
+                        let mut w = VisionWriter::new(
+                            BufWriter(&mut encoded),
+                            down_state.clone(),
+                            false,
+                            up_seed.clone(),
+                        );
+                        w.user_uuid = down_user_uuid.take();
+                        w.write(&buf[..n])?;
+                        w.flush()?;
+                        down_state = w.state;
+                        down_user_uuid = w.user_uuid;
+                    }
+                    if !encoded.is_empty() {
+                        writer.send_psh(sid, &encoded)?;
+                    }
+                    target.set_read_timeout(Some(Duration::from_millis(10)))?;
+                }
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::TimedOut =>
+                {
+                    target.set_read_timeout(Some(Duration::from_secs(2)))?;
+                    break false;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        };
+
+        // Uplink: SingStream → Vision decode → target
+        let mut uplink_done = false;
+        loop {
+            match stream.try_read_chunk() {
+                Some(data) => {
+                    let unpadded =
+                        wrongsv_vless::vision::xtls_unpadding(&data, &mut up_state, true);
+                    if !unpadded.is_empty() {
+                        target.write_all(&unpadded)?;
+                        target.set_read_timeout(Some(Duration::from_millis(10)))?;
+                    }
+                }
+                None if stream.is_closed() => {
+                    uplink_done = true;
+                    break;
+                }
+                None => break,
+            }
+        }
+
+        if uplink_done {
+            let _ = writer.send_fin(sid);
+            break;
+        }
+        if downlink_done {
+            let _ = writer.send_fin(sid);
+            break;
+        }
+    }
+
+    let _ = target.shutdown(Shutdown::Write);
+    Ok(())
+}
+
+fn relay_sing_udp(
+    _stream: wrongsv_anytls::stream::SingStream,
+    writer: wrongsv_anytls::session::SessionWriter,
+    _request: &RequestHeader,
+    _remaining: Vec<u8>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // UDP over sing-anytls streams is not yet implemented.
+    // Signal to the client that we can't handle this.
+    let _ = writer.send_fin(_stream.id);
     Ok(())
 }
 
