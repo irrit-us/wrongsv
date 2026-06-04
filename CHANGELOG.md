@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.2.4] — 2026-06-05
+
+### Added
+
+- **Traffic benchmark suite** (`benches/traffic/`): 6 public tools for stress testing
+  (Deathcore/xray-core for REALITY, Hellcat-v2 for multi-user TLS, wrk2, Vegeta, k6).
+  One-shot `setup.sh` to build all tools, `run.sh` for unified test execution.
+- **Xray-core 26.5.9** bundling support: local build from `xray-core/` or download.
+
+### Fixed
+
+- **AnyTLS Vision relay**: `relay_anytls_vision` no longer breaks immediately on
+  client close_notify. Target write side is shut down and the loop continues
+  for downlink flush, matching the two-threaded `relay_vision` behavior.
+  Fixes `test_anytls_vision_small`, `test_anytls_vision_16kb`,
+  `test_anytls_multi_user`.
+- **Go client test**: `test_go_client_handshake_with_rust_server` now skips
+  gracefully when the external Go REALITY client binary is not present.
+
+### Changed
+
+- **Project structure**: Traffic benchmark tools merged from `bench/` into
+  `benches/traffic/`, alongside existing `benches/throughput.rs`.
+
 ## [Unreleased]
 
 ### Added
