@@ -1753,7 +1753,12 @@ fn relay_anytls_vision(
         };
 
         if uplink_done {
-            break;
+            // Client is done sending. Shut down target's write side so
+            // the echo server sees EOF and closes, which will trigger
+            // downlink_done in the next iteration. Don't break here —
+            // the downlink still needs to flush the response.
+            let _ = target.shutdown(Shutdown::Write);
+            // Clear uplink_done so we continue looping for downlink flush
         }
         if downlink_done {
             conn.send_close_notify();
@@ -1762,8 +1767,16 @@ fn relay_anytls_vision(
             }
             break;
         }
+        // Safety: if both sides are done (uplink closed, target drained),
+        // don't spin forever
+        if uplink_done && downlink_done {
+            conn.send_close_notify();
+            while conn.wants_write() {
+                conn.write_tls(stream)?;
+            }
+            break;
+        }
     }
-    let _ = target.shutdown(Shutdown::Write);
     Ok(())
 }
 
