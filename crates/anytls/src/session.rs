@@ -111,28 +111,22 @@ fn try_read_exact(
                     Err(e) => return Err(e.into()),
                 }
             }
-            Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                match conn.read_tls(stream) {
-                    Ok(0) => {
-                        return Err(
-                            std::io::Error::new(ErrorKind::UnexpectedEof, "TLS EOF").into()
-                        );
-                    }
-                    Ok(_) => {
-                        conn.process_new_packets()
-                            .map_err(|e| AnyTlsError::Tls(format!("process: {e}")))?;
-                        continue;
-                    }
-                    Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                        return Err(std::io::Error::new(
-                            ErrorKind::WouldBlock,
-                            "no data available",
-                        )
-                        .into());
-                    }
-                    Err(e) => return Err(e.into()),
+            Err(e) if e.kind() == ErrorKind::WouldBlock => match conn.read_tls(stream) {
+                Ok(0) => {
+                    return Err(std::io::Error::new(ErrorKind::UnexpectedEof, "TLS EOF").into());
                 }
-            }
+                Ok(_) => {
+                    conn.process_new_packets()
+                        .map_err(|e| AnyTlsError::Tls(format!("process: {e}")))?;
+                    continue;
+                }
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    return Err(
+                        std::io::Error::new(ErrorKind::WouldBlock, "no data available").into(),
+                    );
+                }
+                Err(e) => return Err(e.into()),
+            },
             Err(e) => return Err(e.into()),
         }
     }
@@ -151,9 +145,7 @@ fn read_exact(
         match conn.reader().read(&mut buf[pos..]) {
             Ok(0) => match conn.read_tls(stream) {
                 Ok(0) => {
-                    return Err(
-                        std::io::Error::new(ErrorKind::UnexpectedEof, "TLS EOF").into(),
-                    );
+                    return Err(std::io::Error::new(ErrorKind::UnexpectedEof, "TLS EOF").into());
                 }
                 Ok(_) => {
                     conn.process_new_packets()
@@ -167,23 +159,21 @@ fn read_exact(
                 Err(e) => return Err(e.into()),
             },
             Ok(n) => pos += n,
-            Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                match conn.read_tls(stream) {
-                    Ok(0) => {
-                        return Err(std::io::Error::new(ErrorKind::UnexpectedEof, "TLS EOF").into());
-                    }
-                    Ok(_) => {
-                        conn.process_new_packets()
-                            .map_err(|e| AnyTlsError::Tls(format!("process: {e}")))?;
-                        continue;
-                    }
-                    Err(e2) if e2.kind() == ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(5));
-                        continue;
-                    }
-                    Err(e2) => return Err(e2.into()),
+            Err(e) if e.kind() == ErrorKind::WouldBlock => match conn.read_tls(stream) {
+                Ok(0) => {
+                    return Err(std::io::Error::new(ErrorKind::UnexpectedEof, "TLS EOF").into());
                 }
-            }
+                Ok(_) => {
+                    conn.process_new_packets()
+                        .map_err(|e| AnyTlsError::Tls(format!("process: {e}")))?;
+                    continue;
+                }
+                Err(e2) if e2.kind() == ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                Err(e2) => return Err(e2.into()),
+            },
             Err(e) => return Err(e.into()),
         }
     }
@@ -212,9 +202,9 @@ impl SessionWriter {
             sid,
             data: data.to_vec(),
         };
-        self.tx.send(job).map_err(|_| {
-            AnyTlsError::Tls("session write channel closed".into())
-        })?;
+        self.tx
+            .send(job)
+            .map_err(|_| AnyTlsError::Tls("session write channel closed".into()))?;
         Ok(())
     }
 
@@ -393,8 +383,7 @@ where
             match try_read_exact(&mut conn, &mut stream, &mut hdr) {
                 Ok(()) => {
                     let cmd = hdr[0];
-                    let sid =
-                        u32::from_be_bytes([hdr[1], hdr[2], hdr[3], hdr[4]]);
+                    let sid = u32::from_be_bytes([hdr[1], hdr[2], hdr[3], hdr[4]]);
                     let data_len = u16::from_be_bytes([hdr[5], hdr[6]]);
                     Ok((cmd, sid, data_len))
                 }
@@ -426,13 +415,7 @@ where
                     Err(AnyTlsError::Io(ref ioe)) if ioe.kind() == ErrorKind::WouldBlock => {
                         // Drain writes while waiting for frame data
                         while let Ok(job) = write_rx.try_recv() {
-                            write_frame(
-                                &mut conn,
-                                &mut stream,
-                                job.cmd,
-                                job.sid,
-                                &job.data,
-                            )?;
+                            write_frame(&mut conn, &mut stream, job.cmd, job.sid, &job.data)?;
                         }
                         std::thread::sleep(Duration::from_millis(5));
                         continue;
@@ -478,13 +461,7 @@ where
             CMD_HEART_REQ => {
                 // Queue response through the write channel (handled on next
                 // drain). For simplicity, write directly since we own conn.
-                let _ = write_frame(
-                    &mut conn,
-                    &mut stream,
-                    CMD_HEART_RESP,
-                    sid,
-                    &[],
-                );
+                let _ = write_frame(&mut conn, &mut stream, CMD_HEART_RESP, sid, &[]);
             }
             _ => {
                 tracing::debug!("sing-anytls unknown cmd={cmd} sid={sid}");

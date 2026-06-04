@@ -1842,7 +1842,10 @@ fn test_go_client_handshake_with_rust_server() {
     // Path to the Go client binary
     let go_client = std::path::Path::new("/tmp/reality_vectors/reality_client");
     if !go_client.exists() {
-        eprintln!("Skipping: Go REALITY client not found at {}", go_client.display());
+        eprintln!(
+            "Skipping: Go REALITY client not found at {}",
+            go_client.display()
+        );
         return;
     }
 

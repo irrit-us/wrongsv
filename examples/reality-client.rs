@@ -519,6 +519,7 @@ impl HandshakeState {
 // ServerHello parser
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::type_complexity)]
 fn parse_server_hello(payload: &[u8]) -> Result<([u8; 32], [u8; 32], [u8; 32]), String> {
     // TLS handshake header: type(1) + len(3)
     if payload.len() < 4 || payload[0] != 0x02 {

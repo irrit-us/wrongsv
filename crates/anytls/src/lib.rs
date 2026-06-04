@@ -26,8 +26,8 @@
 
 mod auth;
 mod padding;
-pub mod socks;
 pub mod session;
+pub mod socks;
 pub mod stream;
 
 use std::io::{Read, Result as IoResult, Write};
@@ -184,7 +184,7 @@ impl Write for AnyTlsStream {
 /// 4. Returns `AnyTlsStream` ready for protocol detection
 ///
 /// On auth failure, returns `Err(AnyTlsAcceptError)` for fallback forwarding.
-
+///
 /// Protocol variant detected after AnyTLS auth.
 #[derive(Debug, PartialEq)]
 pub enum PostAuthProtocol {

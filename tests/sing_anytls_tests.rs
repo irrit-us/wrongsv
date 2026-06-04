@@ -191,10 +191,7 @@ fn read_sing_frame(tls: &mut TlsClient) -> io::Result<(u8, u32, Vec<u8>)> {
 
 // ── Connect helper ──────────────────────────────────────────────────────────
 
-fn sing_anytls_connect(
-    server_addr: &str,
-    password: &str,
-) -> TlsClient {
+fn sing_anytls_connect(server_addr: &str, password: &str) -> TlsClient {
     let server: std::net::SocketAddr = server_addr.parse().unwrap();
     let mut sock = None;
     for _ in 0..20 {
@@ -239,27 +236,22 @@ fn spawn_echo_target() -> (std::net::SocketAddr, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = thread::spawn(move || {
-        loop {
-            match listener.accept() {
-                Ok((mut stream, _)) => {
-                    thread::spawn(move || {
-                        stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
-                        let mut buf = [0u8; 65536];
-                        loop {
-                            match stream.read(&mut buf) {
-                                Ok(0) => break,
-                                Ok(n) => {
-                                    if stream.write_all(&buf[..n]).is_err() {
-                                        break;
-                                    }
-                                }
-                                Err(_) => break,
+        while let Ok((mut stream, _)) = listener.accept() {
+            thread::spawn(move || {
+                stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+                let mut buf = [0u8; 65536];
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            if stream.write_all(&buf[..n]).is_err() {
+                                break;
                             }
                         }
-                    });
+                        Err(_) => break,
+                    }
                 }
-                Err(_) => break,
-            }
+            });
         }
     });
     (addr, handle)
@@ -306,12 +298,7 @@ fn test_sing_anytls_session_setup() {
     let user_uuid = Uuid::new_v4();
     let password = "sing-test-secret";
 
-    let _server = spawn_anytls_server(
-        &listen_str,
-        &user_uuid.to_string(),
-        password,
-        "",
-    );
+    let _server = spawn_anytls_server(&listen_str, &user_uuid.to_string(), password, "");
     thread::sleep(Duration::from_millis(100));
 
     let mut tls = sing_anytls_connect(&listen_str, password);
@@ -325,7 +312,10 @@ fn test_sing_anytls_session_setup() {
     assert_eq!(cmd, CMD_SERVER_SETTINGS);
     assert_eq!(sid, 0);
     let body = String::from_utf8_lossy(&data);
-    assert!(body.contains("v=2"), "expected v=2 in server settings, got: {body}");
+    assert!(
+        body.contains("v=2"),
+        "expected v=2 in server settings, got: {body}"
+    );
 }
 
 #[test]
@@ -340,16 +330,13 @@ fn test_sing_anytls_stream_echo() {
     let user_uuid = Uuid::new_v4();
     let password = "sing-echo-secret";
 
-    let _server = spawn_anytls_server(
-        &listen_str,
-        &user_uuid.to_string(),
-        password,
-        "",
-    );
+    let _server = spawn_anytls_server(&listen_str, &user_uuid.to_string(), password, "");
     thread::sleep(Duration::from_millis(100));
 
     let mut tls = sing_anytls_connect(&listen_str, password);
-    tls.sock.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    tls.sock
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
 
     // Settings handshake
     write_sing_frame(&mut tls, CMD_SETTINGS, 0, b"v=2\nclient=test/0.1\n").unwrap();
@@ -427,8 +414,8 @@ fn test_sing_anytls_stream_echo() {
                 break;
             }
             Ok((_, _, _)) => {}
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock
-                || e.kind() == io::ErrorKind::TimedOut =>
+            Err(e)
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
             {
                 if std::time::Instant::now() > deadline {
                     break;
@@ -440,7 +427,9 @@ fn test_sing_anytls_stream_echo() {
     }
 
     assert!(
-        response.windows(b"hello sing-anytls".len()).any(|w| w == b"hello sing-anytls"),
+        response
+            .windows(b"hello sing-anytls".len())
+            .any(|w| w == b"hello sing-anytls"),
         "expected echo response to contain 'hello sing-anytls', got {} bytes",
         response.len()
     );
@@ -458,16 +447,13 @@ fn test_sing_anytls_socks5_echo() {
     let user_uuid = Uuid::new_v4();
     let password = "sing-socks5-secret";
 
-    let _server = spawn_anytls_server(
-        &listen_str,
-        &user_uuid.to_string(),
-        password,
-        "",
-    );
+    let _server = spawn_anytls_server(&listen_str, &user_uuid.to_string(), password, "");
     thread::sleep(Duration::from_millis(100));
 
     let mut tls = sing_anytls_connect(&listen_str, password);
-    tls.sock.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    tls.sock
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
 
     // Settings handshake
     write_sing_frame(&mut tls, CMD_SETTINGS, 0, b"v=2\nclient=test/0.1\n").unwrap();
@@ -481,7 +467,15 @@ fn test_sing_anytls_socks5_echo() {
     // Send SOCKS5 address as first PSH (domain type=3, "127.0.0.1":echo_port)
     // Use IPv4 (type=1) for the echo target
     let echo_port = echo_addr.port();
-    let socks_addr = vec![0x01u8, 127, 0, 0, 1, (echo_port >> 8) as u8, echo_port as u8];
+    let socks_addr = vec![
+        0x01u8,
+        127,
+        0,
+        0,
+        1,
+        (echo_port >> 8) as u8,
+        echo_port as u8,
+    ];
     write_sing_frame(&mut tls, CMD_PSH, sid, &socks_addr).unwrap();
 
     // Read SYNACK
@@ -507,8 +501,8 @@ fn test_sing_anytls_socks5_echo() {
                 break;
             }
             Ok((_, _, _)) => {}
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock
-                || e.kind() == io::ErrorKind::TimedOut =>
+            Err(e)
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
             {
                 if std::time::Instant::now() > deadline {
                     break;
@@ -520,7 +514,9 @@ fn test_sing_anytls_socks5_echo() {
     }
 
     assert!(
-        response.windows(b"hello socks5".len()).any(|w| w == b"hello socks5"),
+        response
+            .windows(b"hello socks5".len())
+            .any(|w| w == b"hello socks5"),
         "expected echo response to contain 'hello socks5', got {} bytes",
         response.len()
     );

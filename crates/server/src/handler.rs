@@ -93,6 +93,7 @@ fn parse_anytls_config(ac: &AnyTlsServerConfig) -> Result<wrongsv_anytls::AnyTls
 #[derive(Clone)]
 pub(crate) struct TlsConfig {
     pub tls_config: Arc<rustls::ServerConfig>,
+    #[allow(dead_code)]
     pub dest: Option<String>,
 }
 
@@ -661,9 +662,8 @@ fn handle_sing_stream_socks(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let sid = stream.id;
 
-    let (target_addr, target_port, consumed) =
-        wrongsv_anytls::socks::parse_socks_addr(&first_data)
-            .ok_or_else(|| format!("invalid SOCKS5 address in first PSH"))?;
+    let (target_addr, target_port, consumed) = wrongsv_anytls::socks::parse_socks_addr(&first_data)
+        .ok_or_else(|| "invalid SOCKS5 address in first PSH".to_string())?;
 
     let addr_str = format!("{}:{}", target_addr, target_port);
     info!("{peer} sing-anytls SOCKS5 sid={sid} -> {addr_str}");
@@ -754,7 +754,10 @@ fn handle_sing_stream_vless(
     if !resp_buf.is_empty() {
         writer.send_psh(sid, &resp_buf)?;
     }
-    info!("{peer} sing-anytls SYNACK sent sid={sid}, resp_len={}", resp_buf.len());
+    info!(
+        "{peer} sing-anytls SYNACK sent sid={sid}, resp_len={}",
+        resp_buf.len()
+    );
 
     if request.command == RequestCommand::Udp {
         if !account.udp {
@@ -862,8 +865,7 @@ fn relay_sing_vision(
     let mut down_user_uuid: Option<[u8; 16]> = Some(down_state.user_uuid);
 
     if !initial_data.is_empty() {
-        let unpadded =
-            wrongsv_vless::vision::xtls_unpadding(&initial_data, &mut up_state, true);
+        let unpadded = wrongsv_vless::vision::xtls_unpadding(&initial_data, &mut up_state, true);
         if !unpadded.is_empty() {
             target.write_all(&unpadded)?;
         }
@@ -1267,7 +1269,10 @@ fn handle_reality_connection(
     trace!("{peer} connected to target");
 
     if use_vision {
-        trace!("{peer} starting REALITY Vision relay (initial={}B)", remaining_body.len());
+        trace!(
+            "{peer} starting REALITY Vision relay (initial={}B)",
+            remaining_body.len()
+        );
         relay_reality_vision(
             tls_stream,
             target,
@@ -1276,7 +1281,10 @@ fn handle_reality_connection(
             remaining_body,
         )?;
     } else {
-        trace!("{peer} starting REALITY raw relay (initial={}B)", remaining_body.len());
+        trace!(
+            "{peer} starting REALITY raw relay (initial={}B)",
+            remaining_body.len()
+        );
         relay_reality(tls_stream, target, remaining_body)?;
     }
     trace!("{peer} REALITY relay finished");
@@ -1295,7 +1303,10 @@ fn relay_reality(
 
     if !initial_data.is_empty() {
         target.write_all(&initial_data)?;
-        trace!("relay_reality: wrote {}B initial data to target", initial_data.len());
+        trace!(
+            "relay_reality: wrote {}B initial data to target",
+            initial_data.len()
+        );
     }
 
     let (conn, stream) = tls.get_mut();
@@ -1674,7 +1685,6 @@ fn relay_anytls_vision(
 
     let mut buf = [0u8; 32768];
     loop {
-
         // Downlink: target → Vision encode → TLS
         let downlink_done = loop {
             match target.read(&mut buf) {
@@ -1718,7 +1728,7 @@ fn relay_anytls_vision(
                         || e.kind() == std::io::ErrorKind::TimedOut =>
                 {
                     target.set_read_timeout(Some(Duration::from_secs(2)))?;
-                    break false
+                    break false;
                 }
                 Err(e) => return Err(e.into()),
             }
@@ -1735,8 +1745,11 @@ fn relay_anytls_vision(
                         match conn.reader().read(&mut buf) {
                             Ok(0) => break,
                             Ok(n) => {
-                                let unpadded =
-                                    wrongsv_vless::vision::xtls_unpadding(&buf[..n], &mut up_state, true);
+                                let unpadded = wrongsv_vless::vision::xtls_unpadding(
+                                    &buf[..n],
+                                    &mut up_state,
+                                    true,
+                                );
                                 if !unpadded.is_empty() {
                                     target.write_all(&unpadded)?;
                                     target.set_read_timeout(Some(Duration::from_millis(10)))?;

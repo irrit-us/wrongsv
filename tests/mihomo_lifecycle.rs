@@ -19,10 +19,10 @@ use common::{
 };
 
 fn mihomo_bin() -> Option<String> {
-    if let Ok(path) = std::env::var("MIHOMO_BIN") {
-        if std::path::Path::new(&path).exists() {
-            return Some(path);
-        }
+    if let Ok(path) = std::env::var("MIHOMO_BIN")
+        && std::path::Path::new(&path).exists()
+    {
+        return Some(path);
     }
     for candidate in &["mihomo", "./test-deploy/mihomo", "../test-deploy/mihomo"] {
         if Command::new(candidate).arg("-v").output().is_ok() {
@@ -46,6 +46,7 @@ impl Drop for MihomoGuard {
 }
 
 /// Write a mihomo YAML config for a VLESS+REALITY outbound.
+#[allow(clippy::too_many_arguments)]
 fn write_mihomo_config(
     path: &str,
     socks_port: u16,

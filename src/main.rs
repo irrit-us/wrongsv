@@ -166,14 +166,11 @@ struct ClientConfigValues {
 
 /// Resolve values for the generated client config from TOML config or defaults.
 fn resolve_client_values(cli: &Cli) -> ClientConfigValues {
-    let build_uuid =
-        || option_env!("BUILD_UUID").unwrap_or("00000000-0000-4000-8000-000000000000");
+    let build_uuid = || option_env!("BUILD_UUID").unwrap_or("00000000-0000-4000-8000-000000000000");
     let build_port = || option_env!("BUILD_PORT").unwrap_or("443");
     let build_sid = || option_env!("BUILD_SHORT_ID").unwrap_or("00000000");
-    let build_pk = || {
-        option_env!("BUILD_X25519_PK")
-            .unwrap_or("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
-    };
+    let build_pk =
+        || option_env!("BUILD_X25519_PK").unwrap_or("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
 
     let toml_config = cli.config.as_ref().and_then(|path| {
         let content = std::fs::read_to_string(path).ok()?;

@@ -276,7 +276,10 @@ pub fn accept_reality(
         }
     }
     buf.truncate(total);
-    trace!("read {} bytes for ClientHello (record_len={record_len})", total);
+    trace!(
+        "read {} bytes for ClientHello (record_len={record_len})",
+        total
+    );
 
     let _ = stream.set_read_timeout(None);
 

@@ -19,10 +19,10 @@ use common::{
 
 /// Path to sing-box binary.
 fn singbox_bin() -> Option<String> {
-    if let Ok(path) = std::env::var("SINGBOX_BIN") {
-        if std::path::Path::new(&path).exists() {
-            return Some(path);
-        }
+    if let Ok(path) = std::env::var("SINGBOX_BIN")
+        && std::path::Path::new(&path).exists()
+    {
+        return Some(path);
     }
     for candidate in &[
         "sing-box",
@@ -50,6 +50,7 @@ impl Drop for SingBoxGuard {
 }
 
 /// Write a sing-box config JSON for a VLESS+REALITY client.
+#[allow(clippy::too_many_arguments)]
 fn write_singbox_config(
     path: &str,
     socks_port: u16,

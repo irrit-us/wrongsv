@@ -18,10 +18,10 @@ use common::{
 };
 
 fn xray_bin() -> Option<String> {
-    if let Ok(path) = std::env::var("XRAY_BIN") {
-        if std::path::Path::new(&path).exists() {
-            return Some(path);
-        }
+    if let Ok(path) = std::env::var("XRAY_BIN")
+        && std::path::Path::new(&path).exists()
+    {
+        return Some(path);
     }
     for candidate in &["xray", "./test-deploy/xray", "../test-deploy/xray"] {
         if Command::new(candidate).arg("version").output().is_ok() {
@@ -45,6 +45,7 @@ impl Drop for XrayGuard {
 }
 
 /// Write an xray JSON config for a VLESS+REALITY client.
+#[allow(clippy::too_many_arguments)]
 fn write_xray_config(
     path: &str,
     socks_port: u16,

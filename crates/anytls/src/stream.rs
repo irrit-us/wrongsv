@@ -19,7 +19,13 @@ pub struct SingStream {
 
 impl SingStream {
     pub fn new(id: u32, data_rx: Receiver<Vec<u8>>) -> Self {
-        Self { id, data_rx, buffer: Vec::new(), buf_pos: 0, closed: false }
+        Self {
+            id,
+            data_rx,
+            buffer: Vec::new(),
+            buf_pos: 0,
+            closed: false,
+        }
     }
 
     /// Read the next chunk of data from this stream (blocking).

@@ -31,8 +31,7 @@ pub fn parse_socks_addr(data: &[u8]) -> Option<(Address, Port, usize)> {
             if data.len() < total {
                 return None;
             }
-            let domain =
-                String::from_utf8_lossy(&data[2..2 + domain_len]).into_owned();
+            let domain = String::from_utf8_lossy(&data[2..2 + domain_len]).into_owned();
             let port_off = 2 + domain_len;
             let port = Port(u16::from_be_bytes([data[port_off], data[port_off + 1]]));
             Some((Address::Domain(domain), port, total))
