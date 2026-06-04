@@ -197,7 +197,7 @@ OVERALL: PASS
 
 ```bash
 # Direct AnyTLS + VLESS test (no proxy needed)
-# Default server: <SERVER_IP>:443
+# Default server: <YOUR_SERVER_IP>:443
 ./scripts/anytls-test.py [server_host] [port]
 ```
 

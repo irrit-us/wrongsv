@@ -69,8 +69,6 @@ All results are saved to `benches/traffic/results/<timestamp>/<scenario>/`.
 
 ### REALITY+Vision Mode (Deathcore + xray-core)
 
-#### Local (localhost)
-
 | Metric | Value |
 |--------|-------|
 | Connections (30s burst) | 5,812 |
@@ -80,18 +78,6 @@ All results are saved to `benches/traffic/results/<timestamp>/<scenario>/`.
 | Memory (120s soak) | 37-39 MB |
 | Memory leak | **None** |
 | Errors / Crashes | **0** |
-
-#### Remote (<SERVER_IP>:443, 1 vCPU / 512MB)
-
-| Metric | Value |
-|--------|-------|
-| Connections (50 workers) | 844 |
-| Data sent | 2.1 GB |
-| REALITY handshakes | 930 |
-| TCP relays | 930 (100%) |
-| RSS memory | 4.3 MB |
-| Threads | 2 |
-| Errors | **0** |
 
 ### HTTP through SOCKS5 → REALITY (Vegeta)
 

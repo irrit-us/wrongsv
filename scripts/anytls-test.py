@@ -20,7 +20,7 @@ import sys
 import time
 from pathlib import Path
 
-SERVER = sys.argv[1] if len(sys.argv) > 1 else "<SERVER_IP>"
+SERVER = sys.argv[1] if len(sys.argv) > 1 else "<YOUR_SERVER_IP>"
 PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 443
 PASSWORD = "wrongsv-test-secret"
 UUID_HEX = "f3fd9d7e805b4a0a97695419ebc56d25"  # no dashes
