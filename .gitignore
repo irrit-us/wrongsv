@@ -4,10 +4,10 @@ etc/
 usr/
 perf-*.rpm
 
-# Bench tool sources and binaries (built by bench/setup.sh)
-bench/tools/deathcore/
-bench/tools/hellcat/
-bench/tools/wrk2/
-bench/tools/bin/
-bench/results/
-!bench/results/.gitkeep
+# Traffic bench tool sources and binaries (built by benches/traffic/setup.sh)
+benches/traffic/tools/deathcore/
+benches/traffic/tools/hellcat/
+benches/traffic/tools/wrk2/
+benches/traffic/tools/bin/
+benches/traffic/results/
+!benches/traffic/results/.gitkeep

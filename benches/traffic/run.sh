@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # run.sh — wrongsv stability test runner
-# Usage: ./bench/run.sh [scenario] [--debug]
+# Usage: ./benches/traffic/run.sh [scenario]
 # Scenarios: reality-stress, multi-user, throughput-ladder, tls-handshake, all
 set -euo pipefail
 
@@ -8,7 +8,7 @@ BENCH_DIR="$(cd "$(dirname "$0")" && pwd)"
 BIN_DIR="$BENCH_DIR/tools/bin"
 RESULTS_DIR="$BENCH_DIR/results/$(date +%Y%m%d-%H%M%S)"
 SCENARIOS_DIR="$BENCH_DIR/scenarios"
-WRONGSV_DIR="$(dirname "$BENCH_DIR")"
+WRONGSV_DIR="$(dirname "$(dirname "$BENCH_DIR")")"
 
 # Defaults
 SERVER_HOST="${SERVER_HOST:-127.0.0.1}"
@@ -37,7 +37,7 @@ check_tools() {
     done
     if [ -n "$missing" ]; then
         err "Missing tools:$missing"
-        err "Run: ./bench/setup.sh"
+        err "Run: ./benches/traffic/setup.sh"
         exit 1
     fi
 }

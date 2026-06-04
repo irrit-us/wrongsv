@@ -84,7 +84,7 @@ fi
 if [ ! -f "$BIN_DIR/xray" ]; then
     echo "[6/6] Setting up xray-core for Deathcore..."
     # Try local build first (requires Go 1.26+), fall back to pre-built binary
-    XRAY_SRC="$BENCH_DIR/../xray-core"
+    XRAY_SRC="$BENCH_DIR/../../../xray-core"
     if [ -d "$XRAY_SRC/go.mod" ]; then
         echo "  Building from local xray-core source..."
         cd "$XRAY_SRC"
@@ -111,4 +111,4 @@ echo "=== All tools ready ==="
 echo "Binaries:"
 ls -lh "$BIN_DIR/"
 echo ""
-echo "Run: ./bench/run.sh [scenario]"
+echo "Run: ./benches/traffic/run.sh [scenario]"

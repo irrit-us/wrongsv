@@ -6,13 +6,13 @@ Traffic generation and stability testing for wrongsv using publicly available to
 
 ```bash
 # One-time setup (clone + build all tools)
-./bench/setup.sh
+./benches/traffic/setup.sh
 
 # Run all scenarios
-./bench/run.sh all
+./benches/traffic/run.sh all
 
 # Run single scenario
-./bench/run.sh reality-stress
+./benches/traffic/run.sh reality-stress
 ```
 
 ## Tools
@@ -49,12 +49,12 @@ SERVER_HOST=my.server.com \
 SERVER_PORT=443 \
 DURATION=120s \
 CONCURRENT=500 \
-./bench/run.sh reality-stress
+./benches/traffic/run.sh reality-stress
 ```
 
 ## Results
 
-All results are saved to `bench/results/<timestamp>/<scenario>/`.
+All results are saved to `benches/traffic/results/<timestamp>/<scenario>/`.
 
 ### TLS+Vision Mode (Hellcat-v2)
 
