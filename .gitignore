@@ -3,3 +3,10 @@ target/
 etc/
 usr/
 perf-*.rpm
+
+# Bench tool sources and binaries (built by bench/setup.sh)
+bench/tools/deathcore/
+bench/tools/hellcat/
+bench/tools/wrk2/
+bench/tools/bin/
+bench/results/
