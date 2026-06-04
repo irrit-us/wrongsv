@@ -56,18 +56,36 @@ CONCURRENT=500 \
 
 All results are saved to `bench/results/<timestamp>/<scenario>/`.
 
-### Initial Benchmarks (localhost, TLS+Vision mode, 100 clients)
+### TLS+Vision Mode (Hellcat-v2)
 
 | Metric | Value |
 |--------|-------|
-| TLS handshakes | 32,577 (over all test phases) |
-| Successful VLESS relays | 7,681 |
+| Successful VLESS relays | 18,088 (100 clients, 60s) |
 | Relay success rate | **100%** |
 | Sustained RPS (100 clients) | 153 req/s |
 | Peak RPS (200 clients) | 304 req/s |
-| TLS handshake P50 latency | 105ms @ 200 conn/s |
-| Memory (idle) | 9 MB RSS |
-| Memory (200 clients) | 17 MB RSS |
-| Memory leak | **None detected** |
+| Memory (idle/loaded) | 9 MB / 17 MB |
+| Memory leak | **None** |
 
-> Note: "connection errors" in logs are expected — Hellcat's `mixed`/`handshake` modes send SYN/ACK probes that aren't valid VLESS headers. The server correctly rejects these. All valid VLESS requests succeed.
+### REALITY+Vision Mode (Deathcore + xray-core)
+
+| Metric | Value |
+|--------|-------|
+| Connections (30s burst) | 5,812 |
+| Connections (120s soak) | 9,466 |
+| Data sent (120s) | 65.8 GB |
+| REALITY handshakes (120s) | 11,930 new |
+| Active workers sustained | 100 |
+| Memory (120s soak) | 37-39 MB |
+| Memory leak | **None** |
+| Errors / Crashes | **0** |
+
+### HTTP through SOCKS5 → REALITY (Vegeta)
+
+| Rate | Success | P50 Latency |
+|------|---------|-------------|
+| 10 req/s | 86.7% | 1.175s |
+| 50 req/s | 98.7% | 1.153s |
+| 100 req/s | 72.5% | 1.206s |
+
+> Bottleneck at 100 req/s is sing-box SOCKS5 connection management, not wrongsv.
