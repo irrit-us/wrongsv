@@ -10,3 +10,4 @@ bench/tools/hellcat/
 bench/tools/wrk2/
 bench/tools/bin/
 bench/results/
+!bench/results/.gitkeep

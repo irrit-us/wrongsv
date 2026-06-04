@@ -80,6 +80,32 @@ else
     echo "[5/5] k6 already downloaded, skipping"
 fi
 
+# ── xray-core — required by Deathcore for REALITY protocol testing ──────────
+if [ ! -f "$BIN_DIR/xray" ]; then
+    echo "[6/6] Setting up xray-core for Deathcore..."
+    # Try local build first (requires Go 1.26+), fall back to pre-built binary
+    XRAY_SRC="$BENCH_DIR/../xray-core"
+    if [ -d "$XRAY_SRC/go.mod" ]; then
+        echo "  Building from local xray-core source..."
+        cd "$XRAY_SRC"
+        GOTOOLCHAIN=auto go build -o "$BIN_DIR/xray" ./main/ 2>/dev/null && echo "  -> xray built from source" || true
+    fi
+    if [ ! -f "$BIN_DIR/xray" ]; then
+        echo "  Downloading pre-built xray-core..."
+        curl -sL --connect-timeout 30 --max-time 120 \
+            "https://github.com/XTLS/Xray-core/releases/download/v1.8.23/Xray-linux-64.zip" \
+            -o "$BIN_DIR/xray.zip" 2>/dev/null && \
+            unzip -o "$BIN_DIR/xray.zip" xray -d "$BIN_DIR/" 2>/dev/null && \
+            rm "$BIN_DIR/xray.zip" && chmod +x "$BIN_DIR/xray" && \
+            echo "  -> xray downloaded" || \
+            echo "  [WARN] xray-core not available (network or build issue)"
+    fi
+else
+    echo "[6/6] xray-core already available, skipping"
+fi
+
+export PATH="$BIN_DIR:$PATH"
+
 echo ""
 echo "=== All tools ready ==="
 echo "Binaries:"
