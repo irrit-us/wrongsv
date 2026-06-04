@@ -11,3 +11,4 @@ benches/traffic/tools/wrk2/
 benches/traffic/tools/bin/
 benches/traffic/results/
 !benches/traffic/results/.gitkeep
+wrongsv.gz
