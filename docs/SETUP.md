@@ -59,6 +59,7 @@ The server reads a TOML config file passed via `--config`. Pre-built examples ar
 | `kyber-vision.toml` | raw TCP | Vision | Post-quantum key exchange |
 | `anytls-custom.toml` | AnyTLS | Vision | Custom TLS cert + padding |
 | `shadowsocks-aead.toml` | Shadowsocks AEAD | n/a | TCP/UDP relay |
+| `shadowsocks-2022.toml` | Shadowsocks AEAD-2022 | n/a | TCP relay |
 | `mixed-proxy.toml` | SOCKS4/4A, SOCKS5, HTTP | n/a | Local/LAN mixed proxy |
 | `trojan-tls.toml` | Trojan over TLS | n/a | TCP/UDP relay with fallback |
 
@@ -187,7 +188,7 @@ Use `--servername` to set the SNI (e.g., `cloudfront.net`) for DPI resistance. E
 
 ### Shadowsocks configuration
 
-Shadowsocks provides a standalone AEAD TCP/UDP inbound for clients compatible with Shadowsocks, Outline, GOST, sing-box, xray-core, and mihomo.
+Shadowsocks provides a standalone AEAD inbound for clients compatible with Shadowsocks, Outline, GOST, sing-box, xray-core, and mihomo. Classic AEAD methods support TCP/UDP; AEAD-2022 currently supports TCP for the required BLAKE3/AES-GCM methods.
 
 ```toml
 [shadowsocks]
@@ -196,6 +197,15 @@ password = "your-secure-password"
 udp = true                                  # default true
 # tcp_prefix = "HTTP/1.1 "                  # optional Outline-style salt prefix
 # udp_prefix = "k{\u0001 "                  # optional Outline-style salt prefix
+```
+
+AEAD-2022 uses fixed-length base64 pre-shared keys instead of password-derived keys:
+
+```toml
+[shadowsocks]
+method = "2022-blake3-aes-128-gcm"          # or 2022-blake3-aes-256-gcm
+password = "AAAAAAAAAAAAAAAAAAAAAA=="        # replace with openssl rand -base64 16
+udp = false                                 # AEAD-2022 UDP is not implemented yet
 ```
 
 ### Mixed proxy configuration
@@ -403,7 +413,7 @@ wrongsv/
 │   ├── integration.rs           # end-to-end REALITY integration tests
 │   ├── vision_relay_tests.rs    # XTLS Vision relay tests
 │   ├── anytls_tests.rs          # AnyTLS protocol tests
-│   ├── shadowsocks_tests.rs     # Shadowsocks AEAD TCP/UDP tests
+│   ├── shadowsocks_tests.rs     # Shadowsocks AEAD TCP/UDP and AEAD-2022 TCP tests
 │   ├── mixed_proxy_tests.rs     # SOCKS4/4A, SOCKS5, HTTP proxy tests
 │   ├── trojan_tests.rs          # Trojan TLS TCP tests
 │   ├── singbox_lifecycle.rs     # sing-box REALITY+VLESS lifecycle
@@ -419,7 +429,7 @@ wrongsv/
     ├── kyber/                  # NIST ML-KEM-512 KEM
     ├── reality/                # REALITY TLS auth, dynamic cert, spider fallback
     ├── anytls/                 # AnyTLS TLS disguise, password auth, fallback
-    ├── shadowsocks/            # Shadowsocks AEAD codec and relay helpers
+    ├── shadowsocks/            # Shadowsocks AEAD/2022 codec and relay helpers
     └── server/                 # InboundServer, config, connection handler
 ```
 

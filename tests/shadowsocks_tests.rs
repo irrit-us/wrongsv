@@ -3,6 +3,7 @@ use std::net::{Shutdown, TcpListener, TcpStream, UdpSocket};
 use std::thread;
 use std::time::Duration;
 
+use base64::Engine;
 use wrongsv_net_types::{Address, Port};
 
 fn reserve_addr() -> String {
@@ -60,6 +61,10 @@ udp = true
     let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
     let server = wrongsv_server::InboundServer::new(config).unwrap();
     server.spawn()
+}
+
+fn aead_2022_password(key_len: usize) -> String {
+    base64::engine::general_purpose::STANDARD.encode(vec![0x37; key_len])
 }
 
 #[test]
@@ -135,4 +140,50 @@ fn test_shadowsocks_aead_udp_echo() {
 
     assert_eq!(port, Port(echo_addr.port()));
     assert_eq!(&response_plaintext[consumed..], b"hello udp");
+}
+
+#[test]
+fn test_shadowsocks_aead_2022_tcp_echo() {
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
+
+    for (method, key_len) in [
+        ("2022-blake3-aes-128-gcm", 16usize),
+        ("2022-blake3-aes-256-gcm", 32usize),
+    ] {
+        let listen = reserve_addr();
+        let echo_addr = spawn_echo_target();
+        let password = aead_2022_password(key_len);
+        let _server = spawn_shadowsocks_server(&listen, method, &password);
+        thread::sleep(Duration::from_millis(100));
+
+        let ss_config = wrongsv_shadowsocks::ServerConfig::new(method, password).unwrap();
+        let stream = TcpStream::connect(&listen).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+
+        let request_salt = {
+            let writer_stream = stream.try_clone().unwrap();
+            let (mut writer, request_salt) = wrongsv_shadowsocks::ShadowsocksWriter::new_request(
+                writer_stream,
+                &ss_config,
+                &Address::Domain("localhost".into()),
+                Port(echo_addr.port()),
+                b"hello shadowsocks 2022",
+            )
+            .unwrap();
+            writer.get_mut().shutdown(Shutdown::Write).unwrap();
+            request_salt
+        };
+
+        let mut reader = wrongsv_shadowsocks::ShadowsocksReader::new_response(
+            stream,
+            &ss_config,
+            Some(&request_salt),
+        )
+        .unwrap();
+        let response = reader.read_chunk().unwrap();
+
+        assert_eq!(response, b"hello shadowsocks 2022");
+    }
 }

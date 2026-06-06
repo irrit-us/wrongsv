@@ -29,7 +29,7 @@ pub struct Config {
     /// (sing-box, mihomo/flclash, xray-core).
     #[serde(default)]
     pub tls: Option<TlsServerConfig>,
-    /// Shadowsocks AEAD TCP inbound configuration. When set, this listener
+    /// Shadowsocks AEAD/AEAD-2022 inbound configuration. When set, this listener
     /// accepts Shadowsocks instead of VLESS.
     #[serde(default)]
     pub shadowsocks: Option<ShadowsocksServerConfig>,
@@ -101,8 +101,8 @@ pub struct TlsServerConfig {
 
 /// Shadowsocks server-side configuration.
 ///
-/// Supports TCP relay with AEAD methods shared by Shadowsocks, Outline,
-/// sing-box, xray-core, mihomo, and GOST clients.
+/// Supports classic AEAD TCP/UDP and AEAD-2022 TCP methods shared by
+/// Shadowsocks, Outline, sing-box, xray-core, mihomo, and GOST clients.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ShadowsocksServerConfig {
     pub method: String,

@@ -395,11 +395,19 @@ impl InboundServer {
         let trojan_config = self.trojan_config.clone();
         let shadowsocks_udp_socket =
             match (&self.shadowsocks_config, self.config.shadowsocks.as_ref()) {
-                (Some(_), Some(config)) if config.udp => {
+                (Some(config), Some(raw_config))
+                    if raw_config.udp && !config.method.is_aead_2022() =>
+                {
                     let socket = UdpSocket::bind(&self.config.listen)?;
                     socket.set_nonblocking(true)?;
                     info!("Shadowsocks UDP relay listening on {}", self.config.listen);
                     Some(socket)
+                }
+                (Some(config), Some(raw_config))
+                    if raw_config.udp && config.method.is_aead_2022() =>
+                {
+                    info!("Shadowsocks AEAD-2022 UDP relay is not enabled yet");
+                    None
                 }
                 _ => None,
             };
@@ -1556,6 +1564,7 @@ fn handle_shadowsocks_connection(
 
     let read_stream = stream.try_clone()?;
     let mut reader = wrongsv_shadowsocks::ShadowsocksReader::new(read_stream, config)?;
+    let request_salt = reader.request_salt().map(Vec::from);
     let first = reader.read_chunk()?;
     let (address, port, consumed) = wrongsv_shadowsocks::parse_request_header(&first)?;
     let remaining = if consumed < first.len() {
@@ -1570,7 +1579,14 @@ fn handle_shadowsocks_connection(
     target.set_nodelay(true)?;
     target.set_read_timeout(Some(Duration::from_secs(2)))?;
 
-    relay_shadowsocks(reader, stream, target, config.clone(), remaining)?;
+    relay_shadowsocks(
+        reader,
+        stream,
+        target,
+        config.clone(),
+        request_salt,
+        remaining,
+    )?;
     debug!("{peer} Shadowsocks relay finished");
     Ok(())
 }
@@ -1580,11 +1596,16 @@ fn relay_shadowsocks(
     client_writer: TcpStream,
     target: TcpStream,
     config: wrongsv_shadowsocks::ServerConfig,
+    request_salt: Option<Vec<u8>>,
     initial_data: Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut target_writer = target.try_clone()?;
     let mut target_reader = target;
-    let mut writer = wrongsv_shadowsocks::ShadowsocksWriter::new(client_writer, &config)?;
+    let mut writer = wrongsv_shadowsocks::ShadowsocksWriter::new_response(
+        client_writer,
+        &config,
+        request_salt.as_deref(),
+    )?;
 
     if !initial_data.is_empty() {
         target_writer.write_all(&initial_data)?;
