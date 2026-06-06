@@ -34,7 +34,7 @@ pub struct Config {
     #[serde(default)]
     pub shadowsocks: Option<ShadowsocksServerConfig>,
     /// Mixed plain proxy inbound configuration. When set, this listener
-    /// accepts SOCKS5 CONNECT and HTTP CONNECT instead of VLESS.
+    /// accepts SOCKS4/4A, SOCKS5 CONNECT, and HTTP CONNECT instead of VLESS.
     #[serde(default)]
     pub mixed: Option<MixedServerConfig>,
 }
@@ -113,8 +113,9 @@ pub struct ShadowsocksServerConfig {
 
 /// Mixed plain proxy server-side configuration.
 ///
-/// Supports SOCKS5 CONNECT and HTTP CONNECT. Optional credentials are shared
-/// between SOCKS5 username/password auth and HTTP Basic proxy auth.
+/// Supports SOCKS4/4A, SOCKS5 CONNECT, and HTTP CONNECT. Optional credentials
+/// are shared between SOCKS5 username/password auth and HTTP Basic proxy auth;
+/// SOCKS4/4A is rejected when credentials are set.
 #[derive(Debug, Clone, Deserialize)]
 pub struct MixedServerConfig {
     #[serde(default)]

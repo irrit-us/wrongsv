@@ -14,13 +14,13 @@
   <img src="https://img.shields.io/badge/TLS-AnyTLS-7c91db?style=for-the-badge" alt="TLS: AnyTLS">
   <img src="https://img.shields.io/badge/TLS-Plain%201.3-8787af?style=for-the-badge" alt="TLS: Plain 1.3">
   <img src="https://img.shields.io/badge/protocol-Shadowsocks%20AEAD%20TCP%2FUDP-2b8a3e?style=for-the-badge" alt="Protocol: Shadowsocks AEAD TCP/UDP">
-  <img src="https://img.shields.io/badge/protocol-SOCKS5%20%2B%20HTTP%20CONNECT-4f6f9f?style=for-the-badge" alt="Protocol: SOCKS5 and HTTP CONNECT">
+  <img src="https://img.shields.io/badge/protocol-SOCKS4%2F4A%20%2B%20SOCKS5%20%2B%20HTTP%20CONNECT-4f6f9f?style=for-the-badge" alt="Protocol: SOCKS4/4A, SOCKS5, and HTTP CONNECT">
   <img src="https://img.shields.io/badge/KEM-ML--KEM--512-darkslateblue?style=for-the-badge" alt="KEM: ML-KEM-512">
 </p>
 
 ---
 
-A minimal, high-performance proxy server with VLESS, XTLS Vision flow, REALITY / AnyTLS / plain TLS transport layers, Shadowsocks AEAD TCP/UDP inbound, mixed SOCKS5/HTTP CONNECT inbound, and NIST ML-KEM post-quantum key encapsulation.
+A minimal, high-performance proxy server with VLESS, XTLS Vision flow, REALITY / AnyTLS / plain TLS transport layers, Shadowsocks AEAD TCP/UDP inbound, mixed SOCKS4/4A/SOCKS5/HTTP CONNECT inbound, and NIST ML-KEM post-quantum key encapsulation.
 
 ## Architecture
 
@@ -30,7 +30,7 @@ wrongsv (binary)
 ├── reality         — REALITY TLS 1.3 authentication with spider fallback
 ├── anytls          — AnyTLS TLS disguise with SHA-256 password auth + fallback
 ├── shadowsocks     — Shadowsocks AEAD TCP/UDP codec and relay
-├── mixed proxy     — SOCKS5 CONNECT and HTTP CONNECT inbound relay
+├── mixed proxy     — SOCKS4/4A, SOCKS5 CONNECT, and HTTP CONNECT inbound relay
 ├── vless           — user validator, XTLS Vision padding/unpadding
 ├── vless-encoding  — VLESS header codec, addons protobuf, body framing
 ├── encryption      — AEAD (AES-256-GCM / ChaCha20-Poly1305)
@@ -44,7 +44,7 @@ wrongsv (binary)
 
 - **VLESS** — stateless proxy with UUID authentication and extensible addons
 - **Shadowsocks AEAD TCP/UDP** — `aes-128-gcm`, `aes-256-gcm`, `chacha20-ietf-poly1305`
-- **Mixed proxy inbound** — SOCKS5 CONNECT and HTTP CONNECT, optional shared credentials
+- **Mixed proxy inbound** — SOCKS4/4A, SOCKS5 CONNECT, and HTTP CONNECT; optional shared credentials apply to SOCKS5/HTTP and disable SOCKS4/4A
 - **REALITY** — TLS 1.3 handshake hijacking, X25519 ECDH auth, dynamic certs, spider fallback
 - **AnyTLS** — TLS 1.3 + SHA-256 password auth with configurable padding
 - **Plain TLS** — Standard TLS 1.3, compatible with sing-box/mihomo/xray-core `tls` transport
@@ -77,7 +77,7 @@ Pick an example from [`configs/`](configs/):
 | [`basic-tcp.toml`](configs/basic-tcp.toml) | raw TCP | none | Simplest setup |
 | [`kyber-vision.toml`](configs/kyber-vision.toml) | raw TCP | Vision | Post-quantum KEM |
 | [`shadowsocks-aead.toml`](configs/shadowsocks-aead.toml) | Shadowsocks AEAD | n/a | TCP/UDP relay for Shadowsocks-compatible clients |
-| [`mixed-proxy.toml`](configs/mixed-proxy.toml) | SOCKS5 / HTTP CONNECT | n/a | Local/LAN mixed proxy inbound |
+| [`mixed-proxy.toml`](configs/mixed-proxy.toml) | SOCKS4/4A / SOCKS5 / HTTP CONNECT | n/a | Local/LAN mixed proxy inbound |
 
 Or create a minimal config:
 
@@ -131,7 +131,7 @@ manual proxy testing procedures.
 - **REALITY spider fallback** — unauthenticated probes forwarded to `dest`
 - **AnyTLS echo, Vision, UDP, fallback** — all verified end-to-end
 - **Shadowsocks AEAD TCP/UDP** — local echo relay coverage for `chacha20-ietf-poly1305`; codec unit coverage for AES-128-GCM, AES-256-GCM, and ChaCha20-Poly1305
-- **Mixed SOCKS5/HTTP CONNECT** — no-auth and authenticated end-to-end echo coverage
+- **Mixed SOCKS4/4A/SOCKS5/HTTP CONNECT** — no-auth and authenticated end-to-end echo coverage
 - **Concurrent connections** — 6+ simultaneous REALITY connections, 30 rapid-fire requests, 5×1MB concurrent downloads
 
 ## License

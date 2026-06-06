@@ -79,6 +79,31 @@ fn read_socks5_reply(stream: &mut TcpStream) -> u8 {
     header[1]
 }
 
+fn write_socks4_connect(stream: &mut TcpStream, ip: [u8; 4], port: u16) {
+    let mut request = vec![0x04, 0x01];
+    request.extend_from_slice(&port.to_be_bytes());
+    request.extend_from_slice(&ip);
+    request.extend_from_slice(b"user\0");
+    stream.write_all(&request).unwrap();
+}
+
+fn write_socks4a_connect(stream: &mut TcpStream, host: &str, port: u16) {
+    let mut request = vec![0x04, 0x01];
+    request.extend_from_slice(&port.to_be_bytes());
+    request.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+    request.extend_from_slice(b"user\0");
+    request.extend_from_slice(host.as_bytes());
+    request.push(0x00);
+    stream.write_all(&request).unwrap();
+}
+
+fn read_socks4_reply(stream: &mut TcpStream) -> u8 {
+    let mut response = [0u8; 8];
+    stream.read_exact(&mut response).unwrap();
+    assert_eq!(response[0], 0x00);
+    response[1]
+}
+
 fn read_http_head(stream: &mut TcpStream) -> String {
     let mut data = Vec::new();
     let mut byte = [0u8; 1];
@@ -151,6 +176,84 @@ fn test_mixed_socks5_userpass_auth_echo() {
     let mut response = [0u8; 10];
     stream.read_exact(&mut response).unwrap();
     assert_eq!(&response, b"auth socks");
+}
+
+#[test]
+fn test_mixed_socks4_ipv4_echo() {
+    let listen = reserve_addr();
+    let echo_addr = spawn_echo_target();
+    let _server = spawn_mixed_server(&listen, None);
+    thread::sleep(Duration::from_millis(100));
+
+    let mut stream = TcpStream::connect(&listen).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let ip = match echo_addr.ip() {
+        std::net::IpAddr::V4(ip) => ip.octets(),
+        std::net::IpAddr::V6(_) => panic!("test target must be IPv4"),
+    };
+    write_socks4_connect(&mut stream, ip, echo_addr.port());
+    assert_eq!(read_socks4_reply(&mut stream), 0x5a);
+
+    stream.write_all(b"hello socks4").unwrap();
+    stream.shutdown(Shutdown::Write).unwrap();
+    let mut response = [0u8; 12];
+    stream.read_exact(&mut response).unwrap();
+    assert_eq!(&response, b"hello socks4");
+}
+
+#[test]
+fn test_mixed_socks4a_domain_echo() {
+    let listen = reserve_addr();
+    let echo_addr = spawn_echo_target();
+    let _server = spawn_mixed_server(&listen, None);
+    thread::sleep(Duration::from_millis(100));
+
+    let mut stream = TcpStream::connect(&listen).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    write_socks4a_connect(&mut stream, "localhost", echo_addr.port());
+    assert_eq!(read_socks4_reply(&mut stream), 0x5a);
+
+    stream.write_all(b"hello 4a").unwrap();
+    stream.shutdown(Shutdown::Write).unwrap();
+    let mut response = [0u8; 8];
+    stream.read_exact(&mut response).unwrap();
+    assert_eq!(&response, b"hello 4a");
+}
+
+#[test]
+fn test_mixed_socks4_rejected_when_auth_configured() {
+    let listen = reserve_addr();
+    let _server = spawn_mixed_server(&listen, Some(("admin", "secret")));
+    thread::sleep(Duration::from_millis(100));
+
+    let mut stream = TcpStream::connect(&listen).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    write_socks4_connect(&mut stream, [127, 0, 0, 1], 80);
+    assert_eq!(read_socks4_reply(&mut stream), 0x5b);
+}
+
+#[test]
+fn test_mixed_socks4_bind_rejected() {
+    let listen = reserve_addr();
+    let _server = spawn_mixed_server(&listen, None);
+    thread::sleep(Duration::from_millis(100));
+
+    let mut stream = TcpStream::connect(&listen).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut request = vec![0x04, 0x02];
+    request.extend_from_slice(&80u16.to_be_bytes());
+    request.extend_from_slice(&[127, 0, 0, 1]);
+    request.extend_from_slice(b"user\0");
+    stream.write_all(&request).unwrap();
+    assert_eq!(read_socks4_reply(&mut stream), 0x5b);
 }
 
 #[test]

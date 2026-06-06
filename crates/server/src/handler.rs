@@ -255,7 +255,7 @@ impl InboundServer {
             info!("Shadowsocks enabled ({})", sc.method.name());
         }
         if mixed_config.is_some() {
-            info!("Mixed proxy enabled (SOCKS5 + HTTP CONNECT)");
+            info!("Mixed proxy enabled (SOCKS4/4A + SOCKS5 + HTTP CONNECT)");
         }
         let validator = Arc::new(MemoryValidator::new());
         for user in &config.users {
@@ -1245,6 +1245,7 @@ fn handle_mixed_proxy_connection(
 
     let protocol = mixed_proxy::detect_protocol(&stream)?;
     let request = match protocol {
+        MixedProtocol::Socks4 => mixed_proxy::accept_socks4_connect(&mut stream, config),
         MixedProtocol::Socks5 => mixed_proxy::accept_socks5_connect(&mut stream, config),
         MixedProtocol::HttpConnect => mixed_proxy::accept_http_connect(&mut stream, config),
     };
@@ -1263,6 +1264,9 @@ fn handle_mixed_proxy_connection(
         Ok(target) => target,
         Err(e) => {
             match request.protocol {
+                MixedProtocol::Socks4 => {
+                    let _ = mixed_proxy::write_socks4_connect_error(&mut stream);
+                }
                 MixedProtocol::Socks5 => {
                     let _ = mixed_proxy::write_socks5_connect_error(&mut stream, &e);
                 }
@@ -1276,6 +1280,9 @@ fn handle_mixed_proxy_connection(
     target.set_nodelay(true)?;
 
     match request.protocol {
+        MixedProtocol::Socks4 => {
+            mixed_proxy::write_socks4_success(&mut stream, target.local_addr().ok())?;
+        }
         MixedProtocol::Socks5 => {
             mixed_proxy::write_socks5_success(&mut stream, target.local_addr().ok())?;
         }
@@ -1313,6 +1320,7 @@ fn connect_tcp_target(
 
 fn mixed_protocol_name(protocol: MixedProtocol) -> &'static str {
     match protocol {
+        MixedProtocol::Socks4 => "SOCKS4/4A CONNECT",
         MixedProtocol::Socks5 => "SOCKS5 CONNECT",
         MixedProtocol::HttpConnect => "HTTP CONNECT",
     }

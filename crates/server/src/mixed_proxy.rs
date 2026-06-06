@@ -3,7 +3,13 @@ use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use wrongsv_net_types::{Address, Port};
 
-const SOCKS_VERSION: u8 = 0x05;
+const SOCKS4_VERSION: u8 = 0x04;
+const SOCKS4_CMD_CONNECT: u8 = 0x01;
+const SOCKS4_REP_GRANTED: u8 = 0x5a;
+const SOCKS4_REP_REJECTED: u8 = 0x5b;
+const SOCKS4_USERID_LIMIT: usize = 1024;
+const SOCKS4A_DOMAIN_LIMIT: usize = 255;
+const SOCKS5_VERSION: u8 = 0x05;
 const SOCKS_NO_AUTH: u8 = 0x00;
 const SOCKS_USERPASS: u8 = 0x02;
 const SOCKS_NO_ACCEPTABLE_METHODS: u8 = 0xff;
@@ -67,6 +73,7 @@ impl Credentials {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MixedProtocol {
+    Socks4,
     Socks5,
     HttpConnect,
 }
@@ -85,11 +92,58 @@ pub fn detect_protocol(stream: &TcpStream) -> Result<MixedProtocol, MixedProxyEr
     if n == 0 {
         return Err(MixedProxyError::UnexpectedEof);
     }
-    if first[0] == SOCKS_VERSION {
-        Ok(MixedProtocol::Socks5)
-    } else {
-        Ok(MixedProtocol::HttpConnect)
+    match first[0] {
+        SOCKS4_VERSION => Ok(MixedProtocol::Socks4),
+        SOCKS5_VERSION => Ok(MixedProtocol::Socks5),
+        _ => Ok(MixedProtocol::HttpConnect),
     }
+}
+
+pub fn accept_socks4_connect(
+    stream: &mut TcpStream,
+    config: &MixedProxyConfig,
+) -> Result<ConnectRequest, MixedProxyError> {
+    let mut header = [0u8; 8];
+    stream.read_exact(&mut header)?;
+    if header[0] != SOCKS4_VERSION {
+        let _ = write_socks4_rejected(stream);
+        return Err(MixedProxyError::UnsupportedSocksVersion(header[0]));
+    }
+    if header[1] != SOCKS4_CMD_CONNECT {
+        let _ = write_socks4_rejected(stream);
+        return Err(MixedProxyError::UnsupportedSocksCommand(header[1]));
+    }
+
+    let port = Port(u16::from_be_bytes([header[2], header[3]]));
+    let dst_ip = [header[4], header[5], header[6], header[7]];
+    let _user_id = read_null_terminated(stream, SOCKS4_USERID_LIMIT)?;
+
+    let address = if dst_ip[..3] == [0, 0, 0] && dst_ip[3] != 0 {
+        let domain = read_null_terminated(stream, SOCKS4A_DOMAIN_LIMIT)?;
+        if domain.is_empty() {
+            let _ = write_socks4_rejected(stream);
+            return Err(MixedProxyError::InvalidSocksAddress);
+        }
+        let domain = String::from_utf8(domain).map_err(|_| {
+            let _ = write_socks4_rejected(stream);
+            MixedProxyError::InvalidSocksAddress
+        })?;
+        Address::Domain(domain)
+    } else {
+        Address::IPv4(dst_ip)
+    };
+
+    if config.credentials().is_some() {
+        let _ = write_socks4_rejected(stream);
+        return Err(MixedProxyError::Socks4AuthUnsupported);
+    }
+
+    Ok(ConnectRequest {
+        protocol: MixedProtocol::Socks4,
+        address,
+        port,
+        initial_data: Vec::new(),
+    })
 }
 
 pub fn accept_socks5_connect(
@@ -100,7 +154,7 @@ pub fn accept_socks5_connect(
 
     let mut header = [0u8; 4];
     stream.read_exact(&mut header)?;
-    if header[0] != SOCKS_VERSION || header[2] != 0x00 {
+    if header[0] != SOCKS5_VERSION || header[2] != 0x00 {
         let _ = write_socks5_reply(stream, SOCKS_REP_GENERAL_FAILURE, None);
         return Err(MixedProxyError::InvalidSocksRequest);
     }
@@ -128,12 +182,12 @@ fn negotiate_socks_auth(
 ) -> Result<(), MixedProxyError> {
     let mut greeting = [0u8; 2];
     stream.read_exact(&mut greeting)?;
-    if greeting[0] != SOCKS_VERSION {
+    if greeting[0] != SOCKS5_VERSION {
         return Err(MixedProxyError::UnsupportedSocksVersion(greeting[0]));
     }
     let nmethods = greeting[1] as usize;
     if nmethods == 0 {
-        let _ = stream.write_all(&[SOCKS_VERSION, SOCKS_NO_ACCEPTABLE_METHODS]);
+        let _ = stream.write_all(&[SOCKS5_VERSION, SOCKS_NO_ACCEPTABLE_METHODS]);
         return Err(MixedProxyError::NoAcceptableSocksAuth);
     }
 
@@ -141,19 +195,19 @@ fn negotiate_socks_auth(
     stream.read_exact(&mut methods)?;
     match credentials {
         Some(credentials) if methods.contains(&SOCKS_USERPASS) => {
-            stream.write_all(&[SOCKS_VERSION, SOCKS_USERPASS])?;
+            stream.write_all(&[SOCKS5_VERSION, SOCKS_USERPASS])?;
             authenticate_socks_userpass(stream, credentials)
         }
         Some(_) => {
-            stream.write_all(&[SOCKS_VERSION, SOCKS_NO_ACCEPTABLE_METHODS])?;
+            stream.write_all(&[SOCKS5_VERSION, SOCKS_NO_ACCEPTABLE_METHODS])?;
             Err(MixedProxyError::NoAcceptableSocksAuth)
         }
         None if methods.contains(&SOCKS_NO_AUTH) => {
-            stream.write_all(&[SOCKS_VERSION, SOCKS_NO_AUTH])?;
+            stream.write_all(&[SOCKS5_VERSION, SOCKS_NO_AUTH])?;
             Ok(())
         }
         None => {
-            stream.write_all(&[SOCKS_VERSION, SOCKS_NO_ACCEPTABLE_METHODS])?;
+            stream.write_all(&[SOCKS5_VERSION, SOCKS_NO_ACCEPTABLE_METHODS])?;
             Err(MixedProxyError::NoAcceptableSocksAuth)
         }
     }
@@ -218,6 +272,21 @@ fn read_socks_address(stream: &mut TcpStream, atyp: u8) -> Result<Address, Mixed
             let _ = write_socks5_reply(stream, SOCKS_REP_ADDRESS_TYPE_NOT_SUPPORTED, None);
             Err(MixedProxyError::UnsupportedSocksAddressType(other))
         }
+    }
+}
+
+fn read_null_terminated(stream: &mut TcpStream, limit: usize) -> Result<Vec<u8>, MixedProxyError> {
+    let mut field = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        stream.read_exact(&mut byte)?;
+        if byte[0] == 0 {
+            return Ok(field);
+        }
+        if field.len() >= limit {
+            return Err(MixedProxyError::InvalidSocksAddress);
+        }
+        field.push(byte[0]);
     }
 }
 
@@ -327,6 +396,41 @@ fn parse_authority(target: &str) -> Result<(Address, Port), MixedProxyError> {
     Ok((Address::parse(host), Port(port)))
 }
 
+pub fn write_socks4_success(
+    stream: &mut TcpStream,
+    bound: Option<SocketAddr>,
+) -> Result<(), MixedProxyError> {
+    write_socks4_reply(stream, SOCKS4_REP_GRANTED, bound)
+}
+
+pub fn write_socks4_connect_error(stream: &mut TcpStream) -> Result<(), MixedProxyError> {
+    write_socks4_rejected(stream)
+}
+
+fn write_socks4_rejected(stream: &mut TcpStream) -> Result<(), MixedProxyError> {
+    write_socks4_reply(stream, SOCKS4_REP_REJECTED, None)
+}
+
+fn write_socks4_reply(
+    stream: &mut TcpStream,
+    rep: u8,
+    bound: Option<SocketAddr>,
+) -> Result<(), MixedProxyError> {
+    let mut response = vec![0x00, rep];
+    match bound {
+        Some(SocketAddr::V4(addr)) => {
+            response.extend_from_slice(&addr.port().to_be_bytes());
+            response.extend_from_slice(&addr.ip().octets());
+        }
+        _ => {
+            response.extend_from_slice(&0u16.to_be_bytes());
+            response.extend_from_slice(&Ipv4Addr::UNSPECIFIED.octets());
+        }
+    }
+    stream.write_all(&response)?;
+    Ok(())
+}
+
 pub fn write_socks5_success(
     stream: &mut TcpStream,
     bound: Option<SocketAddr>,
@@ -350,7 +454,7 @@ fn write_socks5_reply(
     rep: u8,
     bound: Option<SocketAddr>,
 ) -> Result<(), MixedProxyError> {
-    let mut response = vec![SOCKS_VERSION, rep, 0x00];
+    let mut response = vec![SOCKS5_VERSION, rep, 0x00];
     match bound {
         Some(SocketAddr::V4(addr)) => {
             response.push(0x01);
@@ -425,6 +529,8 @@ pub enum MixedProxyError {
     NoAcceptableSocksAuth,
     #[error("SOCKS username/password authentication failed")]
     SocksAuthFailed,
+    #[error("SOCKS4/4A does not support configured mixed proxy credentials")]
+    Socks4AuthUnsupported,
     #[error("invalid SOCKS request")]
     InvalidSocksRequest,
     #[error("unsupported SOCKS command: {0}")]
