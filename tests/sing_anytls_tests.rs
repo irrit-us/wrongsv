@@ -262,7 +262,7 @@ fn spawn_anytls_server(
     user_id: &str,
     password: &str,
     flow: &str,
-) -> thread::JoinHandle<()> {
+) -> wrongsv_server::ServerHandle {
     let config_toml = format!(
         r#"
 listen = "{listen}"
@@ -278,9 +278,7 @@ password = "{password}"
     );
     let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
     let server = wrongsv_server::InboundServer::new(config).unwrap();
-    thread::spawn(move || {
-        server.run().ok();
-    })
+    server.spawn()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

@@ -211,7 +211,7 @@ fn spawn_anytls_server(
     user_id: &str,
     password: &str,
     flow: &str,
-) -> thread::JoinHandle<()> {
+) -> wrongsv_server::ServerHandle {
     let config_toml = format!(
         r#"
 listen = "{listen}"
@@ -227,9 +227,7 @@ password = "{password}"
     );
     let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
     let server = wrongsv_server::InboundServer::new(config).unwrap();
-    thread::spawn(move || {
-        server.run().ok();
-    })
+    server.spawn()
 }
 
 fn spawn_anytls_server_with_cert(
@@ -238,7 +236,7 @@ fn spawn_anytls_server_with_cert(
     password: &str,
     cert_pem: &str,
     key_pem: &str,
-) -> thread::JoinHandle<()> {
+) -> wrongsv_server::ServerHandle {
     let config_toml = format!(
         r#"
 listen = "{listen}"
@@ -255,16 +253,14 @@ key = """{key_pem}"""
     );
     let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
     let server = wrongsv_server::InboundServer::new(config).unwrap();
-    thread::spawn(move || {
-        server.run().ok();
-    })
+    server.spawn()
 }
 
 fn spawn_anytls_server_multi_user(
     listen: &str,
     users: &[(String, String)], // (id, flow)
     password: &str,
-) -> thread::JoinHandle<()> {
+) -> wrongsv_server::ServerHandle {
     let mut users_toml = String::new();
     for (uid, flow) in users {
         users_toml.push_str(&format!(
@@ -287,9 +283,7 @@ password = "{password}"
     );
     let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
     let server = wrongsv_server::InboundServer::new(config).unwrap();
-    thread::spawn(move || {
-        server.run().ok();
-    })
+    server.spawn()
 }
 
 fn spawn_anytls_server_with_fallback(
@@ -297,7 +291,7 @@ fn spawn_anytls_server_with_fallback(
     user_id: &str,
     password: &str,
     fallback_dest: &str,
-) -> thread::JoinHandle<()> {
+) -> wrongsv_server::ServerHandle {
     let config_toml = format!(
         r#"
 listen = "{listen}"
@@ -313,9 +307,7 @@ dest = "{fallback_dest}"
     );
     let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
     let server = wrongsv_server::InboundServer::new(config).unwrap();
-    thread::spawn(move || {
-        server.run().ok();
-    })
+    server.spawn()
 }
 
 fn spawn_anytls_server_kyber(
@@ -323,7 +315,7 @@ fn spawn_anytls_server_kyber(
     user_id: &str,
     password: &str,
     kyber_secret_key: &str,
-) -> thread::JoinHandle<()> {
+) -> wrongsv_server::ServerHandle {
     let config_toml = format!(
         r#"
 listen = "{listen}"
@@ -339,9 +331,7 @@ password = "{password}"
     );
     let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
     let server = wrongsv_server::InboundServer::new(config).unwrap();
-    thread::spawn(move || {
-        server.run().ok();
-    })
+    server.spawn()
 }
 
 // ── AnyTLS client connect ─────────────────────────────────────────────────────

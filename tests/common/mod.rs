@@ -28,7 +28,7 @@ pub fn lifecycle_test_lock() -> MutexGuard<'static, ()> {
 
 pub struct ServerGuard {
     #[allow(dead_code)]
-    pub handle: thread::JoinHandle<()>,
+    pub handle: wrongsv_server::ServerHandle,
 }
 
 /// Reserve a random local port.
@@ -85,9 +85,7 @@ max_time_diff = 300
     );
     let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
     let server = wrongsv_server::InboundServer::new(config).unwrap();
-    let handle = thread::spawn(move || {
-        server.run().ok();
-    });
+    let handle = server.spawn();
     thread::sleep(Duration::from_millis(200));
     ServerGuard { handle }
 }
@@ -130,9 +128,7 @@ max_time_diff = 300
     );
     let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
     let server = wrongsv_server::InboundServer::new(config).unwrap();
-    let handle = thread::spawn(move || {
-        server.run().ok();
-    });
+    let handle = server.spawn();
     thread::sleep(Duration::from_millis(200));
     ServerGuard { handle }
 }

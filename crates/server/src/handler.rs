@@ -16,6 +16,61 @@ use wrongsv_vless_encoding::{
 
 use crate::config::{AnyTlsServerConfig, Config, RealityServerConfig, TlsServerConfig};
 
+#[derive(Clone, Debug)]
+pub struct ShutdownSignal {
+    shutdown: Arc<AtomicBool>,
+}
+
+impl ShutdownSignal {
+    pub fn new() -> Self {
+        Self {
+            shutdown: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub fn shutdown(&self) {
+        self.shutdown.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_shutdown_requested(&self) -> bool {
+        self.shutdown.load(Ordering::SeqCst)
+    }
+}
+
+impl Default for ShutdownSignal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub struct ServerHandle {
+    shutdown: ShutdownSignal,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl ServerHandle {
+    pub fn shutdown(&self) {
+        self.shutdown.shutdown();
+    }
+
+    pub fn join(mut self) -> thread::Result<()> {
+        self.shutdown();
+        match self.thread.take() {
+            Some(thread) => thread.join(),
+            None => Ok(()),
+        }
+    }
+}
+
+impl Drop for ServerHandle {
+    fn drop(&mut self) {
+        self.shutdown();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 /// Decode a hex string into a fixed-size byte array.
 fn decode_hex<const N: usize>(hex: &str) -> Result<[u8; N], String> {
     let hex = hex.trim();
@@ -192,27 +247,46 @@ impl InboundServer {
         })
     }
 
+    pub fn spawn(self) -> ServerHandle {
+        self.spawn_with_shutdown(ShutdownSignal::new())
+    }
+
+    pub fn spawn_with_shutdown(self, shutdown: ShutdownSignal) -> ServerHandle {
+        let run_shutdown = shutdown.clone();
+        let thread = thread::spawn(move || {
+            if let Err(e) = self.run_until_shutdown(run_shutdown) {
+                error!("server error: {e}");
+            }
+        });
+        ServerHandle {
+            shutdown,
+            thread: Some(thread),
+        }
+    }
+
     /// Run the server loop. Returns on fatal error or graceful shutdown (SIGINT/SIGTERM).
     pub fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let shutdown = ShutdownSignal::new();
+        install_ctrlc_handler(shutdown.clone())?;
+        self.run_until_shutdown(shutdown)
+    }
+
+    /// Run the server loop until the provided shutdown signal is set.
+    pub fn run_until_shutdown(
+        &self,
+        shutdown: ShutdownSignal,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let listener = TcpListener::bind(&self.config.listen)?;
+        self.run_with_listener(listener, shutdown)
+    }
+
+    fn run_with_listener(
+        &self,
+        listener: TcpListener,
+        shutdown: ShutdownSignal,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         listener.set_nonblocking(true)?;
         info!("VLESS server listening on {}", self.config.listen);
-
-        let running = Arc::new(AtomicBool::new(true));
-        let r = running.clone();
-        if let Err(e) = ctrlc::set_handler(move || {
-            if r.load(Ordering::SeqCst) {
-                eprintln!("received interrupt signal, shutting down gracefully...");
-                info!("received interrupt signal, shutting down gracefully...");
-                r.store(false, Ordering::SeqCst);
-            } else {
-                eprintln!("second interrupt — forcing exit");
-                std::process::exit(1);
-            }
-        }) && !matches!(e, ctrlc::Error::MultipleHandlers)
-        {
-            return Err(format!("failed to set Ctrl-C handler: {e}").into());
-        }
 
         let validator = Arc::clone(&self.validator);
         let kyber_sk = self.kyber_sk;
@@ -221,7 +295,7 @@ impl InboundServer {
         let tls_config = self.tls_config.clone();
 
         loop {
-            if !running.load(Ordering::SeqCst) {
+            if shutdown.is_shutdown_requested() {
                 info!("server stopped");
                 break;
             }
@@ -271,6 +345,23 @@ impl InboundServer {
         }
         Ok(())
     }
+}
+
+fn install_ctrlc_handler(shutdown: ShutdownSignal) -> Result<(), Box<dyn std::error::Error>> {
+    if let Err(e) = ctrlc::set_handler(move || {
+        if !shutdown.is_shutdown_requested() {
+            eprintln!("received interrupt signal, shutting down gracefully...");
+            info!("received interrupt signal, shutting down gracefully...");
+            shutdown.shutdown();
+        } else {
+            eprintln!("second interrupt — forcing exit");
+            std::process::exit(1);
+        }
+    }) && !matches!(e, ctrlc::Error::MultipleHandlers)
+    {
+        return Err(format!("failed to set Ctrl-C handler: {e}").into());
+    }
+    Ok(())
 }
 
 /// Complete a standard TLS 1.3 handshake and return an `AnyTlsStream` for VLESS.
@@ -2081,4 +2172,63 @@ fn relay_vision(
     t1.join().ok();
     t2.join().ok();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Config, UserConfig};
+
+    fn test_config(listen: String) -> Config {
+        Config {
+            listen,
+            users: vec![UserConfig {
+                id: "12345678-1234-1234-1234-123456789abc".into(),
+                email: "test@example.com".into(),
+                flow: String::new(),
+                encryption: String::new(),
+                udp: true,
+            }],
+            decryption: None,
+            flow: None,
+            kyber_secret_key: None,
+            reality: None,
+            anytls: None,
+            tls: None,
+        }
+    }
+
+    #[test]
+    fn run_until_shutdown_releases_listener() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let listen = listener.local_addr().unwrap().to_string();
+        let server = InboundServer::new(test_config(listen.clone())).unwrap();
+        let shutdown = ShutdownSignal::new();
+        let run_shutdown = shutdown.clone();
+
+        let handle = thread::spawn(move || {
+            server
+                .run_with_listener(listener, run_shutdown)
+                .map_err(|e| e.to_string())
+        });
+        thread::sleep(Duration::from_millis(50));
+        shutdown.shutdown();
+
+        handle.join().unwrap().unwrap();
+        TcpListener::bind(&listen).unwrap();
+    }
+
+    #[test]
+    fn server_handle_drop_releases_listener() {
+        let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+        let listen = reserve.local_addr().unwrap().to_string();
+        drop(reserve);
+
+        let server = InboundServer::new(test_config(listen.clone())).unwrap();
+        let handle = server.spawn();
+        thread::sleep(Duration::from_millis(250));
+        drop(handle);
+
+        TcpListener::bind(&listen).unwrap();
+    }
 }

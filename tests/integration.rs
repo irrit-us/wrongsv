@@ -291,7 +291,11 @@ fn spawn_echo_target() -> (std::net::SocketAddr, thread::JoinHandle<()>) {
     (addr, handle)
 }
 
-fn spawn_wrongsv_server(listen_addr: &str, user_id: &str, flow: &str) -> thread::JoinHandle<()> {
+fn spawn_wrongsv_server(
+    listen_addr: &str,
+    user_id: &str,
+    flow: &str,
+) -> wrongsv_server::ServerHandle {
     let config_toml = format!(
         r#"
 listen = "{}"
@@ -305,9 +309,7 @@ flow = "{}"
     );
     let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
     let server = wrongsv_server::InboundServer::new(config).unwrap();
-    thread::spawn(move || {
-        server.run().ok();
-    })
+    server.spawn()
 }
 
 fn vless_connect(
@@ -516,7 +518,7 @@ fn spawn_wrongsv_server_with_kyber(
     user_id: &str,
     flow: &str,
     kyber_sk_hex: &str,
-) -> thread::JoinHandle<()> {
+) -> wrongsv_server::ServerHandle {
     let config_toml = format!(
         r#"
 listen = "{}"
@@ -532,9 +534,7 @@ kyber_secret_key = "{}"
     );
     let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
     let server = wrongsv_server::InboundServer::new(config).unwrap();
-    thread::spawn(move || {
-        server.run().ok();
-    })
+    server.spawn()
 }
 
 fn vless_connect_with_kyber(
@@ -1038,7 +1038,7 @@ fn spawn_wrongsv_server_with_reality(
     flow: &str,
     reality_private_key: &str,
     reality_short_ids: &[&str],
-) -> thread::JoinHandle<()> {
+) -> wrongsv_server::ServerHandle {
     let short_ids_toml = reality_short_ids
         .iter()
         .map(|s| format!(r#""{}""#, s))
@@ -1062,9 +1062,7 @@ max_time_diff = 300
     );
     let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
     let server = wrongsv_server::InboundServer::new(config).unwrap();
-    thread::spawn(move || {
-        server.run().ok();
-    })
+    server.spawn()
 }
 
 /// Build a REALITY ClientHello for the given server public key and short_id.
@@ -1455,9 +1453,7 @@ dest = "{}"
     );
     let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
     let server = wrongsv_server::InboundServer::new(config).unwrap();
-    thread::spawn(move || {
-        server.run().ok();
-    });
+    let _server = server.spawn();
     thread::sleep(Duration::from_millis(100));
 
     // Send invalid ClientHello (wrong short_id) — should trigger spider fallback
@@ -1911,7 +1907,7 @@ fn spawn_reality_server_full(
     short_ids: &[&str],
     max_time_diff: u64,
     dest: Option<&str>,
-) -> thread::JoinHandle<()> {
+) -> wrongsv_server::ServerHandle {
     let short_ids_toml = short_ids
         .iter()
         .map(|s| format!(r#""{}""#, s))
@@ -1939,9 +1935,7 @@ max_time_diff = {}
     );
     let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
     let server = wrongsv_server::InboundServer::new(config).unwrap();
-    thread::spawn(move || {
-        server.run().ok();
-    })
+    server.spawn()
 }
 
 /// Build a REALITY ClientHello that wraps the given raw body (without TLS record).
@@ -3176,9 +3170,7 @@ udp = false
     );
     let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
     let server = wrongsv_server::InboundServer::new(config).unwrap();
-    let handle = thread::spawn(move || {
-        server.run().ok();
-    });
+    let handle = server.spawn();
     thread::sleep(Duration::from_millis(200));
 
     // Try to connect with UDP command
@@ -3243,9 +3235,7 @@ flow = "xtls-rprx-vision"
     );
     let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
     let server = wrongsv_server::InboundServer::new(config).unwrap();
-    let handle = thread::spawn(move || {
-        server.run().ok();
-    });
+    let handle = server.spawn();
     thread::sleep(Duration::from_millis(200));
 
     // Connect with UDP command + Vision flow

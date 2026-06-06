@@ -47,7 +47,11 @@ fn make_test_validator() -> (Arc<MemoryValidator>, Uuid) {
     (v, uuid)
 }
 
-fn spawn_wrongsv_server(listen_addr: &str, user_id: &str, flow: &str) -> thread::JoinHandle<()> {
+fn spawn_wrongsv_server(
+    listen_addr: &str,
+    user_id: &str,
+    flow: &str,
+) -> wrongsv_server::ServerHandle {
     let config_toml = format!(
         r#"
 listen = "{}"
@@ -61,9 +65,7 @@ flow = "{}"
     );
     let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
     let server = wrongsv_server::InboundServer::new(config).unwrap();
-    thread::spawn(move || {
-        server.run().ok();
-    })
+    server.spawn()
 }
 
 fn vless_connect(
