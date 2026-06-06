@@ -124,6 +124,41 @@ pub fn write_request_header(buf: &mut Vec<u8>, address: &Address, port: Port) {
     buf.extend_from_slice(&port.0.to_be_bytes());
 }
 
+pub fn decrypt_udp_packet(
+    packet: &[u8],
+    config: &ServerConfig,
+) -> Result<Vec<u8>, ShadowsocksError> {
+    let salt_len = config.method.salt_len();
+    if packet.len() < salt_len + TAG_LEN {
+        return Err(ShadowsocksError::ShortUdpPacket);
+    }
+    let (salt, encrypted_payload) = packet.split_at(salt_len);
+    let mut crypto = CryptoState::new(config.method, &config.master_key(), salt)?;
+    crypto.open(encrypted_payload)
+}
+
+pub fn encrypt_udp_packet(
+    payload: &[u8],
+    config: &ServerConfig,
+) -> Result<Vec<u8>, ShadowsocksError> {
+    let mut salt = vec![0u8; config.method.salt_len()];
+    rand::thread_rng().fill_bytes(&mut salt);
+    encrypt_udp_packet_with_salt(payload, config, &salt)
+}
+
+pub fn encrypt_udp_packet_with_salt(
+    payload: &[u8],
+    config: &ServerConfig,
+    salt: &[u8],
+) -> Result<Vec<u8>, ShadowsocksError> {
+    let mut crypto = CryptoState::new(config.method, &config.master_key(), salt)?;
+    let encrypted_payload = crypto.seal(payload)?;
+    let mut packet = Vec::with_capacity(salt.len() + encrypted_payload.len());
+    packet.extend_from_slice(salt);
+    packet.extend_from_slice(&encrypted_payload);
+    Ok(packet)
+}
+
 pub struct ShadowsocksReader<R> {
     inner: R,
     crypto: CryptoState,
@@ -343,6 +378,8 @@ pub enum ShadowsocksError {
     InvalidAddressType(u8),
     #[error("invalid shadowsocks address")]
     InvalidAddress,
+    #[error("short shadowsocks UDP packet")]
+    ShortUdpPacket,
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -428,5 +465,37 @@ mod tests {
         let mut reader = ShadowsocksReader::new(Cursor::new(wire), &config).unwrap();
         assert_eq!(reader.read_chunk().unwrap(), vec![0xab; MAX_CHUNK_LEN]);
         assert_eq!(reader.read_chunk().unwrap(), vec![0xab; 17]);
+    }
+
+    #[test]
+    fn udp_packets_roundtrip_for_supported_methods() {
+        for method in [
+            Method::Aes128Gcm,
+            Method::Aes256Gcm,
+            Method::ChaCha20IetfPoly1305,
+        ] {
+            let config = config(method);
+            let salt = vec![0x22; method.salt_len()];
+            let mut payload = Vec::new();
+            write_request_header(
+                &mut payload,
+                &Address::Domain("example.com".into()),
+                Port(443),
+            );
+            payload.extend_from_slice(b"udp payload");
+
+            let packet = encrypt_udp_packet_with_salt(&payload, &config, &salt).unwrap();
+            let decrypted = decrypt_udp_packet(&packet, &config).unwrap();
+            assert_eq!(decrypted, payload);
+        }
+    }
+
+    #[test]
+    fn short_udp_packets_are_rejected() {
+        let config = config(Method::ChaCha20IetfPoly1305);
+        assert!(matches!(
+            decrypt_udp_packet(&[0u8; 4], &config),
+            Err(ShadowsocksError::ShortUdpPacket)
+        ));
     }
 }

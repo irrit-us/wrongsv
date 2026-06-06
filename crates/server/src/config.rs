@@ -103,6 +103,8 @@ pub struct TlsServerConfig {
 pub struct ShadowsocksServerConfig {
     pub method: String,
     pub password: String,
+    #[serde(default = "default_udp")]
+    pub udp: bool,
 }
 
 /// Mixed plain proxy server-side configuration.
@@ -298,6 +300,7 @@ password = "secret"
         let shadowsocks = config.shadowsocks.unwrap();
         assert_eq!(shadowsocks.method, "chacha20-ietf-poly1305");
         assert_eq!(shadowsocks.password, "secret");
+        assert!(shadowsocks.udp);
     }
 
     #[test]

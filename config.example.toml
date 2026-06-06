@@ -50,6 +50,7 @@ listen = "0.0.0.0:443"
 # [shadowsocks]
 # method = "chacha20-ietf-poly1305"
 # password = "your-secure-password"
+# udp = true
 
 # ── Mixed SOCKS5 / HTTP CONNECT example ───────────────────────────────────────
 # Use this instead of users/VLESS transports for a local/LAN plain proxy.

@@ -1,5 +1,5 @@
 use std::io::{Read, Result as IoResult, Write};
-use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -339,11 +339,26 @@ impl InboundServer {
         let tls_config = self.tls_config.clone();
         let shadowsocks_config = self.shadowsocks_config.clone();
         let mixed_config = self.mixed_config.clone();
+        let shadowsocks_udp_socket =
+            match (&self.shadowsocks_config, self.config.shadowsocks.as_ref()) {
+                (Some(_), Some(config)) if config.udp => {
+                    let socket = UdpSocket::bind(&self.config.listen)?;
+                    socket.set_nonblocking(true)?;
+                    info!("Shadowsocks UDP relay listening on {}", self.config.listen);
+                    Some(socket)
+                }
+                _ => None,
+            };
 
         loop {
             if shutdown.is_shutdown_requested() {
                 info!("server stopped");
                 break;
+            }
+            if let (Some(socket), Some(config)) =
+                (shadowsocks_udp_socket.as_ref(), shadowsocks_config.as_ref())
+            {
+                drain_shadowsocks_udp(socket, config);
             }
             match listener.accept() {
                 Ok((stream, addr)) => {
@@ -1085,6 +1100,126 @@ fn relay_sing_udp(
     // Signal to the client that we can't handle this.
     let _ = writer.send_fin(_stream.id);
     Ok(())
+}
+
+fn drain_shadowsocks_udp(socket: &UdpSocket, config: &wrongsv_shadowsocks::ServerConfig) {
+    loop {
+        let mut packet = vec![0u8; 65535];
+        match socket.recv_from(&mut packet) {
+            Ok((n, client_addr)) => {
+                packet.truncate(n);
+                let response_socket = match socket.try_clone() {
+                    Ok(socket) => socket,
+                    Err(e) => {
+                        warn!("Shadowsocks UDP socket clone failed: {e}");
+                        continue;
+                    }
+                };
+                let config = config.clone();
+                thread::spawn(move || {
+                    if let Err(e) =
+                        handle_shadowsocks_udp_packet(response_socket, client_addr, packet, config)
+                    {
+                        warn!("Shadowsocks UDP packet error: {e}");
+                    }
+                });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(e) => {
+                warn!("Shadowsocks UDP recv error: {e}");
+                break;
+            }
+        }
+    }
+}
+
+fn handle_shadowsocks_udp_packet(
+    socket: UdpSocket,
+    client_addr: SocketAddr,
+    packet: Vec<u8>,
+    config: wrongsv_shadowsocks::ServerConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let plaintext = wrongsv_shadowsocks::decrypt_udp_packet(&packet, &config)?;
+    let (address, port, consumed) = wrongsv_shadowsocks::parse_request_header(&plaintext)?;
+    let payload = plaintext
+        .get(consumed..)
+        .ok_or_else(|| std::io::Error::other("invalid Shadowsocks UDP payload offset"))?;
+    if payload.is_empty() {
+        return Ok(());
+    }
+
+    let target_addr = format!("{address}:{port}");
+    debug!(
+        "{client_addr} Shadowsocks UDP -> {target_addr} ({}B)",
+        payload.len()
+    );
+    let (response_addr, response_payload) = send_udp_datagram_to_target(&address, port, payload)?;
+    let (response_address, response_port) = socket_addr_to_destination(response_addr);
+
+    let mut response_plaintext = Vec::with_capacity(32 + response_payload.len());
+    wrongsv_shadowsocks::write_request_header(
+        &mut response_plaintext,
+        &response_address,
+        response_port,
+    );
+    response_plaintext.extend_from_slice(&response_payload);
+    let response_packet = wrongsv_shadowsocks::encrypt_udp_packet(&response_plaintext, &config)?;
+    socket.send_to(&response_packet, client_addr)?;
+    Ok(())
+}
+
+fn send_udp_datagram_to_target(
+    address: &wrongsv_net_types::Address,
+    port: wrongsv_net_types::Port,
+    payload: &[u8],
+) -> std::io::Result<(SocketAddr, Vec<u8>)> {
+    let target_addr = format!("{address}:{port}");
+    let mut last_error = None;
+    for addr in target_addr.to_socket_addrs()? {
+        let bind_addr = if addr.is_ipv6() {
+            "[::]:0"
+        } else {
+            "0.0.0.0:0"
+        };
+        let socket = match UdpSocket::bind(bind_addr) {
+            Ok(socket) => socket,
+            Err(e) => {
+                last_error = Some(e);
+                continue;
+            }
+        };
+        socket.set_read_timeout(Some(Duration::from_secs(5)))?;
+        if let Err(e) = socket.connect(addr) {
+            last_error = Some(e);
+            continue;
+        }
+        match socket.send(payload) {
+            Ok(_) => {
+                let mut buf = vec![0u8; 65535];
+                match socket.recv(&mut buf) {
+                    Ok(n) => {
+                        buf.truncate(n);
+                        return Ok((addr, buf));
+                    }
+                    Err(e) => last_error = Some(e),
+                }
+            }
+            Err(e) => last_error = Some(e),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        std::io::Error::other(format!("DNS resolution failed for {target_addr}"))
+    }))
+}
+
+fn socket_addr_to_destination(
+    addr: SocketAddr,
+) -> (wrongsv_net_types::Address, wrongsv_net_types::Port) {
+    let address = match addr.ip() {
+        std::net::IpAddr::V4(ip) => wrongsv_net_types::Address::IPv4(ip.octets()),
+        std::net::IpAddr::V6(ip) => wrongsv_net_types::Address::IPv6(ip.octets()),
+    };
+    (address, wrongsv_net_types::Port(addr.port()))
 }
 
 fn handle_mixed_proxy_connection(

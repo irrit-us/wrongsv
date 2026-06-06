@@ -36,7 +36,7 @@ cargo test --test integration -- --nocapture
 # Run a specific test
 cargo test --test integration test_reality_echo -- --nocapture
 
-# Shadowsocks AEAD TCP relay
+# Shadowsocks AEAD TCP/UDP relay
 cargo test --test shadowsocks_tests
 
 # Mixed SOCKS5 / HTTP CONNECT relay
