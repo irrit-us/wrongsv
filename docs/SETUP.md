@@ -60,7 +60,7 @@ The server reads a TOML config file passed via `--config`. Pre-built examples ar
 | `anytls-custom.toml` | AnyTLS | Vision | Custom TLS cert + padding |
 | `shadowsocks-aead.toml` | Shadowsocks AEAD | n/a | TCP/UDP relay |
 | `mixed-proxy.toml` | SOCKS4/4A, SOCKS5, HTTP | n/a | Local/LAN mixed proxy |
-| `trojan-tls.toml` | Trojan over TLS | n/a | TCP relay with fallback |
+| `trojan-tls.toml` | Trojan over TLS | n/a | TCP/UDP relay with fallback |
 
 ### Minimal config
 
@@ -212,7 +212,7 @@ Mixed proxy provides a plain local/LAN listener with SOCKS4/4A CONNECT, SOCKS5 C
 
 ### Trojan configuration
 
-Trojan provides a standalone TLS listener with SHA224 password authentication and SOCKS5-style TCP CONNECT destination headers.
+Trojan provides a standalone TLS listener with SHA224 password authentication, SOCKS5-style TCP CONNECT destination headers, and UDP ASSOCIATE packet relay.
 
 ```toml
 [trojan]
@@ -226,8 +226,6 @@ dest = "127.0.0.1:8080"                     # optional fallback for invalid post
 # password = "another-secure-password"
 # email = "user@example.com"
 ```
-
-Only TCP CONNECT is implemented for Trojan; UDP ASSOCIATE remains a tracked protocol gap.
 
 ### Post-quantum key exchange (ML-KEM-512)
 

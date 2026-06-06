@@ -1,5 +1,5 @@
-# Trojan over TLS TCP inbound.
-# Accepts Trojan CONNECT requests from compatible clients such as xray-core,
+# Trojan over TLS TCP/UDP inbound.
+# Accepts Trojan CONNECT and UDP ASSOCIATE requests from compatible clients such as xray-core,
 # sing-box, mihomo, and Trojan clients.
 
 listen = "0.0.0.0:443"

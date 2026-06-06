@@ -1,5 +1,5 @@
 use std::io::{self, Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream, UdpSocket};
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread;
@@ -193,6 +193,21 @@ fn spawn_fallback_target() -> (std::net::SocketAddr, mpsc::Receiver<String>) {
     (addr, rx)
 }
 
+fn spawn_udp_echo_target() -> std::net::SocketAddr {
+    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let addr = socket.local_addr().unwrap();
+    thread::spawn(move || {
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut buf = [0u8; 4096];
+        if let Ok((n, peer)) = socket.recv_from(&mut buf) {
+            let _ = socket.send_to(&buf[..n], peer);
+        }
+    });
+    addr
+}
+
 fn spawn_trojan_server(listen: &str, body: &str) -> wrongsv_server::ServerHandle {
     let config_toml = format!(
         r#"
@@ -230,6 +245,28 @@ fn write_trojan_connect(
     request.extend_from_slice(&port.to_be_bytes());
     request.extend_from_slice(b"\r\n");
     request.extend_from_slice(payload);
+    client.write_all(&request).unwrap();
+}
+
+fn trojan_udp_packet_ipv4(ip: [u8; 4], port: u16, payload: &[u8]) -> Vec<u8> {
+    let mut packet = vec![0x01];
+    packet.extend_from_slice(&ip);
+    packet.extend_from_slice(&port.to_be_bytes());
+    packet.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    packet.extend_from_slice(b"\r\n");
+    packet.extend_from_slice(payload);
+    packet
+}
+
+fn write_trojan_udp_associate(client: &mut TlsClient, password: &str, initial_data: &[u8]) {
+    let mut request = sha224_hex(password).into_bytes();
+    request.extend_from_slice(b"\r\n");
+    request.push(0x03);
+    request.push(0x01);
+    request.extend_from_slice(&[0, 0, 0, 0]);
+    request.extend_from_slice(&0u16.to_be_bytes());
+    request.extend_from_slice(b"\r\n");
+    request.extend_from_slice(initial_data);
     client.write_all(&request).unwrap();
 }
 
@@ -286,6 +323,34 @@ password = "secret-b"
     let mut response = [0u8; 10];
     client.read_exact(&mut response).unwrap();
     assert_eq!(&response, b"multi user");
+    client.shutdown();
+}
+
+#[test]
+fn test_trojan_udp_associate_echo() {
+    let listen = reserve_addr();
+    let udp_addr = spawn_udp_echo_target();
+    let _server = spawn_trojan_server(&listen, r#"password = "secret""#);
+    thread::sleep(Duration::from_millis(100));
+
+    let mut client = TlsClient::connect(&listen);
+    let packet = trojan_udp_packet_ipv4([127, 0, 0, 1], udp_addr.port(), b"hello udp");
+    write_trojan_udp_associate(&mut client, "secret", &packet);
+
+    let mut response_header = [0u8; 11];
+    client.read_exact(&mut response_header).unwrap();
+    assert_eq!(response_header[0], 0x01);
+    assert_eq!(&response_header[1..5], &[127, 0, 0, 1]);
+    assert_eq!(
+        u16::from_be_bytes([response_header[5], response_header[6]]),
+        udp_addr.port()
+    );
+    let payload_len = u16::from_be_bytes([response_header[7], response_header[8]]) as usize;
+    assert_eq!(&response_header[9..11], b"\r\n");
+
+    let mut response_payload = vec![0u8; payload_len];
+    client.read_exact(&mut response_payload).unwrap();
+    assert_eq!(response_payload, b"hello udp");
     client.shutdown();
 }
 

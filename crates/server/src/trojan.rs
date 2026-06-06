@@ -25,6 +25,14 @@ pub struct TrojanRequest {
     pub initial_data: Vec<u8>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrojanUdpPacket {
+    pub address: Address,
+    pub port: Port,
+    pub payload: Vec<u8>,
+    pub consumed: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrojanCommand {
     Connect,
@@ -174,52 +182,15 @@ fn parse_request(
     let address_type = data[pos];
     pos += 1;
 
-    let address = match address_type {
-        0x01 => {
-            if data.len() < pos + 4 {
-                return Ok(None);
-            }
-            let octets: [u8; 4] = data[pos..pos + 4]
-                .try_into()
-                .map_err(|_| TrojanError::InvalidRequest)?;
-            pos += 4;
-            Address::IPv4(octets)
-        }
-        0x03 => {
-            if data.len() < pos + 1 {
-                return Ok(None);
-            }
-            let len = data[pos] as usize;
-            pos += 1;
-            if len == 0 {
-                return Err(TrojanError::InvalidRequest);
-            }
-            if data.len() < pos + len {
-                return Ok(None);
-            }
-            let domain = std::str::from_utf8(&data[pos..pos + len])
-                .map_err(|_| TrojanError::InvalidRequest)?;
-            pos += len;
-            Address::Domain(domain.to_string())
-        }
-        0x04 => {
-            if data.len() < pos + 16 {
-                return Ok(None);
-            }
-            let octets: [u8; 16] = data[pos..pos + 16]
-                .try_into()
-                .map_err(|_| TrojanError::InvalidRequest)?;
-            pos += 16;
-            Address::IPv6(octets)
-        }
-        _ => return Err(TrojanError::InvalidRequest),
+    let Some(address) = parse_socks5_address(data, &mut pos, address_type)? else {
+        return Ok(None);
     };
 
     if data.len() < pos + 4 {
         return Ok(None);
     }
     let port = u16::from_be_bytes([data[pos], data[pos + 1]]);
-    if port == 0 {
+    if port == 0 && command == TrojanCommand::Connect {
         return Err(TrojanError::InvalidRequest);
     }
     pos += 2;
@@ -234,6 +205,126 @@ fn parse_request(
         port: Port(port),
         initial_data: data[pos..].to_vec(),
     }))
+}
+
+pub fn parse_udp_packet(data: &[u8]) -> Result<Option<TrojanUdpPacket>, TrojanError> {
+    let mut pos = 0;
+    if data.is_empty() {
+        return Ok(None);
+    }
+    let address_type = data[pos];
+    pos += 1;
+    let Some(address) = parse_socks5_address(data, &mut pos, address_type)? else {
+        return Ok(None);
+    };
+    if data.len() < pos + 6 {
+        return Ok(None);
+    }
+    let port = u16::from_be_bytes([data[pos], data[pos + 1]]);
+    if port == 0 {
+        return Err(TrojanError::InvalidRequest);
+    }
+    pos += 2;
+    let payload_len = u16::from_be_bytes([data[pos], data[pos + 1]]) as usize;
+    pos += 2;
+    if &data[pos..pos + 2] != b"\r\n" {
+        return Err(TrojanError::InvalidRequest);
+    }
+    pos += 2;
+    if data.len() < pos + payload_len {
+        return Ok(None);
+    }
+
+    Ok(Some(TrojanUdpPacket {
+        address,
+        port: Port(port),
+        payload: data[pos..pos + payload_len].to_vec(),
+        consumed: pos + payload_len,
+    }))
+}
+
+pub fn write_udp_packet(
+    out: &mut Vec<u8>,
+    address: &Address,
+    port: Port,
+    payload: &[u8],
+) -> Result<(), TrojanError> {
+    if port.0 == 0 || payload.len() > u16::MAX as usize {
+        return Err(TrojanError::InvalidRequest);
+    }
+    write_socks5_address(out, address)?;
+    out.extend_from_slice(&port.0.to_be_bytes());
+    out.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    out.extend_from_slice(b"\r\n");
+    out.extend_from_slice(payload);
+    Ok(())
+}
+
+fn parse_socks5_address(
+    data: &[u8],
+    pos: &mut usize,
+    address_type: u8,
+) -> Result<Option<Address>, TrojanError> {
+    match address_type {
+        0x01 => {
+            if data.len() < *pos + 4 {
+                return Ok(None);
+            }
+            let octets: [u8; 4] = data[*pos..*pos + 4]
+                .try_into()
+                .map_err(|_| TrojanError::InvalidRequest)?;
+            *pos += 4;
+            Ok(Some(Address::IPv4(octets)))
+        }
+        0x03 => {
+            if data.len() < *pos + 1 {
+                return Ok(None);
+            }
+            let len = data[*pos] as usize;
+            *pos += 1;
+            if len == 0 {
+                return Err(TrojanError::InvalidRequest);
+            }
+            if data.len() < *pos + len {
+                return Ok(None);
+            }
+            let domain = std::str::from_utf8(&data[*pos..*pos + len])
+                .map_err(|_| TrojanError::InvalidRequest)?;
+            *pos += len;
+            Ok(Some(Address::Domain(domain.to_string())))
+        }
+        0x04 => {
+            if data.len() < *pos + 16 {
+                return Ok(None);
+            }
+            let octets: [u8; 16] = data[*pos..*pos + 16]
+                .try_into()
+                .map_err(|_| TrojanError::InvalidRequest)?;
+            *pos += 16;
+            Ok(Some(Address::IPv6(octets)))
+        }
+        _ => Err(TrojanError::InvalidRequest),
+    }
+}
+
+fn write_socks5_address(out: &mut Vec<u8>, address: &Address) -> Result<(), TrojanError> {
+    match address {
+        Address::IPv4(octets) => {
+            out.push(0x01);
+            out.extend_from_slice(octets);
+        }
+        Address::Domain(domain) => {
+            let len = u8::try_from(domain.len()).map_err(|_| TrojanError::InvalidRequest)?;
+            out.push(0x03);
+            out.push(len);
+            out.extend_from_slice(domain.as_bytes());
+        }
+        Address::IPv6(octets) => {
+            out.push(0x04);
+            out.extend_from_slice(octets);
+        }
+    }
+    Ok(())
 }
 
 fn has_non_hex_password_prefix(data: &[u8]) -> bool {
@@ -332,6 +423,49 @@ mod tests {
 
         assert!(matches!(request.address, Address::IPv6(_)));
         assert_eq!(request.port, Port(443));
+    }
+
+    #[test]
+    fn test_parse_udp_associate_allows_zero_initial_port() {
+        let mut data = request_prefix("secret");
+        data.extend_from_slice(&[0x03, 0x01, 0, 0, 0, 0]);
+        data.extend_from_slice(&0u16.to_be_bytes());
+        data.extend_from_slice(b"\r\n");
+
+        let request = parse_request(&data, &[password_hash_hex("secret")])
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(request.command, TrojanCommand::UdpAssociate);
+        assert_eq!(request.address, Address::IPv4([0, 0, 0, 0]));
+        assert_eq!(request.port, Port(0));
+    }
+
+    #[test]
+    fn test_udp_packet_roundtrip() {
+        let mut data = Vec::new();
+        write_udp_packet(
+            &mut data,
+            &Address::Domain("example.com".into()),
+            Port(53),
+            b"dns payload",
+        )
+        .unwrap();
+
+        let packet = parse_udp_packet(&data).unwrap().unwrap();
+        assert_eq!(packet.address, Address::Domain("example.com".into()));
+        assert_eq!(packet.port, Port(53));
+        assert_eq!(packet.payload, b"dns payload");
+        assert_eq!(packet.consumed, data.len());
+    }
+
+    #[test]
+    fn test_udp_packet_waits_for_complete_payload() {
+        let mut data = Vec::new();
+        write_udp_packet(&mut data, &Address::IPv4([127, 0, 0, 1]), Port(53), b"abc").unwrap();
+        data.pop();
+
+        assert!(parse_udp_packet(&data).unwrap().is_none());
     }
 
     #[test]

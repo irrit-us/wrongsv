@@ -42,7 +42,7 @@ cargo test --test shadowsocks_tests
 # Mixed SOCKS4/4A / SOCKS5 / HTTP proxy relay
 cargo test --test mixed_proxy_tests
 
-# Trojan over TLS TCP relay and fallback
+# Trojan over TLS TCP/UDP relay and fallback
 cargo test --test trojan_tests
 ```
 
