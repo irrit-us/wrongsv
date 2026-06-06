@@ -2,16 +2,28 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::Once;
+use std::sync::{Mutex, MutexGuard, Once};
 use std::thread;
 use std::time::Duration;
 
 static INIT_LOGGING: Once = Once::new();
+static LIFECYCLE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 pub fn init_logging() {
     INIT_LOGGING.call_once(|| {
         let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
     });
+}
+
+/// Serialize lifecycle tests that spawn real proxy clients.
+///
+/// Clients such as mihomo, sing-box, and xray maintain process-level listener
+/// state and can interfere with each other when test cases in the same binary
+/// run concurrently.
+pub fn lifecycle_test_lock() -> MutexGuard<'static, ()> {
+    LIFECYCLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 pub struct ServerGuard {
@@ -23,6 +35,18 @@ pub struct ServerGuard {
 pub fn pick_port() -> u16 {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     l.local_addr().unwrap().port()
+}
+
+/// Pick distinct local ports for tests that need multiple listeners.
+pub fn pick_ports(count: usize) -> Vec<u16> {
+    let mut ports = Vec::with_capacity(count);
+    while ports.len() < count {
+        let port = pick_port();
+        if !ports.contains(&port) {
+            ports.push(port);
+        }
+    }
+    ports
 }
 
 /// Spawn a wrongsv server with REALITY config.

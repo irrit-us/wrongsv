@@ -72,17 +72,18 @@ export XRAY_BIN=/path/to/xray
 
 ### Running
 
-Lifecycle tests must be run with `--test-threads=1` to avoid port conflicts:
+Lifecycle tests serialize real-client process startup internally and can be run
+with the default Rust test runner:
 
 ```bash
 # sing-box (6 tests)
-cargo test --test singbox_lifecycle -- --test-threads=1
+cargo test --test singbox_lifecycle
 
 # mihomo/ClashMeta (6 tests)
-cargo test --test mihomo_lifecycle -- --test-threads=1
+cargo test --test mihomo_lifecycle
 
 # xray-core (6 tests)
-cargo test --test xray_lifecycle -- --test-threads=1
+cargo test --test xray_lifecycle
 ```
 
 ### What each suite covers

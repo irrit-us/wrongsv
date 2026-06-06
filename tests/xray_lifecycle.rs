@@ -13,8 +13,8 @@ use std::thread;
 use std::time::Duration;
 
 use common::{
-    TEST_PRIVATE_KEY, TEST_PUBLIC_KEY, TEST_SHORT_ID, TEST_SNI, TEST_UUID, init_logging, pick_port,
-    socks5_get, spawn_multi_user_server, spawn_server,
+    TEST_PRIVATE_KEY, TEST_PUBLIC_KEY, TEST_SHORT_ID, TEST_SNI, TEST_UUID, init_logging,
+    lifecycle_test_lock, pick_ports, socks5_get, spawn_multi_user_server, spawn_server,
 };
 
 fn xray_bin() -> Option<String> {
@@ -144,10 +144,12 @@ fn test_xray_lifecycle_vision_http() {
         eprintln!("SKIP: xray not found (set XRAY_BIN or build with 'go build ./main/')");
         return;
     }
+    let _guard = lifecycle_test_lock();
     init_logging();
 
-    let server_port = pick_port();
-    let socks_port = server_port + 1000;
+    let ports = pick_ports(2);
+    let server_port = ports[0];
+    let socks_port = ports[1];
 
     let _server = spawn_server(
         server_port,
@@ -188,10 +190,12 @@ fn test_xray_lifecycle_raw_http() {
         eprintln!("SKIP: xray not found");
         return;
     }
+    let _guard = lifecycle_test_lock();
     init_logging();
 
-    let server_port = pick_port();
-    let socks_port = server_port + 1000;
+    let ports = pick_ports(2);
+    let server_port = ports[0];
+    let socks_port = ports[1];
 
     let _server = spawn_server(
         server_port,
@@ -226,10 +230,12 @@ fn test_xray_lifecycle_multi_request() {
         eprintln!("SKIP: xray not found");
         return;
     }
+    let _guard = lifecycle_test_lock();
     init_logging();
 
-    let server_port = pick_port();
-    let socks_port = server_port + 1000;
+    let ports = pick_ports(2);
+    let server_port = ports[0];
+    let socks_port = ports[1];
 
     let _server = spawn_server(
         server_port,
@@ -269,11 +275,13 @@ fn test_xray_lifecycle_multi_user() {
         eprintln!("SKIP: xray not found");
         return;
     }
+    let _guard = lifecycle_test_lock();
     init_logging();
 
-    let server_port = pick_port();
-    let socks1 = server_port + 1000;
-    let socks2 = server_port + 1001;
+    let ports = pick_ports(3);
+    let server_port = ports[0];
+    let socks1 = ports[1];
+    let socks2 = ports[2];
     let user1 = (
         "11111111-1111-1111-1111-111111111111".to_string(),
         "xtls-rprx-vision".to_string(),
@@ -329,10 +337,12 @@ fn test_xray_lifecycle_restart() {
         eprintln!("SKIP: xray not found");
         return;
     }
+    let _guard = lifecycle_test_lock();
     init_logging();
 
-    let server_port = pick_port();
-    let socks_port = server_port + 1000;
+    let ports = pick_ports(2);
+    let server_port = ports[0];
+    let socks_port = ports[1];
 
     {
         let _server = spawn_server(
@@ -393,10 +403,12 @@ fn test_xray_lifecycle_wrong_credential_rejected() {
         eprintln!("SKIP: xray not found");
         return;
     }
+    let _guard = lifecycle_test_lock();
     init_logging();
 
-    let server_port = pick_port();
-    let socks_port = server_port + 1000;
+    let ports = pick_ports(2);
+    let server_port = ports[0];
+    let socks_port = ports[1];
 
     let _server = spawn_server(
         server_port,
