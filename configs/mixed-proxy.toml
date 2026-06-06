@@ -1,0 +1,10 @@
+# Mixed plain proxy inbound.
+# Accepts SOCKS5 CONNECT and HTTP CONNECT on the same TCP listener.
+# Optional credentials are shared between SOCKS5 username/password auth and
+# HTTP Basic proxy auth.
+
+listen = "127.0.0.1:1080"
+
+[mixed]
+# username = "admin"
+# password = "change-this-password"

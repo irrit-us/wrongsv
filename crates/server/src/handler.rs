@@ -15,7 +15,10 @@ use wrongsv_vless_encoding::{
     encoding::EncodeError,
 };
 
-use crate::config::{AnyTlsServerConfig, Config, RealityServerConfig, TlsServerConfig};
+use crate::config::{
+    AnyTlsServerConfig, Config, MixedServerConfig, RealityServerConfig, TlsServerConfig,
+};
+use crate::mixed_proxy::{self, MixedProtocol};
 
 #[derive(Clone, Debug)]
 pub struct ShutdownSignal {
@@ -177,6 +180,11 @@ fn parse_shadowsocks_config(
         .map_err(|e| format!("shadowsocks: {e}"))
 }
 
+fn parse_mixed_config(mc: &MixedServerConfig) -> Result<mixed_proxy::MixedProxyConfig, String> {
+    mixed_proxy::MixedProxyConfig::new(mc.username.clone(), mc.password.clone())
+        .map_err(|e| format!("mixed proxy: {e}"))
+}
+
 pub struct InboundServer {
     config: Config,
     validator: Arc<MemoryValidator>,
@@ -185,6 +193,7 @@ pub struct InboundServer {
     anytls_config: Option<wrongsv_anytls::AnyTlsConfig>,
     tls_config: Option<TlsConfig>,
     shadowsocks_config: Option<wrongsv_shadowsocks::ServerConfig>,
+    mixed_config: Option<mixed_proxy::MixedProxyConfig>,
 }
 
 impl InboundServer {
@@ -210,6 +219,10 @@ impl InboundServer {
             Some(sc) => Some(parse_shadowsocks_config(sc)?),
             None => None,
         };
+        let mixed_config = match &config.mixed {
+            Some(mc) => Some(parse_mixed_config(mc)?),
+            None => None,
+        };
         if let Some(ref rc) = reality_config {
             let rpk_hex: String = rc
                 .cert_material
@@ -227,6 +240,9 @@ impl InboundServer {
         }
         if let Some(ref sc) = shadowsocks_config {
             info!("Shadowsocks enabled ({})", sc.method.name());
+        }
+        if mixed_config.is_some() {
+            info!("Mixed proxy enabled (SOCKS5 + HTTP CONNECT)");
         }
         let validator = Arc::new(MemoryValidator::new());
         for user in &config.users {
@@ -261,6 +277,7 @@ impl InboundServer {
             anytls_config,
             tls_config,
             shadowsocks_config,
+            mixed_config,
         })
     }
 
@@ -305,6 +322,8 @@ impl InboundServer {
         listener.set_nonblocking(true)?;
         let listener_protocol = if self.shadowsocks_config.is_some() {
             "Shadowsocks"
+        } else if self.mixed_config.is_some() {
+            "Mixed proxy"
         } else {
             "VLESS"
         };
@@ -319,6 +338,7 @@ impl InboundServer {
         let anytls_config = self.anytls_config.clone();
         let tls_config = self.tls_config.clone();
         let shadowsocks_config = self.shadowsocks_config.clone();
+        let mixed_config = self.mixed_config.clone();
 
         loop {
             if shutdown.is_shutdown_requested() {
@@ -333,6 +353,7 @@ impl InboundServer {
                     let ac = anytls_config.clone();
                     let tc = tls_config.clone();
                     let sc = shadowsocks_config.clone();
+                    let mc = mixed_config.clone();
                     thread::spawn(move || {
                         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                             if let Some(ref rc) = rc {
@@ -343,6 +364,8 @@ impl InboundServer {
                                 handle_tls_connection(stream, v, kyber_sk, tc)
                             } else if let Some(ref sc) = sc {
                                 handle_shadowsocks_connection(stream, sc)
+                            } else if let Some(ref mc) = mc {
+                                handle_mixed_proxy_connection(stream, mc)
                             } else {
                                 handle_connection(stream, v, kyber_sk)
                             }
@@ -1062,6 +1085,89 @@ fn relay_sing_udp(
     // Signal to the client that we can't handle this.
     let _ = writer.send_fin(_stream.id);
     Ok(())
+}
+
+fn handle_mixed_proxy_connection(
+    mut stream: TcpStream,
+    config: &mixed_proxy::MixedProxyConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let peer = stream.peer_addr()?;
+    trace!("{peer} mixed proxy connection");
+    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+
+    let protocol = mixed_proxy::detect_protocol(&stream)?;
+    let request = match protocol {
+        MixedProtocol::Socks5 => mixed_proxy::accept_socks5_connect(&mut stream, config),
+        MixedProtocol::HttpConnect => mixed_proxy::accept_http_connect(&mut stream, config),
+    };
+    let request = match request {
+        Ok(request) => request,
+        Err(e) => {
+            if protocol == MixedProtocol::HttpConnect {
+                let _ = mixed_proxy::write_http_error(&mut stream, &e);
+            }
+            return Err(Box::new(e));
+        }
+    };
+
+    let target_addr = format!("{}:{}", request.address, request.port);
+    let target = match connect_tcp_target(&request.address, request.port) {
+        Ok(target) => target,
+        Err(e) => {
+            match request.protocol {
+                MixedProtocol::Socks5 => {
+                    let _ = mixed_proxy::write_socks5_connect_error(&mut stream, &e);
+                }
+                MixedProtocol::HttpConnect => {
+                    let _ = mixed_proxy::write_http_bad_gateway(&mut stream);
+                }
+            }
+            return Err(Box::new(e));
+        }
+    };
+    target.set_nodelay(true)?;
+
+    match request.protocol {
+        MixedProtocol::Socks5 => {
+            mixed_proxy::write_socks5_success(&mut stream, target.local_addr().ok())?;
+        }
+        MixedProtocol::HttpConnect => {
+            mixed_proxy::write_http_success(&mut stream)?;
+        }
+    }
+
+    stream.set_read_timeout(None)?;
+    info!(
+        "{peer} {} -> {target_addr}",
+        mixed_protocol_name(request.protocol)
+    );
+    relay_raw_with_initial(stream, target, request.initial_data)?;
+    debug!("{peer} mixed proxy relay finished");
+    Ok(())
+}
+
+fn connect_tcp_target(
+    address: &wrongsv_net_types::Address,
+    port: wrongsv_net_types::Port,
+) -> std::io::Result<TcpStream> {
+    let target_addr = format!("{address}:{port}");
+    let mut last_error = None;
+    for addr in target_addr.to_socket_addrs()? {
+        match TcpStream::connect_timeout(&addr, Duration::from_secs(10)) {
+            Ok(stream) => return Ok(stream),
+            Err(e) => last_error = Some(e),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        std::io::Error::other(format!("DNS resolution failed for {target_addr}"))
+    }))
+}
+
+fn mixed_protocol_name(protocol: MixedProtocol) -> &'static str {
+    match protocol {
+        MixedProtocol::Socks5 => "SOCKS5 CONNECT",
+        MixedProtocol::HttpConnect => "HTTP CONNECT",
+    }
 }
 
 fn handle_shadowsocks_connection(
@@ -2009,6 +2115,17 @@ fn relay_raw(
     Ok(())
 }
 
+fn relay_raw_with_initial(
+    client: TcpStream,
+    mut target: TcpStream,
+    initial_data: Vec<u8>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !initial_data.is_empty() {
+        target.write_all(&initial_data)?;
+    }
+    relay_raw(client, target)
+}
+
 fn relay_udp(
     client: TcpStream,
     request: &RequestHeader,
@@ -2185,6 +2302,7 @@ mod tests {
             anytls: None,
             tls: None,
             shadowsocks: None,
+            mixed: None,
         }
     }
 

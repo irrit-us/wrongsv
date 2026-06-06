@@ -143,6 +143,7 @@ fn build_default_config() -> Config {
         anytls: None,
         tls: None,
         shadowsocks: None,
+        mixed: None,
     }
 }
 

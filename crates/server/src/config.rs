@@ -33,6 +33,10 @@ pub struct Config {
     /// accepts Shadowsocks instead of VLESS.
     #[serde(default)]
     pub shadowsocks: Option<ShadowsocksServerConfig>,
+    /// Mixed plain proxy inbound configuration. When set, this listener
+    /// accepts SOCKS5 CONNECT and HTTP CONNECT instead of VLESS.
+    #[serde(default)]
+    pub mixed: Option<MixedServerConfig>,
 }
 
 /// REALITY server-side configuration.
@@ -101,6 +105,18 @@ pub struct ShadowsocksServerConfig {
     pub password: String,
 }
 
+/// Mixed plain proxy server-side configuration.
+///
+/// Supports SOCKS5 CONNECT and HTTP CONNECT. Optional credentials are shared
+/// between SOCKS5 username/password auth and HTTP Basic proxy auth.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MixedServerConfig {
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct UserConfig {
     /// UUID string
@@ -135,6 +151,16 @@ pub enum ConfigError {
     ShadowsocksWithVlessUsers,
     #[error("Shadowsocks inbound cannot be combined with VLESS transport layers")]
     ShadowsocksWithVlessTransport,
+    #[error("only one non-VLESS inbound can be configured")]
+    MultipleInboundProtocols,
+    #[error("mixed inbound cannot be combined with VLESS users")]
+    MixedWithVlessUsers,
+    #[error("mixed inbound cannot be combined with VLESS transport layers")]
+    MixedWithVlessTransport,
+    #[error("mixed inbound credentials require both username and password")]
+    MixedIncompleteCredentials,
+    #[error("mixed inbound credentials must be 1..=255 bytes for SOCKS5 username/password auth")]
+    MixedInvalidCredentials,
 }
 
 impl Config {
@@ -152,6 +178,9 @@ impl Config {
                 ));
             }
         }
+        if self.shadowsocks.is_some() && self.mixed.is_some() {
+            return Err(ConfigError::MultipleInboundProtocols);
+        }
         if let Some(shadowsocks) = &self.shadowsocks {
             if !self.users.is_empty() {
                 return Err(ConfigError::ShadowsocksWithVlessUsers);
@@ -162,6 +191,27 @@ impl Config {
             wrongsv_shadowsocks::Method::parse(&shadowsocks.method).map_err(|_| {
                 ConfigError::UnsupportedShadowsocksMethod(shadowsocks.method.clone())
             })?;
+        }
+        if let Some(mixed) = &self.mixed {
+            if !self.users.is_empty() {
+                return Err(ConfigError::MixedWithVlessUsers);
+            }
+            if self.reality.is_some() || self.anytls.is_some() || self.tls.is_some() {
+                return Err(ConfigError::MixedWithVlessTransport);
+            }
+            match (&mixed.username, &mixed.password) {
+                (None, None) => {}
+                (Some(username), Some(password)) => {
+                    if username.is_empty()
+                        || username.len() > 255
+                        || password.is_empty()
+                        || password.len() > 255
+                    {
+                        return Err(ConfigError::MixedInvalidCredentials);
+                    }
+                }
+                _ => return Err(ConfigError::MixedIncompleteCredentials),
+            }
         }
         Ok(())
     }
@@ -206,6 +256,7 @@ flow = "xtls-rprx-vision"
             anytls: None,
             tls: None,
             shadowsocks: None,
+            mixed: None,
         };
         assert!(config.validate().is_err());
     }
@@ -228,6 +279,7 @@ flow = "xtls-rprx-vision"
             anytls: None,
             tls: None,
             shadowsocks: None,
+            mixed: None,
         };
         assert!(config.validate().is_err());
     }
@@ -282,6 +334,88 @@ password = "secret"
         assert!(matches!(
             config.validate(),
             Err(ConfigError::ShadowsocksWithVlessTransport)
+        ));
+    }
+
+    #[test]
+    fn test_parse_mixed_config() {
+        let toml = r#"
+listen = "127.0.0.1:1080"
+
+[mixed]
+username = "admin"
+password = "secret"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        let mixed = config.mixed.unwrap();
+        assert_eq!(mixed.username.as_deref(), Some("admin"));
+        assert_eq!(mixed.password.as_deref(), Some("secret"));
+    }
+
+    #[test]
+    fn test_mixed_rejects_vless_users() {
+        let toml = r#"
+listen = "127.0.0.1:1080"
+
+[mixed]
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::MixedWithVlessUsers)
+        ));
+    }
+
+    #[test]
+    fn test_mixed_rejects_vless_transport() {
+        let toml = r#"
+listen = "127.0.0.1:1080"
+
+[mixed]
+
+[tls]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::MixedWithVlessTransport)
+        ));
+    }
+
+    #[test]
+    fn test_mixed_rejects_shadowsocks_inbound() {
+        let toml = r#"
+listen = "127.0.0.1:1080"
+
+[mixed]
+
+[shadowsocks]
+method = "chacha20-ietf-poly1305"
+password = "secret"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::MultipleInboundProtocols)
+        ));
+    }
+
+    #[test]
+    fn test_mixed_rejects_incomplete_credentials() {
+        let toml = r#"
+listen = "127.0.0.1:1080"
+
+[mixed]
+username = "admin"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::MixedIncompleteCredentials)
         ));
     }
 }

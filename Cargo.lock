@@ -2289,6 +2289,7 @@ dependencies = [
 name = "wrongsv-server"
 version = "0.2.4"
 dependencies = [
+ "base64",
  "bytes",
  "ctrlc",
  "rustls",
