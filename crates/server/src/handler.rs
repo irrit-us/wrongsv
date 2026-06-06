@@ -255,7 +255,7 @@ impl InboundServer {
             info!("Shadowsocks enabled ({})", sc.method.name());
         }
         if mixed_config.is_some() {
-            info!("Mixed proxy enabled (SOCKS4/4A + SOCKS5 + HTTP CONNECT)");
+            info!("Mixed proxy enabled (SOCKS4/4A + SOCKS5 + HTTP proxy)");
         }
         let validator = Arc::new(MemoryValidator::new());
         for user in &config.users {
@@ -1247,7 +1247,8 @@ fn handle_mixed_proxy_connection(
     let request = match protocol {
         MixedProtocol::Socks4 => mixed_proxy::accept_socks4_connect(&mut stream, config),
         MixedProtocol::Socks5 => mixed_proxy::accept_socks5_connect(&mut stream, config),
-        MixedProtocol::HttpConnect => mixed_proxy::accept_http_connect(&mut stream, config),
+        MixedProtocol::HttpConnect => mixed_proxy::accept_http_request(&mut stream, config),
+        MixedProtocol::HttpForward => unreachable!("HTTP forwarding is selected after parsing"),
     };
     let request = match request {
         Ok(request) => request,
@@ -1273,6 +1274,9 @@ fn handle_mixed_proxy_connection(
                 MixedProtocol::HttpConnect => {
                     let _ = mixed_proxy::write_http_bad_gateway(&mut stream);
                 }
+                MixedProtocol::HttpForward => {
+                    let _ = mixed_proxy::write_http_bad_gateway(&mut stream);
+                }
             }
             return Err(Box::new(e));
         }
@@ -1289,6 +1293,7 @@ fn handle_mixed_proxy_connection(
         MixedProtocol::HttpConnect => {
             mixed_proxy::write_http_success(&mut stream)?;
         }
+        MixedProtocol::HttpForward => {}
     }
 
     stream.set_read_timeout(None)?;
@@ -1323,6 +1328,7 @@ fn mixed_protocol_name(protocol: MixedProtocol) -> &'static str {
         MixedProtocol::Socks4 => "SOCKS4/4A CONNECT",
         MixedProtocol::Socks5 => "SOCKS5 CONNECT",
         MixedProtocol::HttpConnect => "HTTP CONNECT",
+        MixedProtocol::HttpForward => "HTTP FORWARD",
     }
 }
 

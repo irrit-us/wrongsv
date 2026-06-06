@@ -1,5 +1,5 @@
 # Mixed plain proxy inbound.
-# Accepts SOCKS4/4A, SOCKS5 CONNECT, and HTTP CONNECT on the same TCP listener.
+# Accepts SOCKS4/4A, SOCKS5 CONNECT, and HTTP forward/CONNECT on the same TCP listener.
 # Optional credentials are shared between SOCKS5 username/password auth and
 # HTTP Basic proxy auth. SOCKS4/4A is rejected when credentials are set.
 

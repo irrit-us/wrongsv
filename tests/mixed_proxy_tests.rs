@@ -1,5 +1,6 @@
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
+use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
@@ -25,6 +26,33 @@ fn spawn_echo_target() -> std::net::SocketAddr {
         }
     });
     addr
+}
+
+fn spawn_http_target() -> (std::net::SocketAddr, mpsc::Receiver<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+            let mut data = Vec::new();
+            let mut byte = [0u8; 1];
+            while !data.ends_with(b"\r\n\r\n") {
+                if stream.read_exact(&mut byte).is_err() {
+                    return;
+                }
+                data.push(byte[0]);
+                if data.len() >= 8192 {
+                    return;
+                }
+            }
+            let _ = tx.send(String::from_utf8(data).unwrap());
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nforward ok",
+            );
+        }
+    });
+    (addr, rx)
 }
 
 fn spawn_mixed_server(
@@ -336,4 +364,94 @@ fn test_mixed_http_basic_auth_required() {
     let response_head = read_http_head(&mut stream);
     assert!(response_head.starts_with("HTTP/1.1 407 Proxy Authentication Required"));
     assert!(response_head.contains("Proxy-Authenticate: Basic realm=\"wrongsv\""));
+}
+
+#[test]
+fn test_mixed_http_forward_absolute_form() {
+    let listen = reserve_addr();
+    let (target_addr, captured) = spawn_http_target();
+    let _server = spawn_mixed_server(&listen, None);
+    thread::sleep(Duration::from_millis(100));
+
+    let mut stream = TcpStream::connect(&listen).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    write!(
+        stream,
+        "GET http://localhost:{}/path?q=1 HTTP/1.1\r\nHost: old.example\r\nProxy-Connection: keep-alive\r\nX-Test: one\r\n\r\n",
+        target_addr.port()
+    )
+    .unwrap();
+    stream.shutdown(Shutdown::Write).unwrap();
+
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 200 OK"));
+    assert!(response.ends_with("forward ok"));
+
+    let forwarded = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(forwarded.starts_with(&format!(
+        "GET /path?q=1 HTTP/1.1\r\nHost: localhost:{}\r\n",
+        target_addr.port()
+    )));
+    assert!(forwarded.contains("X-Test: one\r\n"));
+    assert!(!forwarded.contains("old.example"));
+    assert!(!forwarded.to_ascii_lowercase().contains("proxy-connection"));
+}
+
+#[test]
+fn test_mixed_http_forward_basic_auth_stripped() {
+    let listen = reserve_addr();
+    let (target_addr, captured) = spawn_http_target();
+    let _server = spawn_mixed_server(&listen, Some(("admin", "secret")));
+    thread::sleep(Duration::from_millis(100));
+
+    let mut stream = TcpStream::connect(&listen).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let token = base64::engine::general_purpose::STANDARD.encode("admin:secret");
+    write!(
+        stream,
+        "GET http://localhost:{}/ HTTP/1.1\r\nHost: ignored.example\r\nProxy-Authorization: Basic {}\r\nX-Test: auth\r\n\r\n",
+        target_addr.port(),
+        token
+    )
+    .unwrap();
+    stream.shutdown(Shutdown::Write).unwrap();
+
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 200 OK"));
+
+    let forwarded = captured.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(forwarded.starts_with(&format!(
+        "GET / HTTP/1.1\r\nHost: localhost:{}\r\n",
+        target_addr.port()
+    )));
+    assert!(forwarded.contains("X-Test: auth\r\n"));
+    assert!(
+        !forwarded
+            .to_ascii_lowercase()
+            .contains("proxy-authorization")
+    );
+}
+
+#[test]
+fn test_mixed_http_forward_rejects_origin_form() {
+    let listen = reserve_addr();
+    let _server = spawn_mixed_server(&listen, None);
+    thread::sleep(Duration::from_millis(100));
+
+    let mut stream = TcpStream::connect(&listen).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    stream
+        .write_all(b"GET /path HTTP/1.1\r\nHost: example.com\r\n\r\n")
+        .unwrap();
+
+    let response_head = read_http_head(&mut stream);
+    assert!(response_head.starts_with("HTTP/1.1 400 Bad Request"));
 }

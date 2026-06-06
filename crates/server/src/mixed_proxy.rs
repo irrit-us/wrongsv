@@ -76,6 +76,7 @@ pub enum MixedProtocol {
     Socks4,
     Socks5,
     HttpConnect,
+    HttpForward,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -290,7 +291,7 @@ fn read_null_terminated(stream: &mut TcpStream, limit: usize) -> Result<Vec<u8>,
     }
 }
 
-pub fn accept_http_connect(
+pub fn accept_http_request(
     stream: &mut TcpStream,
     config: &MixedProxyConfig,
 ) -> Result<ConnectRequest, MixedProxyError> {
@@ -298,6 +299,7 @@ pub fn accept_http_connect(
     let head = String::from_utf8(head).map_err(|_| MixedProxyError::InvalidHttpRequest)?;
     let mut lines = head.split("\r\n");
     let request_line = lines.next().ok_or(MixedProxyError::InvalidHttpRequest)?;
+    let header_lines: Vec<&str> = lines.collect();
     let mut parts = request_line.split_whitespace();
     let method = parts.next().ok_or(MixedProxyError::InvalidHttpRequest)?;
     let target = parts.next().ok_or(MixedProxyError::InvalidHttpRequest)?;
@@ -305,25 +307,36 @@ pub fn accept_http_connect(
     if parts.next().is_some() || !version.starts_with("HTTP/1.") {
         return Err(MixedProxyError::InvalidHttpRequest);
     }
-    if method != "CONNECT" {
-        return Err(MixedProxyError::UnsupportedHttpMethod(method.to_string()));
-    }
 
     if let Some(credentials) = config.credentials() {
-        let proxy_auth = lines
+        let proxy_auth = header_lines
+            .iter()
             .filter_map(|line| line.split_once(':'))
             .find(|(name, _)| name.trim().eq_ignore_ascii_case("proxy-authorization"))
             .map(|(_, value)| value.trim());
         authenticate_http_basic(proxy_auth, credentials)?;
     }
 
-    let (address, port) = parse_authority(target)?;
-    Ok(ConnectRequest {
-        protocol: MixedProtocol::HttpConnect,
-        address,
-        port,
-        initial_data,
-    })
+    if method == "CONNECT" {
+        let (address, port) = parse_authority(target)?;
+        Ok(ConnectRequest {
+            protocol: MixedProtocol::HttpConnect,
+            address,
+            port,
+            initial_data,
+        })
+    } else {
+        let (address, port, host_header, origin_form) = parse_absolute_http_uri(target)?;
+        let mut outbound =
+            build_http_forward_head(method, &origin_form, version, &host_header, &header_lines);
+        outbound.extend_from_slice(&initial_data);
+        Ok(ConnectRequest {
+            protocol: MixedProtocol::HttpForward,
+            address,
+            port,
+            initial_data: outbound,
+        })
+    }
 }
 
 fn read_http_head(stream: &mut TcpStream) -> Result<(Vec<u8>, Vec<u8>), MixedProxyError> {
@@ -371,18 +384,65 @@ fn authenticate_http_basic(
 }
 
 fn parse_authority(target: &str) -> Result<(Address, Port), MixedProxyError> {
-    let (host, port, bracketed) = if let Some(rest) = target.strip_prefix('[') {
+    parse_authority_with_default(target, None).map(|(address, port, _)| (address, port))
+}
+
+fn parse_absolute_http_uri(
+    target: &str,
+) -> Result<(Address, Port, String, String), MixedProxyError> {
+    let rest = target
+        .strip_prefix("http://")
+        .ok_or(MixedProxyError::InvalidHttpTarget)?;
+    if rest.is_empty() || rest.contains('#') {
+        return Err(MixedProxyError::InvalidHttpTarget);
+    }
+    let split_at = rest.find(['/', '?']).unwrap_or(rest.len());
+    let authority = &rest[..split_at];
+    let origin_form = match rest.as_bytes().get(split_at).copied() {
+        Some(b'/') => rest[split_at..].to_string(),
+        Some(b'?') => format!("/{}", &rest[split_at..]),
+        Some(_) => return Err(MixedProxyError::InvalidHttpTarget),
+        None => "/".to_string(),
+    };
+    let (address, port, host_header) = parse_authority_with_default(authority, Some(80))?;
+    Ok((address, port, host_header, origin_form))
+}
+
+fn parse_authority_with_default(
+    authority: &str,
+    default_port: Option<u16>,
+) -> Result<(Address, Port, String), MixedProxyError> {
+    if authority.is_empty() || authority.contains('@') {
+        return Err(MixedProxyError::InvalidHttpTarget);
+    }
+
+    let (host, port, host_header, bracketed) = if let Some(rest) = authority.strip_prefix('[') {
         let end = rest.find(']').ok_or(MixedProxyError::InvalidHttpTarget)?;
         let host = &rest[..end];
-        let port = rest[end + 1..]
-            .strip_prefix(':')
-            .ok_or(MixedProxyError::InvalidHttpTarget)?;
-        (host, port, true)
+        if host.is_empty() {
+            return Err(MixedProxyError::InvalidHttpTarget);
+        }
+        let suffix = &rest[end + 1..];
+        let (port, host_header) = if let Some(port) = suffix.strip_prefix(':') {
+            (port, authority.to_string())
+        } else if suffix.is_empty() {
+            let port = default_port.ok_or(MixedProxyError::InvalidHttpTarget)?;
+            return Ok((Address::parse(host), Port(port), format!("[{host}]")));
+        } else {
+            return Err(MixedProxyError::InvalidHttpTarget);
+        };
+        (host, port, host_header, true)
     } else {
-        let (host, port) = target
-            .rsplit_once(':')
-            .ok_or(MixedProxyError::InvalidHttpTarget)?;
-        (host, port, false)
+        match authority.rsplit_once(':') {
+            Some((host, port)) => (host, port, authority.to_string(), false),
+            None => {
+                let port = default_port.ok_or(MixedProxyError::InvalidHttpTarget)?;
+                if authority.contains(':') {
+                    return Err(MixedProxyError::InvalidHttpTarget);
+                }
+                return Ok((Address::parse(authority), Port(port), authority.to_string()));
+            }
+        }
     };
     if host.is_empty() || port.is_empty() || (!bracketed && host.contains(':')) {
         return Err(MixedProxyError::InvalidHttpTarget);
@@ -393,7 +453,35 @@ fn parse_authority(target: &str) -> Result<(Address, Port), MixedProxyError> {
     if port == 0 {
         return Err(MixedProxyError::InvalidHttpTarget);
     }
-    Ok((Address::parse(host), Port(port)))
+    Ok((Address::parse(host), Port(port), host_header))
+}
+
+fn build_http_forward_head(
+    method: &str,
+    origin_form: &str,
+    version: &str,
+    host_header: &str,
+    header_lines: &[&str],
+) -> Vec<u8> {
+    let mut out = format!("{method} {origin_form} {version}\r\nHost: {host_header}\r\n");
+    for line in header_lines {
+        if line.is_empty() {
+            continue;
+        }
+        if let Some((name, _)) = line.split_once(':') {
+            let name = name.trim();
+            if name.eq_ignore_ascii_case("host")
+                || name.eq_ignore_ascii_case("proxy-authorization")
+                || name.eq_ignore_ascii_case("proxy-connection")
+            {
+                continue;
+            }
+        }
+        out.push_str(line);
+        out.push_str("\r\n");
+    }
+    out.push_str("\r\n");
+    out.into_bytes()
 }
 
 pub fn write_socks4_success(
@@ -491,7 +579,6 @@ pub fn write_http_error(
             "Proxy Authentication Required",
             "Proxy-Authenticate: Basic realm=\"wrongsv\"\r\n",
         ),
-        MixedProxyError::UnsupportedHttpMethod(_) => (405, "Method Not Allowed", ""),
         MixedProxyError::HttpHeaderTooLarge => (431, "Request Header Fields Too Large", ""),
         _ => (400, "Bad Request", ""),
     };
@@ -543,8 +630,6 @@ pub enum MixedProxyError {
     HttpHeaderTooLarge,
     #[error("invalid HTTP proxy request")]
     InvalidHttpRequest,
-    #[error("unsupported HTTP proxy method: {0}")]
-    UnsupportedHttpMethod(String),
     #[error("HTTP proxy authentication required")]
     HttpAuthRequired,
     #[error("HTTP proxy authentication failed")]
