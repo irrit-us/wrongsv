@@ -105,6 +105,10 @@ pub struct ShadowsocksServerConfig {
     pub password: String,
     #[serde(default = "default_udp")]
     pub udp: bool,
+    #[serde(default)]
+    pub tcp_prefix: Option<String>,
+    #[serde(default)]
+    pub udp_prefix: Option<String>,
 }
 
 /// Mixed plain proxy server-side configuration.
@@ -149,6 +153,8 @@ pub enum ConfigError {
     UnknownFlow(String, String),
     #[error("unsupported Shadowsocks method '{0}'")]
     UnsupportedShadowsocksMethod(String),
+    #[error("Shadowsocks salt prefixes must be at most 16 bytes")]
+    ShadowsocksPrefixTooLong,
     #[error("Shadowsocks inbound cannot be combined with VLESS users")]
     ShadowsocksWithVlessUsers,
     #[error("Shadowsocks inbound cannot be combined with VLESS transport layers")]
@@ -193,6 +199,17 @@ impl Config {
             wrongsv_shadowsocks::Method::parse(&shadowsocks.method).map_err(|_| {
                 ConfigError::UnsupportedShadowsocksMethod(shadowsocks.method.clone())
             })?;
+            if shadowsocks
+                .tcp_prefix
+                .as_deref()
+                .is_some_and(|prefix| prefix.len() > 16)
+                || shadowsocks
+                    .udp_prefix
+                    .as_deref()
+                    .is_some_and(|prefix| prefix.len() > 16)
+            {
+                return Err(ConfigError::ShadowsocksPrefixTooLong);
+            }
         }
         if let Some(mixed) = &self.mixed {
             if !self.users.is_empty() {
@@ -294,6 +311,8 @@ listen = "0.0.0.0:8388"
 [shadowsocks]
 method = "chacha20-ietf-poly1305"
 password = "secret"
+tcp_prefix = "HTTP/1.1 "
+udp_prefix = "k{\u0001 "
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         config.validate().unwrap();
@@ -301,6 +320,25 @@ password = "secret"
         assert_eq!(shadowsocks.method, "chacha20-ietf-poly1305");
         assert_eq!(shadowsocks.password, "secret");
         assert!(shadowsocks.udp);
+        assert_eq!(shadowsocks.tcp_prefix.as_deref(), Some("HTTP/1.1 "));
+        assert_eq!(shadowsocks.udp_prefix.as_deref(), Some("k{\u{1} "));
+    }
+
+    #[test]
+    fn test_shadowsocks_rejects_long_salt_prefix() {
+        let toml = r#"
+listen = "0.0.0.0:8388"
+
+[shadowsocks]
+method = "chacha20-ietf-poly1305"
+password = "secret"
+tcp_prefix = "12345678901234567"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::ShadowsocksPrefixTooLong)
+        ));
     }
 
     #[test]

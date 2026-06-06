@@ -54,19 +54,53 @@ impl Method {
 pub struct ServerConfig {
     pub method: Method,
     pub password: String,
+    tcp_prefix: Vec<u8>,
+    udp_prefix: Vec<u8>,
 }
 
 impl ServerConfig {
     pub fn new(method: &str, password: impl Into<String>) -> Result<Self, ShadowsocksError> {
+        Self::new_with_prefixes(method, password, Vec::new(), Vec::new())
+    }
+
+    pub fn new_with_prefixes(
+        method: &str,
+        password: impl Into<String>,
+        tcp_prefix: Vec<u8>,
+        udp_prefix: Vec<u8>,
+    ) -> Result<Self, ShadowsocksError> {
+        let method = Method::parse(method)?;
+        validate_salt_prefix(method, &tcp_prefix)?;
+        validate_salt_prefix(method, &udp_prefix)?;
         Ok(Self {
-            method: Method::parse(method)?,
+            method,
             password: password.into(),
+            tcp_prefix,
+            udp_prefix,
         })
     }
 
     fn master_key(&self) -> Vec<u8> {
         evp_bytes_to_key(self.password.as_bytes(), self.method.key_len())
     }
+}
+
+fn validate_salt_prefix(method: Method, prefix: &[u8]) -> Result<(), ShadowsocksError> {
+    if prefix.len() > 16 || prefix.len() > method.salt_len() {
+        return Err(ShadowsocksError::InvalidSaltPrefixLength {
+            max: 16.min(method.salt_len()),
+            actual: prefix.len(),
+        });
+    }
+    Ok(())
+}
+
+fn random_salt(method: Method, prefix: &[u8]) -> Result<Vec<u8>, ShadowsocksError> {
+    validate_salt_prefix(method, prefix)?;
+    let mut salt = vec![0u8; method.salt_len()];
+    rand::thread_rng().fill_bytes(&mut salt);
+    salt[..prefix.len()].copy_from_slice(prefix);
+    Ok(salt)
 }
 
 pub fn parse_request_header(data: &[u8]) -> Result<(Address, Port, usize), ShadowsocksError> {
@@ -141,8 +175,7 @@ pub fn encrypt_udp_packet(
     payload: &[u8],
     config: &ServerConfig,
 ) -> Result<Vec<u8>, ShadowsocksError> {
-    let mut salt = vec![0u8; config.method.salt_len()];
-    rand::thread_rng().fill_bytes(&mut salt);
+    let salt = random_salt(config.method, &config.udp_prefix)?;
     encrypt_udp_packet_with_salt(payload, config, &salt)
 }
 
@@ -211,8 +244,7 @@ pub struct ShadowsocksWriter<W> {
 
 impl<W: Write> ShadowsocksWriter<W> {
     pub fn new(inner: W, config: &ServerConfig) -> Result<Self, ShadowsocksError> {
-        let mut salt = vec![0u8; config.method.salt_len()];
-        rand::thread_rng().fill_bytes(&mut salt);
+        let salt = random_salt(config.method, &config.tcp_prefix)?;
         Self::new_with_salt(inner, config, &salt)
     }
 
@@ -362,6 +394,8 @@ pub enum ShadowsocksError {
     UnsupportedMethod(String),
     #[error("invalid salt length: expected {expected}, got {actual}")]
     InvalidSaltLength { expected: usize, actual: usize },
+    #[error("invalid salt prefix length: max {max}, got {actual}")]
+    InvalidSaltPrefixLength { max: usize, actual: usize },
     #[error("failed to derive shadowsocks subkey")]
     KeyDerivation,
     #[error("shadowsocks encryption failed")]
@@ -393,6 +427,8 @@ mod tests {
         ServerConfig {
             method,
             password: "correct horse battery staple".into(),
+            tcp_prefix: Vec::new(),
+            udp_prefix: Vec::new(),
         }
     }
 
@@ -496,6 +532,40 @@ mod tests {
         assert!(matches!(
             decrypt_udp_packet(&[0u8; 4], &config),
             Err(ShadowsocksError::ShortUdpPacket)
+        ));
+    }
+
+    #[test]
+    fn generated_tcp_and_udp_salts_use_configured_prefixes() {
+        let config = ServerConfig::new_with_prefixes(
+            "chacha20-ietf-poly1305",
+            "password",
+            b"HTTP/1.1 ".to_vec(),
+            b"\x6b\x7b\x01\x20".to_vec(),
+        )
+        .unwrap();
+
+        let mut wire = Vec::new();
+        {
+            let mut writer = ShadowsocksWriter::new(&mut wire, &config).unwrap();
+            writer.write_chunk(b"payload").unwrap();
+        }
+        assert!(wire.starts_with(b"HTTP/1.1 "));
+
+        let packet = encrypt_udp_packet(b"payload", &config).unwrap();
+        assert!(packet.starts_with(b"\x6b\x7b\x01\x20"));
+    }
+
+    #[test]
+    fn salt_prefixes_are_limited_to_16_bytes() {
+        assert!(matches!(
+            ServerConfig::new_with_prefixes(
+                "chacha20-ietf-poly1305",
+                "password",
+                vec![0u8; 17],
+                Vec::new()
+            ),
+            Err(ShadowsocksError::InvalidSaltPrefixLength { .. })
         ));
     }
 }

@@ -176,8 +176,21 @@ fn parse_tls_config(tc: &TlsServerConfig) -> Result<TlsConfig, String> {
 fn parse_shadowsocks_config(
     sc: &crate::config::ShadowsocksServerConfig,
 ) -> Result<wrongsv_shadowsocks::ServerConfig, String> {
-    wrongsv_shadowsocks::ServerConfig::new(&sc.method, sc.password.clone())
-        .map_err(|e| format!("shadowsocks: {e}"))
+    wrongsv_shadowsocks::ServerConfig::new_with_prefixes(
+        &sc.method,
+        sc.password.clone(),
+        sc.tcp_prefix
+            .as_deref()
+            .map(str::as_bytes)
+            .unwrap_or_default()
+            .to_vec(),
+        sc.udp_prefix
+            .as_deref()
+            .map(str::as_bytes)
+            .unwrap_or_default()
+            .to_vec(),
+    )
+    .map_err(|e| format!("shadowsocks: {e}"))
 }
 
 fn parse_mixed_config(mc: &MixedServerConfig) -> Result<mixed_proxy::MixedProxyConfig, String> {

@@ -8,3 +8,7 @@ listen = "0.0.0.0:8388"
 method = "chacha20-ietf-poly1305"
 password = "change-this-password"
 udp = true
+
+# Optional Outline-style salt prefixes, max 16 bytes each.
+# tcp_prefix = "HTTP/1.1 "
+# udp_prefix = "k{\u0001 "

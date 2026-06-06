@@ -51,6 +51,9 @@ listen = "0.0.0.0:443"
 # method = "chacha20-ietf-poly1305"
 # password = "your-secure-password"
 # udp = true
+# Optional Outline-style salt prefixes, max 16 bytes each.
+# tcp_prefix = "HTTP/1.1 "
+# udp_prefix = "k{\u0001 "
 
 # ── Mixed SOCKS5 / HTTP CONNECT example ───────────────────────────────────────
 # Use this instead of users/VLESS transports for a local/LAN plain proxy.
