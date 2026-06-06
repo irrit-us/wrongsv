@@ -12,6 +12,7 @@ use wrongsv_vless::vision::{TrafficState, VisionReader, VisionWriter};
 use wrongsv_vless::{MemoryValidator, Validator, XRV};
 use wrongsv_vless_encoding::{
     self as encoding, Addons, LengthPacketReader, LengthPacketWriter, PacketReadError,
+    encoding::EncodeError,
 };
 
 use crate::config::{AnyTlsServerConfig, Config, RealityServerConfig, TlsServerConfig};
@@ -364,6 +365,99 @@ fn install_ctrlc_handler(shutdown: ShutdownSignal) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
+struct VlessRequest {
+    decoded: encoding::DecodedRequest,
+    remaining_body: Vec<u8>,
+    use_vision: bool,
+}
+
+fn decode_vless_request(
+    first: Vec<u8>,
+    validator: &Arc<MemoryValidator>,
+    peer: std::net::SocketAddr,
+) -> Result<VlessRequest, Box<dyn std::error::Error>> {
+    let n = first.len();
+    if n < 18 {
+        debug!("{peer} connection too short ({n} bytes), dropping");
+        return Err("connection too short for VLESS header".into());
+    }
+
+    let v = Arc::clone(validator);
+    let mut cursor = std::io::Cursor::new(first);
+    let decoded = encoding::decode_request_header(&mut cursor, move |id| v.get(id))?;
+    let pos = cursor.position() as usize;
+    let inner = cursor.into_inner();
+    let remaining_body = if pos < inner.len() {
+        inner[pos..].to_vec()
+    } else {
+        Vec::new()
+    };
+    let use_vision = decoded.addons.flow == XRV && decoded.header.user.account.flow == XRV;
+
+    Ok(VlessRequest {
+        decoded,
+        remaining_body,
+        use_vision,
+    })
+}
+
+fn log_vless_request(peer: std::net::SocketAddr, request: &RequestHeader) {
+    info!(
+        "{} {} {} -> {}:{}",
+        peer,
+        if request.command == RequestCommand::Tcp {
+            "TCP"
+        } else {
+            "UDP"
+        },
+        request.user.email,
+        request.address,
+        request.port,
+    );
+}
+
+fn handle_kyber_addons(
+    peer: std::net::SocketAddr,
+    decoded: &encoding::DecodedRequest,
+    kyber_sk: Option<[u8; 64]>,
+) {
+    if decoded.addons.kyber_ct.is_empty() {
+        return;
+    }
+
+    if let Some(sk) = kyber_sk {
+        match wrongsv_kyber::decapsulate(&sk, &decoded.addons.kyber_ct) {
+            Ok(_) => info!(
+                "{peer} Kyber session established (ML-KEM-512, ss={} bytes)",
+                wrongsv_kyber::SS_SIZE
+            ),
+            Err(e) => warn!("{peer} Kyber decapsulation failed: {e}"),
+        }
+    } else {
+        debug!("{peer} client sent kyber_ct but server has no kyber_secret_key configured");
+    }
+}
+
+fn validate_vless_command(
+    request: &RequestHeader,
+    use_vision: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if request.command == RequestCommand::Udp && use_vision {
+        return Err("XTLS Vision does not support UDP".into());
+    }
+    Ok(())
+}
+
+fn response_header_buf(request: &RequestHeader) -> Result<bytes::BytesMut, EncodeError> {
+    let response_addons = Addons {
+        flow: String::new(),
+        ..Default::default()
+    };
+    let mut resp_buf = bytes::BytesMut::new();
+    encoding::encode_response_header(&mut resp_buf, request, &response_addons)?;
+    Ok(resp_buf)
+}
+
 /// Complete a standard TLS 1.3 handshake and return an `AnyTlsStream` for VLESS.
 ///
 /// Unlike AnyTLS, there is no password auth — the TLS layer only provides
@@ -439,63 +533,19 @@ fn handle_tls_connection(
     let n = first.len();
     trace!("{peer} TLS read {n} bytes VLESS header");
 
-    if n < 18 {
-        debug!("{peer} connection too short ({n} bytes), dropping");
-        return Err("connection too short for VLESS header".into());
-    }
-
-    let (decoded, remaining_body) = {
-        let v = validator.clone();
-        let mut cursor = std::io::Cursor::new(first);
-        let decoded = encoding::decode_request_header(&mut cursor, move |id| v.get(id))?;
-        let pos = cursor.position() as usize;
-        let inner = cursor.into_inner();
-        let remaining = if pos < inner.len() {
-            inner[pos..].to_vec()
-        } else {
-            Vec::new()
-        };
-        (decoded, remaining)
-    };
-
+    let VlessRequest {
+        decoded,
+        remaining_body,
+        use_vision,
+    } = decode_vless_request(first, &validator, peer)?;
     let request = &decoded.header;
     let account = &request.user.account;
 
-    info!(
-        "{} {} {} -> {}:{}",
-        peer,
-        if request.command == RequestCommand::Tcp {
-            "TCP"
-        } else {
-            "UDP"
-        },
-        request.user.email,
-        request.address,
-        request.port,
-    );
+    log_vless_request(peer, request);
+    handle_kyber_addons(peer, &decoded, kyber_sk);
+    validate_vless_command(request, use_vision)?;
 
-    let use_vision = decoded.addons.flow == XRV && account.flow == XRV;
-
-    if !decoded.addons.kyber_ct.is_empty()
-        && let Some(sk) = kyber_sk
-    {
-        match wrongsv_kyber::decapsulate(&sk, &decoded.addons.kyber_ct) {
-            Ok(_) => info!("{peer} Kyber session established"),
-            Err(e) => warn!("{peer} Kyber decapsulation failed: {e}"),
-        }
-    }
-
-    if request.command == RequestCommand::Udp && use_vision {
-        return Err("XTLS Vision does not support UDP".into());
-    }
-
-    // Send response header
-    let response_addons = Addons {
-        flow: String::new(),
-        ..Default::default()
-    };
-    let mut resp_buf = bytes::BytesMut::new();
-    encoding::encode_response_header(&mut resp_buf, request, &response_addons)?;
+    let resp_buf = response_header_buf(request)?;
     read_conn.writer().write_all(&resp_buf)?;
     while read_conn.wants_write() {
         read_conn.write_tls(write_conn)?;
@@ -575,68 +625,20 @@ fn handle_anytls_connection(
     let n = first.len();
     trace!("{peer} AnyTLS read {n} bytes VLESS header");
 
-    if n < 18 {
-        debug!("{peer} connection too short ({n} bytes), dropping");
-        return Err("connection too short for VLESS header".into());
-    }
-
-    let (read_conn, write_conn) = tls_stream.get_mut();
-
-    // Decode VLESS header
-    let (decoded, remaining_body) = {
-        let v = validator.clone();
-        let mut cursor = std::io::Cursor::new(first);
-        let decoded = encoding::decode_request_header(&mut cursor, move |id| v.get(id))?;
-        let pos = cursor.position() as usize;
-        let inner = cursor.into_inner();
-        let remaining = if pos < inner.len() {
-            inner[pos..].to_vec()
-        } else {
-            Vec::new()
-        };
-        (decoded, remaining)
-    };
-
+    let VlessRequest {
+        decoded,
+        remaining_body,
+        use_vision,
+    } = decode_vless_request(first, &validator, peer)?;
     let request = &decoded.header;
     let account = &request.user.account;
 
-    info!(
-        "{} {} {} -> {}:{}",
-        peer,
-        if request.command == RequestCommand::Tcp {
-            "TCP"
-        } else {
-            "UDP"
-        },
-        request.user.email,
-        request.address,
-        request.port,
-    );
+    log_vless_request(peer, request);
+    handle_kyber_addons(peer, &decoded, kyber_sk);
+    validate_vless_command(request, use_vision)?;
 
-    let use_vision = decoded.addons.flow == XRV && account.flow == XRV;
-
-    // Kyber decapsulation
-    if !decoded.addons.kyber_ct.is_empty()
-        && let Some(sk) = kyber_sk
-    {
-        match wrongsv_kyber::decapsulate(&sk, &decoded.addons.kyber_ct) {
-            Ok(_) => info!("{peer} Kyber session established"),
-            Err(e) => warn!("{peer} Kyber decapsulation failed: {e}"),
-        }
-    }
-
-    // UDP+Vision is unsupported
-    if request.command == RequestCommand::Udp && use_vision {
-        return Err("XTLS Vision does not support UDP".into());
-    }
-
-    // Send response header
-    let response_addons = Addons {
-        flow: String::new(),
-        ..Default::default()
-    };
-    let mut resp_buf = bytes::BytesMut::new();
-    encoding::encode_response_header(&mut resp_buf, request, &response_addons)?;
+    let resp_buf = response_header_buf(request)?;
+    let (read_conn, write_conn) = tls_stream.get_mut();
     read_conn.writer().write_all(&resp_buf)?;
     while read_conn.wants_write() {
         read_conn.write_tls(write_conn)?;
@@ -787,21 +789,11 @@ fn handle_sing_stream_vless(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let sid = stream.id;
 
-    // Decode VLESS header from first PSH data
-    let (decoded, remaining_body) = {
-        let v = validator.clone();
-        let mut cursor = std::io::Cursor::new(first_data);
-        let decoded = encoding::decode_request_header(&mut cursor, move |id| v.get(id))?;
-        let pos = cursor.position() as usize;
-        let inner = cursor.into_inner();
-        let remaining = if pos < inner.len() {
-            inner[pos..].to_vec()
-        } else {
-            Vec::new()
-        };
-        (decoded, remaining)
-    };
-
+    let VlessRequest {
+        decoded,
+        remaining_body,
+        use_vision,
+    } = decode_vless_request(first_data, &validator, peer)?;
     let request = &decoded.header;
     let account = &request.user.account;
 
@@ -817,16 +809,7 @@ fn handle_sing_stream_vless(
         request.port,
     );
 
-    let use_vision = decoded.addons.flow == XRV && account.flow == XRV;
-
-    if !decoded.addons.kyber_ct.is_empty()
-        && let Some(sk) = kyber_sk
-    {
-        match wrongsv_kyber::decapsulate(&sk, &decoded.addons.kyber_ct) {
-            Ok(_) => info!("{peer} sing-anytls Kyber session established"),
-            Err(e) => warn!("{peer} sing-anytls Kyber decapsulation failed: {e}"),
-        }
-    }
+    handle_kyber_addons(peer, &decoded, kyber_sk);
 
     if request.command == RequestCommand::Udp && use_vision {
         writer.send_synack_error(sid, "Vision does not support UDP")?;
@@ -834,12 +817,7 @@ fn handle_sing_stream_vless(
     }
 
     // Send VLESS response header via PSH
-    let response_addons = Addons {
-        flow: String::new(),
-        ..Default::default()
-    };
-    let mut resp_buf = bytes::BytesMut::new();
-    encoding::encode_response_header(&mut resp_buf, request, &response_addons)?;
+    let resp_buf = response_header_buf(request)?;
 
     writer.send_synack(sid)?;
     if !resp_buf.is_empty() {
@@ -1073,85 +1051,24 @@ fn handle_connection(
     first.truncate(n);
     trace!("{peer} read {n} bytes");
 
-    if n < 18 {
-        debug!("{peer} connection too short ({n} bytes), dropping");
-        return Err("connection too short for VLESS header".into());
-    }
-
-    // Decode the VLESS request header, capturing any remaining body bytes
-    let (decoded, remaining_body) = {
-        let v = validator.clone();
-        let mut cursor = std::io::Cursor::new(first);
-        let decoded = encoding::decode_request_header(&mut cursor, move |id| v.get(id))?;
-        let pos = cursor.position() as usize;
-        let inner = cursor.into_inner();
-        let remaining = if pos < inner.len() {
-            inner[pos..].to_vec()
-        } else {
-            Vec::new()
-        };
-        (decoded, remaining)
-    };
+    let VlessRequest {
+        decoded,
+        remaining_body,
+        use_vision,
+    } = decode_vless_request(first, &validator, peer)?;
 
     let request = &decoded.header;
     let account = &request.user.account;
 
-    info!(
-        "{} {} {} -> {}:{}",
-        peer,
-        if request.command == RequestCommand::Tcp {
-            "TCP"
-        } else {
-            "UDP"
-        },
-        request.user.email,
-        request.address,
-        request.port,
-    );
-
-    // Check flow
-    let use_vision = decoded.addons.flow == XRV && account.flow == XRV;
+    log_vless_request(peer, request);
     trace!(
         "{peer} flow={} use_vision={use_vision}",
         decoded.addons.flow
     );
+    handle_kyber_addons(peer, &decoded, kyber_sk);
+    validate_vless_command(request, use_vision)?;
 
-    // Kyber session-key decapsulation
-    if !decoded.addons.kyber_ct.is_empty() {
-        if let Some(sk) = kyber_sk {
-            match wrongsv_kyber::decapsulate(&sk, &decoded.addons.kyber_ct) {
-                Ok(_shared_secret) => {
-                    info!(
-                        "{} Kyber session established (ML-KEM-512, ss={} bytes)",
-                        peer,
-                        wrongsv_kyber::SS_SIZE,
-                    );
-                    // TODO: derive AeadKey from shared_secret, wrap streams in CommonConn
-                }
-                Err(e) => {
-                    warn!("{} Kyber decapsulation failed: {}", peer, e);
-                }
-            }
-        } else {
-            debug!(
-                "{} client sent kyber_ct but server has no kyber_secret_key configured",
-                peer
-            );
-        }
-    }
-
-    // UDP+Vision is unsupported (xray-core also rejects this combination)
-    if request.command == RequestCommand::Udp && use_vision {
-        return Err("XTLS Vision does not support UDP".into());
-    }
-
-    // Send response header
-    let response_addons = Addons {
-        flow: String::new(),
-        ..Default::default()
-    };
-    let mut resp_buf = bytes::BytesMut::new();
-    encoding::encode_response_header(&mut resp_buf, request, &response_addons)?;
+    let resp_buf = response_header_buf(request)?;
     stream.write_all(&resp_buf)?;
 
     // UDP relay
@@ -1258,79 +1175,24 @@ fn handle_reality_connection(
     let n = first.len();
     trace!("{peer} REALITY read {n} bytes VLESS header");
 
-    if n < 18 {
-        debug!("{peer} connection too short ({n} bytes), dropping");
-        return Err("connection too short for VLESS header".into());
-    }
-
-    // Decode VLESS header, capturing remaining body bytes
-    let (decoded, remaining_body) = {
-        let v = validator.clone();
-        let mut cursor = std::io::Cursor::new(first);
-        let decoded = encoding::decode_request_header(&mut cursor, move |id| v.get(id))?;
-        let pos = cursor.position() as usize;
-        let inner = cursor.into_inner();
-        let remaining = if pos < inner.len() {
-            inner[pos..].to_vec()
-        } else {
-            Vec::new()
-        };
-        (decoded, remaining)
-    };
+    let VlessRequest {
+        decoded,
+        remaining_body,
+        use_vision,
+    } = decode_vless_request(first, &validator, peer)?;
 
     let request = &decoded.header;
     let account = &request.user.account;
 
-    info!(
-        "{} {} {} -> {}:{}",
-        peer,
-        if request.command == RequestCommand::Tcp {
-            "TCP"
-        } else {
-            "UDP"
-        },
-        request.user.email,
-        request.address,
-        request.port,
-    );
-
-    let use_vision = decoded.addons.flow == XRV && account.flow == XRV;
+    log_vless_request(peer, request);
     trace!(
         "{peer} flow={} use_vision={use_vision}",
         decoded.addons.flow
     );
+    handle_kyber_addons(peer, &decoded, kyber_sk);
+    validate_vless_command(request, use_vision)?;
 
-    // Kyber decapsulation
-    if !decoded.addons.kyber_ct.is_empty() {
-        if let Some(sk) = kyber_sk {
-            match wrongsv_kyber::decapsulate(&sk, &decoded.addons.kyber_ct) {
-                Ok(_shared_secret) => {
-                    info!(
-                        "{peer} Kyber session established (ML-KEM-512, ss={} bytes)",
-                        wrongsv_kyber::SS_SIZE
-                    );
-                }
-                Err(e) => {
-                    warn!("{peer} Kyber decapsulation failed: {}", e);
-                }
-            }
-        } else {
-            debug!("{peer} client sent kyber_ct but server has no kyber_secret_key configured");
-        }
-    }
-
-    // UDP+Vision is unsupported
-    if request.command == RequestCommand::Udp && use_vision {
-        return Err("XTLS Vision does not support UDP".into());
-    }
-
-    // Send response header
-    let response_addons = Addons {
-        flow: String::new(),
-        ..Default::default()
-    };
-    let mut resp_buf = bytes::BytesMut::new();
-    encoding::encode_response_header(&mut resp_buf, request, &response_addons)?;
+    let resp_buf = response_header_buf(request)?;
     read_conn.writer().write_all(&resp_buf)?;
     // Flush TLS
     while read_conn.wants_write() {
@@ -2178,12 +2040,15 @@ fn relay_vision(
 mod tests {
     use super::*;
     use crate::config::{Config, UserConfig};
+    use wrongsv_net_types::{Address, Port};
+
+    const TEST_UUID: &str = "12345678-1234-1234-1234-123456789abc";
 
     fn test_config(listen: String) -> Config {
         Config {
             listen,
             users: vec![UserConfig {
-                id: "12345678-1234-1234-1234-123456789abc".into(),
+                id: TEST_UUID.into(),
                 email: "test@example.com".into(),
                 flow: String::new(),
                 encryption: String::new(),
@@ -2196,6 +2061,98 @@ mod tests {
             anytls: None,
             tls: None,
         }
+    }
+
+    fn test_user(flow: &str) -> MemoryUser {
+        let uuid = Uuid::parse_string(TEST_UUID).unwrap();
+        MemoryUser {
+            account: MemoryAccount {
+                id: ID::new(uuid),
+                flow: flow.into(),
+                encryption: String::new(),
+                udp: true,
+                xor_mode: 0,
+                seconds: 0,
+                padding: String::new(),
+                testpre: 0,
+                testseed: vec![],
+            },
+            email: "test@example.com".into(),
+            level: 0,
+        }
+    }
+
+    fn test_validator(user: MemoryUser) -> Arc<MemoryValidator> {
+        let validator = Arc::new(MemoryValidator::new());
+        validator.add(user).unwrap();
+        validator
+    }
+
+    fn test_request(user: MemoryUser, command: RequestCommand) -> RequestHeader {
+        RequestHeader {
+            version: 0,
+            command,
+            address: Address::parse("127.0.0.1"),
+            port: Port(8080),
+            user,
+        }
+    }
+
+    #[test]
+    fn decode_vless_request_preserves_body_and_detects_vision() {
+        let user = test_user(XRV);
+        let validator = test_validator(user.clone());
+        let request = test_request(user, RequestCommand::Tcp);
+        let addons = Addons {
+            flow: XRV.into(),
+            ..Default::default()
+        };
+        let body = b"pipelined-request-body";
+        let peer = "127.0.0.1:10000".parse().unwrap();
+
+        let mut first = bytes::BytesMut::new();
+        encoding::encode_request_header(&mut first, &request, &addons).unwrap();
+        first.extend_from_slice(body);
+
+        let decoded = decode_vless_request(first.to_vec(), &validator, peer).unwrap();
+
+        assert!(decoded.use_vision);
+        assert_eq!(decoded.remaining_body, body);
+        assert_eq!(decoded.decoded.header.command, RequestCommand::Tcp);
+        assert_eq!(decoded.decoded.header.user.email, request.user.email);
+    }
+
+    #[test]
+    fn decode_vless_request_rejects_short_headers() {
+        let validator = test_validator(test_user(""));
+        let peer = "127.0.0.1:10001".parse().unwrap();
+
+        let err = match decode_vless_request(vec![0; 17], &validator, peer) {
+            Ok(_) => panic!("short VLESS header decoded successfully"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.to_string(), "connection too short for VLESS header");
+    }
+
+    #[test]
+    fn validate_vless_command_rejects_udp_vision() {
+        let request = test_request(test_user(XRV), RequestCommand::Udp);
+
+        let err = validate_vless_command(&request, true).unwrap_err();
+
+        assert_eq!(err.to_string(), "XTLS Vision does not support UDP");
+    }
+
+    #[test]
+    fn response_header_buf_is_decode_compatible() {
+        let request = test_request(test_user(""), RequestCommand::Tcp);
+        let response = response_header_buf(&request).unwrap();
+        let mut cursor = std::io::Cursor::new(response.as_ref());
+
+        let addons = encoding::decode_response_header(&mut cursor, &request).unwrap();
+
+        assert!(addons.flow.is_empty());
     }
 
     #[test]
