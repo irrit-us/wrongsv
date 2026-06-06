@@ -1,0 +1,9 @@
+# Shadowsocks AEAD TCP inbound.
+# Compatible with Shadowsocks, Outline, GOST, sing-box, xray-core, and mihomo
+# clients that support AEAD Shadowsocks over TCP.
+
+listen = "0.0.0.0:8388"
+
+[shadowsocks]
+method = "chacha20-ietf-poly1305"
+password = "change-this-password"

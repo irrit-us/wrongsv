@@ -170,6 +170,13 @@ fn parse_tls_config(tc: &TlsServerConfig) -> Result<TlsConfig, String> {
     })
 }
 
+fn parse_shadowsocks_config(
+    sc: &crate::config::ShadowsocksServerConfig,
+) -> Result<wrongsv_shadowsocks::ServerConfig, String> {
+    wrongsv_shadowsocks::ServerConfig::new(&sc.method, sc.password.clone())
+        .map_err(|e| format!("shadowsocks: {e}"))
+}
+
 pub struct InboundServer {
     config: Config,
     validator: Arc<MemoryValidator>,
@@ -177,6 +184,7 @@ pub struct InboundServer {
     reality_config: Option<wrongsv_reality::RealityConfig>,
     anytls_config: Option<wrongsv_anytls::AnyTlsConfig>,
     tls_config: Option<TlsConfig>,
+    shadowsocks_config: Option<wrongsv_shadowsocks::ServerConfig>,
 }
 
 impl InboundServer {
@@ -198,6 +206,10 @@ impl InboundServer {
             Some(tc) => Some(parse_tls_config(tc)?),
             None => None,
         };
+        let shadowsocks_config = match &config.shadowsocks {
+            Some(sc) => Some(parse_shadowsocks_config(sc)?),
+            None => None,
+        };
         if let Some(ref rc) = reality_config {
             let rpk_hex: String = rc
                 .cert_material
@@ -212,6 +224,9 @@ impl InboundServer {
         }
         if tls_config.is_some() {
             info!("TLS enabled");
+        }
+        if let Some(ref sc) = shadowsocks_config {
+            info!("Shadowsocks enabled ({})", sc.method.name());
         }
         let validator = Arc::new(MemoryValidator::new());
         for user in &config.users {
@@ -245,6 +260,7 @@ impl InboundServer {
             reality_config,
             anytls_config,
             tls_config,
+            shadowsocks_config,
         })
     }
 
@@ -287,13 +303,22 @@ impl InboundServer {
         shutdown: ShutdownSignal,
     ) -> Result<(), Box<dyn std::error::Error>> {
         listener.set_nonblocking(true)?;
-        info!("VLESS server listening on {}", self.config.listen);
+        let listener_protocol = if self.shadowsocks_config.is_some() {
+            "Shadowsocks"
+        } else {
+            "VLESS"
+        };
+        info!(
+            "{listener_protocol} server listening on {}",
+            self.config.listen
+        );
 
         let validator = Arc::clone(&self.validator);
         let kyber_sk = self.kyber_sk;
         let reality_config = self.reality_config.clone();
         let anytls_config = self.anytls_config.clone();
         let tls_config = self.tls_config.clone();
+        let shadowsocks_config = self.shadowsocks_config.clone();
 
         loop {
             if shutdown.is_shutdown_requested() {
@@ -307,6 +332,7 @@ impl InboundServer {
                     let rc = reality_config.clone();
                     let ac = anytls_config.clone();
                     let tc = tls_config.clone();
+                    let sc = shadowsocks_config.clone();
                     thread::spawn(move || {
                         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                             if let Some(ref rc) = rc {
@@ -315,6 +341,8 @@ impl InboundServer {
                                 handle_anytls_connection(stream, v, kyber_sk, ac)
                             } else if let Some(ref tc) = tc {
                                 handle_tls_connection(stream, v, kyber_sk, tc)
+                            } else if let Some(ref sc) = sc {
+                                handle_shadowsocks_connection(stream, sc)
                             } else {
                                 handle_connection(stream, v, kyber_sk)
                             }
@@ -1033,6 +1061,102 @@ fn relay_sing_udp(
     // UDP over sing-anytls streams is not yet implemented.
     // Signal to the client that we can't handle this.
     let _ = writer.send_fin(_stream.id);
+    Ok(())
+}
+
+fn handle_shadowsocks_connection(
+    stream: TcpStream,
+    config: &wrongsv_shadowsocks::ServerConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let peer = stream.peer_addr()?;
+    trace!("{peer} Shadowsocks connection");
+
+    let read_stream = stream.try_clone()?;
+    let mut reader = wrongsv_shadowsocks::ShadowsocksReader::new(read_stream, config)?;
+    let first = reader.read_chunk()?;
+    let (address, port, consumed) = wrongsv_shadowsocks::parse_request_header(&first)?;
+    let remaining = if consumed < first.len() {
+        first[consumed..].to_vec()
+    } else {
+        Vec::new()
+    };
+
+    let target_addr = format!("{address}:{port}");
+    info!("{peer} Shadowsocks TCP -> {target_addr}");
+    let target = TcpStream::connect(&target_addr)?;
+    target.set_nodelay(true)?;
+    target.set_read_timeout(Some(Duration::from_secs(2)))?;
+
+    relay_shadowsocks(reader, stream, target, config.clone(), remaining)?;
+    debug!("{peer} Shadowsocks relay finished");
+    Ok(())
+}
+
+fn relay_shadowsocks(
+    mut reader: wrongsv_shadowsocks::ShadowsocksReader<TcpStream>,
+    client_writer: TcpStream,
+    target: TcpStream,
+    config: wrongsv_shadowsocks::ServerConfig,
+    initial_data: Vec<u8>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut target_writer = target.try_clone()?;
+    let mut target_reader = target;
+    let mut writer = wrongsv_shadowsocks::ShadowsocksWriter::new(client_writer, &config)?;
+
+    if !initial_data.is_empty() {
+        target_writer.write_all(&initial_data)?;
+    }
+
+    let t1 = thread::spawn(move || {
+        loop {
+            match reader.read_chunk() {
+                Ok(data) if data.is_empty() => continue,
+                Ok(data) => {
+                    if target_writer.write_all(&data).is_err() {
+                        break;
+                    }
+                }
+                Err(wrongsv_shadowsocks::ShadowsocksError::Io(e))
+                    if e.kind() == std::io::ErrorKind::UnexpectedEof =>
+                {
+                    break;
+                }
+                Err(e) => {
+                    debug!("Shadowsocks client read: {e}");
+                    break;
+                }
+            }
+        }
+        let _ = target_writer.shutdown(Shutdown::Write);
+    });
+
+    let t2 = thread::spawn(move || {
+        let mut buf = [0u8; 32768];
+        loop {
+            match target_reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if writer.write_chunk(&buf[..n]).is_err() {
+                        break;
+                    }
+                    let _ = target_reader.set_read_timeout(Some(Duration::from_millis(10)));
+                }
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::TimedOut =>
+                {
+                    let _ = target_reader.set_read_timeout(Some(Duration::from_secs(2)));
+                }
+                Err(e) => {
+                    debug!("Shadowsocks target read: {e}");
+                    break;
+                }
+            }
+        }
+    });
+
+    t1.join().ok();
+    t2.join().ok();
     Ok(())
 }
 
@@ -2060,6 +2184,7 @@ mod tests {
             reality: None,
             anytls: None,
             tls: None,
+            shadowsocks: None,
         }
     }
 

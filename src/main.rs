@@ -142,6 +142,7 @@ fn build_default_config() -> Config {
         reality: None,
         anytls: None,
         tls: None,
+        shadowsocks: None,
     }
 }
 

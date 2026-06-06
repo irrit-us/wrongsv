@@ -29,6 +29,10 @@ pub struct Config {
     /// (sing-box, mihomo/flclash, xray-core).
     #[serde(default)]
     pub tls: Option<TlsServerConfig>,
+    /// Shadowsocks AEAD TCP inbound configuration. When set, this listener
+    /// accepts Shadowsocks instead of VLESS.
+    #[serde(default)]
+    pub shadowsocks: Option<ShadowsocksServerConfig>,
 }
 
 /// REALITY server-side configuration.
@@ -87,6 +91,16 @@ pub struct TlsServerConfig {
     pub dest: Option<String>,
 }
 
+/// Shadowsocks server-side configuration.
+///
+/// Supports TCP relay with AEAD methods shared by Shadowsocks, Outline,
+/// sing-box, xray-core, mihomo, and GOST clients.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ShadowsocksServerConfig {
+    pub method: String,
+    pub password: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct UserConfig {
     /// UUID string
@@ -115,6 +129,12 @@ pub enum ConfigError {
     InvalidUuid(String, String),
     #[error("unknown flow '{0}' for user '{1}'")]
     UnknownFlow(String, String),
+    #[error("unsupported Shadowsocks method '{0}'")]
+    UnsupportedShadowsocksMethod(String),
+    #[error("Shadowsocks inbound cannot be combined with VLESS users")]
+    ShadowsocksWithVlessUsers,
+    #[error("Shadowsocks inbound cannot be combined with VLESS transport layers")]
+    ShadowsocksWithVlessTransport,
 }
 
 impl Config {
@@ -131,6 +151,17 @@ impl Config {
                     user.email.clone(),
                 ));
             }
+        }
+        if let Some(shadowsocks) = &self.shadowsocks {
+            if !self.users.is_empty() {
+                return Err(ConfigError::ShadowsocksWithVlessUsers);
+            }
+            if self.reality.is_some() || self.anytls.is_some() || self.tls.is_some() {
+                return Err(ConfigError::ShadowsocksWithVlessTransport);
+            }
+            wrongsv_shadowsocks::Method::parse(&shadowsocks.method).map_err(|_| {
+                ConfigError::UnsupportedShadowsocksMethod(shadowsocks.method.clone())
+            })?;
         }
         Ok(())
     }
@@ -174,6 +205,7 @@ flow = "xtls-rprx-vision"
             reality: None,
             anytls: None,
             tls: None,
+            shadowsocks: None,
         };
         assert!(config.validate().is_err());
     }
@@ -195,7 +227,61 @@ flow = "xtls-rprx-vision"
             reality: None,
             anytls: None,
             tls: None,
+            shadowsocks: None,
         };
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_parse_shadowsocks_config() {
+        let toml = r#"
+listen = "0.0.0.0:8388"
+
+[shadowsocks]
+method = "chacha20-ietf-poly1305"
+password = "secret"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        let shadowsocks = config.shadowsocks.unwrap();
+        assert_eq!(shadowsocks.method, "chacha20-ietf-poly1305");
+        assert_eq!(shadowsocks.password, "secret");
+    }
+
+    #[test]
+    fn test_shadowsocks_rejects_vless_users() {
+        let toml = r#"
+listen = "0.0.0.0:8388"
+
+[shadowsocks]
+method = "chacha20-ietf-poly1305"
+password = "secret"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::ShadowsocksWithVlessUsers)
+        ));
+    }
+
+    #[test]
+    fn test_shadowsocks_rejects_vless_transport() {
+        let toml = r#"
+listen = "0.0.0.0:8388"
+
+[shadowsocks]
+method = "chacha20-ietf-poly1305"
+password = "secret"
+
+[tls]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::ShadowsocksWithVlessTransport)
+        ));
     }
 }

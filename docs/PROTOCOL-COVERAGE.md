@@ -1,0 +1,38 @@
+# Protocol Coverage
+
+This matrix tracks protocol support researched from upstream project
+documentation and maps it to wrongsv implementation status.
+
+## Implemented
+
+| Protocol | wrongsv status | Upstream overlap |
+| --- | --- | --- |
+| VLESS raw TCP | Implemented | xray, sing-box, mihomo |
+| VLESS + TLS | Implemented | xray, sing-box, mihomo |
+| VLESS + REALITY | Implemented | xray, sing-box, mihomo |
+| XTLS Vision | Implemented for TCP | xray, sing-box, mihomo |
+| VLESS UDP packet relay | Implemented for non-Vision flows | xray, sing-box, mihomo |
+| AnyTLS | Implemented, including sing-anytls stream mode | sing-box |
+| Shadowsocks AEAD TCP | Implemented for `aes-128-gcm`, `aes-256-gcm`, `chacha20-ietf-poly1305` | Shadowsocks, Outline, GOST, sing-box, xray, mihomo |
+
+## Research Notes
+
+| Project | Documented support | wrongsv coverage | Next practical gaps |
+| --- | --- | --- | --- |
+| GOST | Separates proxy protocols from channel protocols. Proxy protocols include HTTP, HTTP/2, SOCKS4/4A, SOCKS5, Shadowsocks, Shadowsocks UDP relay, SNI, and relay. Channels include raw TCP/UDP, TLS/DTLS, WebSocket/WSS, HTTP/2/H2C, gRPC, KCP, QUIC, HTTP/3, and WebTransport. Source: https://latest.gost.run/en/tutorials/protocols/overview/ | Shadowsocks AEAD TCP now covers the highest-overlap GOST protocol family. | HTTP CONNECT, SOCKS5, Shadowsocks UDP, WebSocket/TLS carrier modes. |
+| Shadowsocks | AEAD TCP starts with a random salt, then encrypted length and payload chunks; payload length is a 2-byte big-endian value capped at `0x3fff`. Recommended AEAD methods include ChaCha20-Poly1305 and AES-GCM. Source: https://shadowsocks.org/doc/aead.html | AEAD TCP chunking and address headers implemented. | UDP AEAD packets, AEAD-2022, SIP003 plugins. |
+| Outline | Outline access keys are Shadowsocks-based and support optional TCP/UDP prefixes at the start of the salt for disguises. Source: https://developer.getoutline.org/vpn/advanced/prefixing/ | Standard Shadowsocks AEAD TCP works without prefixes. | Prefix-compatible salt generation/parsing and UDP support. |
+| SoftEther | Supports SoftEther VPN over HTTPS, OpenVPN, L2TP/IPsec, MS-SSTP, L2TPv3/IPsec, and EtherIP/IPsec. Source: https://www.softether.org/spec | No direct coverage; these are L2/L3 VPN protocols rather than stream proxy protocols. | Only consider SSTP/OpenVPN if wrongsv expands into VPN tunneling. |
+| mihomo | VLESS supports REALITY, Vision flow, TCP transport, and packet encodings such as `packetaddr`/`xudp`; Shadowsocks supports AEAD and 2022 methods. Sources: https://wiki.metacubex.one/en/config/proxies/vless/ and https://wiki.metacubex.one/en/config/proxies/ss/ | VLESS + REALITY + Vision lifecycle tests exist; Shadowsocks AEAD TCP added. | xudp/packetaddr UDP encodings, Shadowsocks UDP/2022. |
+| xray-core | Inbound protocols include HTTP, Shadowsocks, SOCKS, Trojan, VLESS, VMess, WireGuard, Hysteria, and TUN. Transports include raw, XHTTP, mKCP, gRPC, WebSocket, HTTPUpgrade, Hysteria; security includes TLS and REALITY. Sources: https://xtls.github.io/en/config/inbounds/ and https://xtls.github.io/en/config/transports/ | VLESS + REALITY + Vision lifecycle tests exist; Shadowsocks AEAD TCP added. | WebSocket/gRPC/XHTTP carriers, Trojan, VMess, Shadowsocks UDP. |
+| sing-box | Inbounds include mixed, SOCKS, HTTP, Shadowsocks, VMess, Trojan, Naive, Hysteria, ShadowTLS, VLESS, TUIC, Hysteria2, AnyTLS, tun, redirect, and tproxy. Shadowsocks inbound lists AEAD 2022 and classic AEAD methods. Sources: https://sing-box.sagernet.org/configuration/inbound/ and https://sing-box.sagernet.org/configuration/inbound/shadowsocks/ | VLESS + REALITY lifecycle tests, AnyTLS/sing-anytls tests, Shadowsocks AEAD TCP added. | Shadowsocks UDP/2022, Trojan, VMess, HTTP/SOCKS inbounds, Hysteria2/TUIC. |
+
+## Priority
+
+1. Shadowsocks UDP and Outline prefix handling.
+2. HTTP CONNECT and SOCKS5 plain inbound support.
+3. Trojan over TLS.
+4. VLESS WebSocket/gRPC/XHTTP carriers.
+5. Shadowsocks AEAD-2022.
+6. VMess, Hysteria2, TUIC, ShadowTLS.
+7. SoftEther/OpenVPN/SSTP only if the project scope expands from proxy relay to VPN tunneling.

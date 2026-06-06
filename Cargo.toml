@@ -16,6 +16,7 @@ members = [
     "crates/kyber",
     "crates/reality",
     "crates/anytls",
+    "crates/shadowsocks",
 ]
 
 [workspace.package]
@@ -34,6 +35,7 @@ wrongsv-server = { path = "crates/server" }
 wrongsv-kyber = { path = "crates/kyber" }
 wrongsv-reality = { path = "crates/reality" }
 wrongsv-anytls = { path = "crates/anytls" }
+wrongsv-shadowsocks = { path = "crates/shadowsocks" }
 
 bytes = "1"
 thiserror = "2"
@@ -44,6 +46,8 @@ rand = "0.8"
 blake3 = "1"
 aes-gcm = "0.10"
 chacha20poly1305 = "0.10"
+hkdf = "0.12"
+sha1 = "0.10"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
@@ -77,6 +81,7 @@ wrongsv-server.workspace = true
 wrongsv-kyber.workspace = true
 wrongsv-reality.workspace = true
 wrongsv-anytls.workspace = true
+wrongsv-shadowsocks.workspace = true
 bytes.workspace = true
 rand.workspace = true
 tracing.workspace = true

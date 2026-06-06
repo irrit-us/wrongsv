@@ -11,6 +11,7 @@ wrongsv-encryption.workspace = true
 wrongsv-kyber.workspace = true
 wrongsv-reality.workspace = true
 wrongsv-anytls.workspace = true
+wrongsv-shadowsocks.workspace = true
 rustls = { version = "0.23", default-features = false, features = ["tls12", "std", "aws_lc_rs"] }
 wrongsv-net-types.workspace = true
 wrongsv-uuid.workspace = true

@@ -13,6 +13,7 @@ cargo fmt --all -- --check                    # verify formatting
 ```bash
 cargo test -p wrongsv-reality
 cargo test -p wrongsv-anytls
+cargo test -p wrongsv-shadowsocks
 cargo test -p wrongsv-kyber
 cargo test -p wrongsv-vless
 cargo test -p wrongsv-vless-encoding
@@ -34,6 +35,9 @@ cargo test --test integration -- --nocapture
 
 # Run a specific test
 cargo test --test integration test_reality_echo -- --nocapture
+
+# Shadowsocks AEAD TCP relay
+cargo test --test shadowsocks_tests
 ```
 
 ## Vision relay tests

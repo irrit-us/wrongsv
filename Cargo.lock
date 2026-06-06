@@ -1533,6 +1533,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha1"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3bf829a2d51ab4a5ddf1352d8470c140cadc8301b2ae1789db023f01cedd6ba"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "digest 0.10.7",
+]
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2199,6 +2210,7 @@ dependencies = [
  "wrongsv-protocol",
  "wrongsv-reality",
  "wrongsv-server",
+ "wrongsv-shadowsocks",
  "wrongsv-uuid",
  "wrongsv-vless",
  "wrongsv-vless-encoding",
@@ -2291,9 +2303,24 @@ dependencies = [
  "wrongsv-net-types",
  "wrongsv-protocol",
  "wrongsv-reality",
+ "wrongsv-shadowsocks",
  "wrongsv-uuid",
  "wrongsv-vless",
  "wrongsv-vless-encoding",
+]
+
+[[package]]
+name = "wrongsv-shadowsocks"
+version = "0.2.4"
+dependencies = [
+ "aes-gcm",
+ "chacha20poly1305",
+ "hkdf",
+ "md-5",
+ "rand",
+ "sha1",
+ "thiserror",
+ "wrongsv-net-types",
 ]
 
 [[package]]

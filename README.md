@@ -13,12 +13,13 @@
   <img src="https://img.shields.io/badge/TLS-REALITY%201.3-brightgreen?style=for-the-badge" alt="TLS: REALITY 1.3">
   <img src="https://img.shields.io/badge/TLS-AnyTLS-7c91db?style=for-the-badge" alt="TLS: AnyTLS">
   <img src="https://img.shields.io/badge/TLS-Plain%201.3-8787af?style=for-the-badge" alt="TLS: Plain 1.3">
+  <img src="https://img.shields.io/badge/protocol-Shadowsocks%20AEAD-2b8a3e?style=for-the-badge" alt="Protocol: Shadowsocks AEAD">
   <img src="https://img.shields.io/badge/KEM-ML--KEM--512-darkslateblue?style=for-the-badge" alt="KEM: ML-KEM-512">
 </p>
 
 ---
 
-A minimal, high-performance VLESS proxy server with XTLS Vision flow, REALITY / AnyTLS / plain TLS transport layers, and NIST ML-KEM post-quantum key encapsulation.
+A minimal, high-performance proxy server with VLESS, XTLS Vision flow, REALITY / AnyTLS / plain TLS transport layers, Shadowsocks AEAD TCP inbound, and NIST ML-KEM post-quantum key encapsulation.
 
 ## Architecture
 
@@ -27,6 +28,7 @@ wrongsv (binary)
 ├── server          — inbound handler, config, connection relay
 ├── reality         — REALITY TLS 1.3 authentication with spider fallback
 ├── anytls          — AnyTLS TLS disguise with SHA-256 password auth + fallback
+├── shadowsocks     — Shadowsocks AEAD TCP codec and relay
 ├── vless           — user validator, XTLS Vision padding/unpadding
 ├── vless-encoding  — VLESS header codec, addons protobuf, body framing
 ├── encryption      — AEAD (AES-256-GCM / ChaCha20-Poly1305)
@@ -39,6 +41,7 @@ wrongsv (binary)
 ## Features
 
 - **VLESS** — stateless proxy with UUID authentication and extensible addons
+- **Shadowsocks AEAD TCP** — `aes-128-gcm`, `aes-256-gcm`, `chacha20-ietf-poly1305`
 - **REALITY** — TLS 1.3 handshake hijacking, X25519 ECDH auth, dynamic certs, spider fallback
 - **AnyTLS** — TLS 1.3 + SHA-256 password auth with configurable padding
 - **Plain TLS** — Standard TLS 1.3, compatible with sing-box/mihomo/xray-core `tls` transport
@@ -70,6 +73,7 @@ Pick an example from [`configs/`](configs/):
 | [`tls-tcp.toml`](configs/tls-tcp.toml) | Plain TLS | none | TLS encryption, no Vision |
 | [`basic-tcp.toml`](configs/basic-tcp.toml) | raw TCP | none | Simplest setup |
 | [`kyber-vision.toml`](configs/kyber-vision.toml) | raw TCP | Vision | Post-quantum KEM |
+| [`shadowsocks-aead.toml`](configs/shadowsocks-aead.toml) | Shadowsocks AEAD | n/a | TCP relay for Shadowsocks-compatible clients |
 
 Or create a minimal config:
 
@@ -122,6 +126,7 @@ manual proxy testing procedures.
 - **mihomo / FlClash** — REALITY+Vision and TLS+uTLS full proxy cycle verified
 - **REALITY spider fallback** — unauthenticated probes forwarded to `dest`
 - **AnyTLS echo, Vision, UDP, fallback** — all verified end-to-end
+- **Shadowsocks AEAD TCP** — local echo relay coverage for `chacha20-ietf-poly1305`; codec unit coverage for AES-128-GCM, AES-256-GCM, and ChaCha20-Poly1305
 - **Concurrent connections** — 6+ simultaneous REALITY connections, 30 rapid-fire requests, 5×1MB concurrent downloads
 
 ## License
