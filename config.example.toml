@@ -2,6 +2,7 @@
 # For VLESS transports, `listen` and at least one `users[].id` are required.
 # For Shadowsocks, configure `[shadowsocks]` instead of `users`.
 # For SOCKS4/4A/SOCKS5/HTTP proxy, configure `[mixed]` instead of `users`.
+# For Trojan over TLS, configure `[trojan]` instead of `users`.
 
 listen = "0.0.0.0:443"
 
@@ -19,6 +20,7 @@ listen = "0.0.0.0:443"
 #   [tls]      — Plain TLS 1.3, compatible with sing-box/mihomo TLS transport
 #   [shadowsocks] — Shadowsocks AEAD TCP inbound
 #   [mixed]   — SOCKS4/4A + SOCKS5 CONNECT + HTTP forward/CONNECT inbound
+#   [trojan]  — Trojan over TLS TCP inbound
 
 # ── REALITY example ────────────────────────────────────────────────────────────
 # [reality]
@@ -63,6 +65,21 @@ listen = "0.0.0.0:443"
 # [mixed]
 # username = "admin"
 # password = "your-secure-password"
+
+# ── Trojan over TLS TCP example ────────────────────────────────────────────────
+# Use this instead of users/VLESS transports for a Trojan listener.
+# Custom cert/key are recommended for public deployments; an ECDSA P-256
+# self-signed certificate is generated if omitted.
+# [trojan]
+# password = "your-secure-password"
+# dest = "127.0.0.1:8080"
+# certificate = """-----BEGIN CERTIFICATE-----..."""
+# key = """-----BEGIN PRIVATE KEY-----..."""
+#
+# Multi-user form:
+# [[trojan.users]]
+# password = "another-secure-password"
+# email = "user@example.com"
 
 [[users]]
 id = "00000000-0000-0000-0000-000000000000"

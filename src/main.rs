@@ -144,6 +144,7 @@ fn build_default_config() -> Config {
         tls: None,
         shadowsocks: None,
         mixed: None,
+        trojan: None,
     }
 }
 

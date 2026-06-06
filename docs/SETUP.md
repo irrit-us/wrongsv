@@ -58,6 +58,9 @@ The server reads a TOML config file passed via `--config`. Pre-built examples ar
 | `anytls-fallback.toml` | AnyTLS | Vision | With fallback destination |
 | `kyber-vision.toml` | raw TCP | Vision | Post-quantum key exchange |
 | `anytls-custom.toml` | AnyTLS | Vision | Custom TLS cert + padding |
+| `shadowsocks-aead.toml` | Shadowsocks AEAD | n/a | TCP/UDP relay |
+| `mixed-proxy.toml` | SOCKS4/4A, SOCKS5, HTTP | n/a | Local/LAN mixed proxy |
+| `trojan-tls.toml` | Trojan over TLS | n/a | TCP relay with fallback |
 
 ### Minimal config
 
@@ -154,7 +157,7 @@ SHA256(password)[32 bytes] || padding_len(u16 BE)[2 bytes] || random_padding[N b
 
 If the hash matches, the connection proceeds to VLESS relay. Otherwise it is forwarded to the fallback destination (if configured) or closed.
 
-**Note:** REALITY and AnyTLS are mutually exclusive — configure one, not both. Plain TLS is also mutually exclusive with REALITY and AnyTLS.
+**Note:** REALITY, AnyTLS, plain TLS, Shadowsocks, mixed proxy, and Trojan are mutually exclusive listener modes — configure one inbound mode per server process.
 
 ### Plain TLS configuration
 
@@ -181,6 +184,50 @@ Add a `[tls]` section:
 **Client compatibility:** sing-box uses nested `tls.enabled`, `tls.server_name`, `tls.utls.fingerprint`. Mihomo/FlClash uses flat `tls: true`, `servername`, `client-fingerprint`. The `--print-client-config` command with `--format sing-box` or `--format mihomo` generates the appropriate format.
 
 Use `--servername` to set the SNI (e.g., `cloudfront.net`) for DPI resistance. Enable uTLS Chrome fingerprint to mimic browser TLS behavior.
+
+### Shadowsocks configuration
+
+Shadowsocks provides a standalone AEAD TCP/UDP inbound for clients compatible with Shadowsocks, Outline, GOST, sing-box, xray-core, and mihomo.
+
+```toml
+[shadowsocks]
+method = "chacha20-ietf-poly1305"           # aes-128-gcm, aes-256-gcm, or chacha20-ietf-poly1305
+password = "your-secure-password"
+udp = true                                  # default true
+# tcp_prefix = "HTTP/1.1 "                  # optional Outline-style salt prefix
+# udp_prefix = "k{\u0001 "                  # optional Outline-style salt prefix
+```
+
+### Mixed proxy configuration
+
+Mixed proxy provides a plain local/LAN listener with SOCKS4/4A CONNECT, SOCKS5 CONNECT, HTTP absolute-form forwarding, and HTTP CONNECT.
+
+```toml
+[mixed]
+# Optional shared credentials for SOCKS5 username/password and HTTP Basic.
+# SOCKS4/4A has no password auth and is rejected when credentials are set.
+# username = "admin"
+# password = "your-secure-password"
+```
+
+### Trojan configuration
+
+Trojan provides a standalone TLS listener with SHA224 password authentication and SOCKS5-style TCP CONNECT destination headers.
+
+```toml
+[trojan]
+password = "your-secure-password"
+dest = "127.0.0.1:8080"                     # optional fallback for invalid post-TLS probes
+# certificate = """-----BEGIN CERTIFICATE-----..."""
+# key = """-----BEGIN PRIVATE KEY-----..."""
+
+# Multi-user form:
+# [[trojan.users]]
+# password = "another-secure-password"
+# email = "user@example.com"
+```
+
+Only TCP CONNECT is implemented for Trojan; UDP ASSOCIATE remains a tracked protocol gap.
 
 ### Post-quantum key exchange (ML-KEM-512)
 
@@ -218,14 +265,14 @@ udp = true                     # optional, enable UDP relay (default: true)
 flow = "xtls-rprx-vision"      # default flow for users who don't specify one
 kyber_secret_key = "..."       # ML-KEM-512 64-byte seed, hex-encoded (128 chars)
 
-# ── REALITY (mutually exclusive with AnyTLS) ──────────────────────────────────
+# ── REALITY (mutually exclusive with other listener modes) ────────────────────
 [reality]
 private_key = "..."            # X25519 32-byte hex (64 chars)
 short_ids = ["..."]            # allowed short IDs, 4-byte hex each (8 chars)
 max_time_diff = 300            # max clock skew in seconds
 dest = "host:port"             # spider fallback target
 
-# ── AnyTLS (mutually exclusive with REALITY and TLS) ──────────────────────────
+# ── AnyTLS (mutually exclusive with other listener modes) ─────────────────────
 [anytls]
 password = "..."               # SHA-256 auth password
 dest = "host:port"             # fallback for failed auth
@@ -235,11 +282,31 @@ dest = "host:port"             # fallback for failed auth
 # 0=30-30
 # 1=100-400"""
 
-# ── Plain TLS (mutually exclusive with REALITY and AnyTLS) ─────────────────────
+# ── Plain TLS (mutually exclusive with other listener modes) ──────────────────
 [tls]
 # certificate = """-----BEGIN CERTIFICATE-----..."""   # optional custom cert
 # key = """-----BEGIN PRIVATE KEY-----..."""           # optional custom key
 # dest = "host:port"                                   # optional fallback
+
+# ── Shadowsocks (instead of users/VLESS transports) ───────────────────────────
+[shadowsocks]
+method = "chacha20-ietf-poly1305"
+password = "..."
+udp = true
+# tcp_prefix = "HTTP/1.1 "
+# udp_prefix = "k{\u0001 "
+
+# ── Mixed proxy (instead of users/VLESS transports) ───────────────────────────
+[mixed]
+# username = "admin"
+# password = "..."
+
+# ── Trojan over TLS (instead of users/VLESS transports) ───────────────────────
+[trojan]
+password = "..."
+dest = "host:port"
+# certificate = """-----BEGIN CERTIFICATE-----..."""
+# key = """-----BEGIN PRIVATE KEY-----..."""
 ```
 
 ## Running the Server
@@ -338,6 +405,9 @@ wrongsv/
 │   ├── integration.rs           # end-to-end REALITY integration tests
 │   ├── vision_relay_tests.rs    # XTLS Vision relay tests
 │   ├── anytls_tests.rs          # AnyTLS protocol tests
+│   ├── shadowsocks_tests.rs     # Shadowsocks AEAD TCP/UDP tests
+│   ├── mixed_proxy_tests.rs     # SOCKS4/4A, SOCKS5, HTTP proxy tests
+│   ├── trojan_tests.rs          # Trojan TLS TCP tests
 │   ├── singbox_lifecycle.rs     # sing-box REALITY+VLESS lifecycle
 │   ├── mihomo_lifecycle.rs      # mihomo REALITY+VLESS lifecycle
 │   └── xray_lifecycle.rs        # xray-core REALITY+VLESS lifecycle
@@ -351,6 +421,7 @@ wrongsv/
     ├── kyber/                  # NIST ML-KEM-512 KEM
     ├── reality/                # REALITY TLS auth, dynamic cert, spider fallback
     ├── anytls/                 # AnyTLS TLS disguise, password auth, fallback
+    ├── shadowsocks/            # Shadowsocks AEAD codec and relay helpers
     └── server/                 # InboundServer, config, connection handler
 ```
 
@@ -371,3 +442,5 @@ wrongsv/
 **"TLS handshake failed"** — For REALITY, ensure the `private_key` is 32 bytes hex-encoded (64 chars). For AnyTLS, check that the TLS certificate is valid PEM if a custom one is provided.
 
 **"auth failed" (AnyTLS)** — Wrong password. Probes are forwarded to `anytls.dest` if configured.
+
+**"Trojan authentication failed"** — Wrong Trojan password. Invalid probes are forwarded to `trojan.dest` if configured.

@@ -16,6 +16,7 @@ documentation and maps it to wrongsv implementation status.
 | Shadowsocks AEAD TCP/UDP | Implemented for `aes-128-gcm`, `aes-256-gcm`, `chacha20-ietf-poly1305` | Shadowsocks, Outline, GOST, sing-box, xray, mihomo |
 | Outline-style Shadowsocks prefixes | Implemented for generated TCP and UDP response salts; prefixed client salts are accepted as ordinary Shadowsocks salts | Outline |
 | Mixed SOCKS4/4A / SOCKS5 / HTTP proxy | Implemented for SOCKS4/4A CONNECT, SOCKS5 CONNECT, HTTP absolute-form forwarding, and HTTP CONNECT. Optional shared credentials apply to SOCKS5/HTTP; SOCKS4/4A is rejected when credentials are set. | GOST, sing-box, xray, local client proxy protocols |
+| Trojan over TLS TCP | Implemented for TLS-wrapped TCP CONNECT, SHA224 password authentication, SOCKS5-style address headers, pipelined payload relay, and decrypted plaintext fallback for invalid post-TLS probes. | trojan-gfw, xray, sing-box, mihomo |
 
 ## Research Notes
 
@@ -26,8 +27,9 @@ documentation and maps it to wrongsv implementation status.
 | Outline | Outline access keys are Shadowsocks-based and support optional TCP/UDP prefixes at the start of the salt for disguises. Source: https://developer.getoutline.org/vpn/advanced/prefixing/ | Standard Shadowsocks AEAD TCP/UDP works without prefixes; optional generated TCP/UDP response prefixes are configurable. | WebSocket transport compatibility. |
 | SoftEther | Supports SoftEther VPN over HTTPS, OpenVPN, L2TP/IPsec, MS-SSTP, L2TPv3/IPsec, and EtherIP/IPsec. Source: https://www.softether.org/spec | No direct coverage; these are L2/L3 VPN protocols rather than stream proxy protocols. | Only consider SSTP/OpenVPN if wrongsv expands into VPN tunneling. |
 | mihomo | VLESS supports REALITY, Vision flow, TCP transport, and packet encodings such as `packetaddr`/`xudp`; Shadowsocks supports AEAD and 2022 methods. Sources: https://wiki.metacubex.one/en/config/proxies/vless/ and https://wiki.metacubex.one/en/config/proxies/ss/ | VLESS + REALITY + Vision lifecycle tests exist; Shadowsocks AEAD TCP/UDP added. | xudp/packetaddr UDP encodings, Shadowsocks 2022. |
-| xray-core | Inbound protocols include HTTP, Shadowsocks, SOCKS, Trojan, VLESS, VMess, WireGuard, Hysteria, and TUN. Transports include raw, XHTTP, mKCP, gRPC, WebSocket, HTTPUpgrade, Hysteria; security includes TLS and REALITY. Sources: https://xtls.github.io/en/config/inbounds/ and https://xtls.github.io/en/config/transports/ | VLESS + REALITY + Vision lifecycle tests exist; Shadowsocks AEAD TCP/UDP and mixed SOCKS4/4A/SOCKS5/HTTP proxy added. | WebSocket/gRPC/XHTTP carriers, Trojan, VMess. |
-| sing-box | Inbounds include mixed, SOCKS, HTTP, Shadowsocks, VMess, Trojan, Naive, Hysteria, ShadowTLS, VLESS, TUIC, Hysteria2, AnyTLS, tun, redirect, and tproxy. Shadowsocks inbound lists AEAD 2022 and classic AEAD methods. Sources: https://sing-box.sagernet.org/configuration/inbound/ and https://sing-box.sagernet.org/configuration/inbound/shadowsocks/ | VLESS + REALITY lifecycle tests, AnyTLS/sing-anytls tests, Shadowsocks AEAD TCP/UDP, and mixed SOCKS4/4A/SOCKS5/HTTP proxy added. | Shadowsocks 2022, Trojan, VMess, Hysteria2/TUIC. |
+| Trojan | The original protocol performs a real TLS handshake, then sends `hex(SHA224(password))`, CRLF, a SOCKS5-like request, CRLF, and optional pipelined payload. Valid TCP requests open a direct tunnel; invalid post-TLS traffic can be relayed to a fallback endpoint. Source: https://trojan-gfw.github.io/trojan/protocol | TLS-wrapped TCP CONNECT, multi-password auth, pipelined payload, and plaintext fallback are implemented. | UDP ASSOCIATE packet relay. |
+| xray-core | Inbound protocols include HTTP, Shadowsocks, SOCKS, Trojan, VLESS, VMess, WireGuard, Hysteria, and TUN. Transports include raw, XHTTP, mKCP, gRPC, WebSocket, HTTPUpgrade, Hysteria; security includes TLS and REALITY. Sources: https://xtls.github.io/en/config/inbounds/ and https://xtls.github.io/en/config/transports/ | VLESS + REALITY + Vision lifecycle tests exist; Shadowsocks AEAD TCP/UDP, mixed SOCKS4/4A/SOCKS5/HTTP proxy, and Trojan TLS TCP added. | WebSocket/gRPC/XHTTP carriers, VMess. |
+| sing-box | Inbounds include mixed, SOCKS, HTTP, Shadowsocks, VMess, Trojan, Naive, Hysteria, ShadowTLS, VLESS, TUIC, Hysteria2, AnyTLS, tun, redirect, and tproxy. Trojan inbound requires users and TLS; Shadowsocks inbound lists AEAD 2022 and classic AEAD methods. Sources: https://sing-box.sagernet.org/configuration/inbound/ and https://sing-box.sagernet.org/configuration/inbound/trojan/ and https://sing-box.sagernet.org/configuration/inbound/shadowsocks/ | VLESS + REALITY lifecycle tests, AnyTLS/sing-anytls tests, Shadowsocks AEAD TCP/UDP, mixed SOCKS4/4A/SOCKS5/HTTP proxy, and Trojan TLS TCP added. | Shadowsocks 2022, VMess, Hysteria2/TUIC. |
 
 ## Protocol Specs
 
@@ -37,11 +39,12 @@ documentation and maps it to wrongsv implementation status.
 - SOCKS4A domain signaling follows the current IETF SOCKS4A draft: https://www.ietf.org/archive/id/draft-vance-socks-v4a-02.html
 - HTTP CONNECT tunnel semantics follow RFC 9110: https://www.rfc-editor.org/rfc/rfc9110
 - HTTP/1.1 proxy absolute-form forwarding follows RFC 9112: https://www.rfc-editor.org/rfc/rfc9112.html
+- Trojan over TLS follows the original trojan-gfw protocol: https://trojan-gfw.github.io/trojan/protocol
 
 ## Priority
 
 1. Shadowsocks AEAD-2022.
-2. Trojan over TLS.
+2. Trojan UDP ASSOCIATE.
 3. VLESS WebSocket/gRPC/XHTTP carriers.
 4. QUIC/KCP/WebTransport carrier modes.
 5. VMess, Hysteria2, TUIC, ShadowTLS.

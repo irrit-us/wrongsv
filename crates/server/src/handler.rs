@@ -17,8 +17,10 @@ use wrongsv_vless_encoding::{
 
 use crate::config::{
     AnyTlsServerConfig, Config, MixedServerConfig, RealityServerConfig, TlsServerConfig,
+    TrojanServerConfig,
 };
 use crate::mixed_proxy::{self, MixedProtocol};
+use crate::trojan::{self, TrojanCommand};
 
 #[derive(Clone, Debug)]
 pub struct ShutdownSignal {
@@ -198,6 +200,33 @@ fn parse_mixed_config(mc: &MixedServerConfig) -> Result<mixed_proxy::MixedProxyC
         .map_err(|e| format!("mixed proxy: {e}"))
 }
 
+fn parse_trojan_config(tc: &TrojanServerConfig) -> Result<trojan::TrojanConfig, String> {
+    let (cert_pem, key_pem) = match (&tc.certificate, &tc.key) {
+        (Some(c), Some(k)) => (c.clone(), k.clone()),
+        _ => {
+            let (cert, key) = wrongsv_anytls::generate_self_signed_cert()
+                .map_err(|e| format!("trojan cert: {e}"))?;
+            (cert, key)
+        }
+    };
+    let tls_config = wrongsv_anytls::build_tls_config(&cert_pem, &key_pem)
+        .map_err(|e| format!("trojan tls: {e}"))?;
+
+    let mut password_hashes = Vec::new();
+    if let Some(password) = &tc.password {
+        password_hashes.push(trojan::password_hash_hex(password));
+    }
+    for user in &tc.users {
+        password_hashes.push(trojan::password_hash_hex(&user.password));
+    }
+
+    Ok(trojan::TrojanConfig {
+        password_hashes,
+        tls_config: Arc::new(tls_config),
+        dest: tc.dest.clone(),
+    })
+}
+
 pub struct InboundServer {
     config: Config,
     validator: Arc<MemoryValidator>,
@@ -207,6 +236,7 @@ pub struct InboundServer {
     tls_config: Option<TlsConfig>,
     shadowsocks_config: Option<wrongsv_shadowsocks::ServerConfig>,
     mixed_config: Option<mixed_proxy::MixedProxyConfig>,
+    trojan_config: Option<trojan::TrojanConfig>,
 }
 
 impl InboundServer {
@@ -236,6 +266,10 @@ impl InboundServer {
             Some(mc) => Some(parse_mixed_config(mc)?),
             None => None,
         };
+        let trojan_config = match &config.trojan {
+            Some(tc) => Some(parse_trojan_config(tc)?),
+            None => None,
+        };
         if let Some(ref rc) = reality_config {
             let rpk_hex: String = rc
                 .cert_material
@@ -256,6 +290,9 @@ impl InboundServer {
         }
         if mixed_config.is_some() {
             info!("Mixed proxy enabled (SOCKS4/4A + SOCKS5 + HTTP proxy)");
+        }
+        if trojan_config.is_some() {
+            info!("Trojan over TLS enabled");
         }
         let validator = Arc::new(MemoryValidator::new());
         for user in &config.users {
@@ -291,6 +328,7 @@ impl InboundServer {
             tls_config,
             shadowsocks_config,
             mixed_config,
+            trojan_config,
         })
     }
 
@@ -337,6 +375,8 @@ impl InboundServer {
             "Shadowsocks"
         } else if self.mixed_config.is_some() {
             "Mixed proxy"
+        } else if self.trojan_config.is_some() {
+            "Trojan"
         } else {
             "VLESS"
         };
@@ -352,6 +392,7 @@ impl InboundServer {
         let tls_config = self.tls_config.clone();
         let shadowsocks_config = self.shadowsocks_config.clone();
         let mixed_config = self.mixed_config.clone();
+        let trojan_config = self.trojan_config.clone();
         let shadowsocks_udp_socket =
             match (&self.shadowsocks_config, self.config.shadowsocks.as_ref()) {
                 (Some(_), Some(config)) if config.udp => {
@@ -382,6 +423,7 @@ impl InboundServer {
                     let tc = tls_config.clone();
                     let sc = shadowsocks_config.clone();
                     let mc = mixed_config.clone();
+                    let trc = trojan_config.clone();
                     thread::spawn(move || {
                         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                             if let Some(ref rc) = rc {
@@ -394,6 +436,8 @@ impl InboundServer {
                                 handle_shadowsocks_connection(stream, sc)
                             } else if let Some(ref mc) = mc {
                                 handle_mixed_proxy_connection(stream, mc)
+                            } else if let Some(ref trc) = trc {
+                                handle_trojan_connection(stream, trc)
                             } else {
                                 handle_connection(stream, v, kyber_sk)
                             }
@@ -658,6 +702,49 @@ fn handle_tls_connection(
         relay_anytls_raw(tls_stream, target, remaining_body)?;
     }
     debug!("{peer} TLS TCP relay finished");
+    Ok(())
+}
+
+fn handle_trojan_connection(
+    stream: TcpStream,
+    config: &trojan::TrojanConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let peer = stream.peer_addr()?;
+    trace!("{peer} Trojan connection");
+
+    let mut tls_stream = trojan::accept_tls(stream, config)?;
+    tls_stream
+        .get_mut()
+        .1
+        .set_read_timeout(Some(Duration::from_secs(30)))?;
+    info!("{peer} Trojan TLS handshake complete");
+
+    let request = match trojan::read_request(&mut tls_stream, config) {
+        Ok(request) => request,
+        Err(accept_err) => {
+            debug!("{peer} Trojan request rejected: {}", accept_err.error);
+            if let Some(dest) = &config.dest {
+                let target = TcpStream::connect(dest)?;
+                target.set_nodelay(true)?;
+                relay_anytls_raw(tls_stream, target, accept_err.buffered_data)?;
+                return Ok(());
+            }
+            return Err(Box::new(accept_err.error));
+        }
+    };
+
+    if request.command != TrojanCommand::Connect {
+        return Err("Trojan UDP ASSOCIATE is not implemented".into());
+    }
+
+    let target_addr = format!("{}:{}", request.address, request.port);
+    info!("{peer} Trojan TCP -> {target_addr}");
+    let target = connect_tcp_target(&request.address, request.port)?;
+    target.set_nodelay(true)?;
+    target.set_read_timeout(Some(Duration::from_secs(60)))?;
+
+    relay_anytls_raw(tls_stream, target, request.initial_data)?;
+    debug!("{peer} Trojan TCP relay finished");
     Ok(())
 }
 
@@ -2465,6 +2552,7 @@ mod tests {
             tls: None,
             shadowsocks: None,
             mixed: None,
+            trojan: None,
         }
     }
 

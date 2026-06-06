@@ -1,0 +1,22 @@
+# Trojan over TLS TCP inbound.
+# Accepts Trojan CONNECT requests from compatible clients such as xray-core,
+# sing-box, mihomo, and Trojan clients.
+
+listen = "0.0.0.0:443"
+
+[trojan]
+password = "change-me-to-a-long-random-password"
+
+# Optional fallback for invalid post-TLS probes. The decrypted plaintext request
+# is forwarded to this endpoint and the response is relayed back through TLS.
+# dest = "127.0.0.1:8080"
+
+# Public deployments should configure a certificate trusted by clients.
+# A self-signed ECDSA P-256 certificate is generated when omitted.
+# certificate = """-----BEGIN CERTIFICATE-----..."""
+# key = """-----BEGIN PRIVATE KEY-----..."""
+
+# Multi-user form:
+# [[trojan.users]]
+# password = "another-long-random-password"
+# email = "user@example.com"

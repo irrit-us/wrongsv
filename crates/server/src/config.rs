@@ -37,6 +37,10 @@ pub struct Config {
     /// accepts SOCKS4/4A, SOCKS5 CONNECT, and HTTP forward/CONNECT instead of VLESS.
     #[serde(default)]
     pub mixed: Option<MixedServerConfig>,
+    /// Trojan TLS inbound configuration. When set, this listener accepts
+    /// Trojan over TLS instead of VLESS.
+    #[serde(default)]
+    pub trojan: Option<TrojanServerConfig>,
 }
 
 /// REALITY server-side configuration.
@@ -124,6 +128,34 @@ pub struct MixedServerConfig {
     pub password: Option<String>,
 }
 
+/// Trojan server-side user.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TrojanUserConfig {
+    pub password: String,
+    #[serde(default)]
+    pub email: String,
+}
+
+/// Trojan server-side configuration.
+///
+/// Supports Trojan over TLS TCP CONNECT. The top-level `password` is a
+/// convenient single-user form; `[[trojan.users]]` adds one or more named
+/// users for xray/sing-box-style deployments. Invalid post-TLS probes can be
+/// forwarded as decrypted plaintext to `dest`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TrojanServerConfig {
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub users: Vec<TrojanUserConfig>,
+    #[serde(default)]
+    pub certificate: Option<String>,
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub dest: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct UserConfig {
     /// UUID string
@@ -170,6 +202,14 @@ pub enum ConfigError {
     MixedIncompleteCredentials,
     #[error("mixed inbound credentials must be 1..=255 bytes for SOCKS5 username/password auth")]
     MixedInvalidCredentials,
+    #[error("Trojan inbound cannot be combined with VLESS users")]
+    TrojanWithVlessUsers,
+    #[error("Trojan inbound cannot be combined with VLESS transport layers")]
+    TrojanWithVlessTransport,
+    #[error("Trojan inbound requires `password` or at least one `[[trojan.users]]` entry")]
+    TrojanMissingUsers,
+    #[error("Trojan passwords must be non-empty")]
+    TrojanInvalidPassword,
 }
 
 impl Config {
@@ -187,7 +227,15 @@ impl Config {
                 ));
             }
         }
-        if self.shadowsocks.is_some() && self.mixed.is_some() {
+        let non_vless_inbounds = [
+            self.shadowsocks.is_some(),
+            self.mixed.is_some(),
+            self.trojan.is_some(),
+        ]
+        .into_iter()
+        .filter(|enabled| *enabled)
+        .count();
+        if non_vless_inbounds > 1 {
             return Err(ConfigError::MultipleInboundProtocols);
         }
         if let Some(shadowsocks) = &self.shadowsocks {
@@ -231,6 +279,23 @@ impl Config {
                     }
                 }
                 _ => return Err(ConfigError::MixedIncompleteCredentials),
+            }
+        }
+        if let Some(trojan) = &self.trojan {
+            if !self.users.is_empty() {
+                return Err(ConfigError::TrojanWithVlessUsers);
+            }
+            if self.reality.is_some() || self.anytls.is_some() || self.tls.is_some() {
+                return Err(ConfigError::TrojanWithVlessTransport);
+            }
+            let has_top_level_password = trojan.password.as_deref().is_some_and(|p| !p.is_empty());
+            if trojan.password.as_deref().is_some_and(str::is_empty)
+                || trojan.users.iter().any(|user| user.password.is_empty())
+            {
+                return Err(ConfigError::TrojanInvalidPassword);
+            }
+            if !has_top_level_password && trojan.users.is_empty() {
+                return Err(ConfigError::TrojanMissingUsers);
             }
         }
         Ok(())
@@ -277,6 +342,7 @@ flow = "xtls-rprx-vision"
             tls: None,
             shadowsocks: None,
             mixed: None,
+            trojan: None,
         };
         assert!(config.validate().is_err());
     }
@@ -300,6 +366,7 @@ flow = "xtls-rprx-vision"
             tls: None,
             shadowsocks: None,
             mixed: None,
+            trojan: None,
         };
         assert!(config.validate().is_err());
     }
@@ -458,6 +525,110 @@ username = "admin"
         assert!(matches!(
             config.validate(),
             Err(ConfigError::MixedIncompleteCredentials)
+        ));
+    }
+
+    #[test]
+    fn test_parse_trojan_single_password_config() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[trojan]
+password = "secret"
+dest = "127.0.0.1:8080"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        let trojan = config.trojan.unwrap();
+        assert_eq!(trojan.password.as_deref(), Some("secret"));
+        assert_eq!(trojan.dest.as_deref(), Some("127.0.0.1:8080"));
+    }
+
+    #[test]
+    fn test_parse_trojan_users_config() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[trojan]
+
+[[trojan.users]]
+password = "secret-a"
+email = "a@example.com"
+
+[[trojan.users]]
+password = "secret-b"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        let trojan = config.trojan.unwrap();
+        assert_eq!(trojan.users.len(), 2);
+        assert_eq!(trojan.users[0].email, "a@example.com");
+        assert_eq!(trojan.users[1].password, "secret-b");
+    }
+
+    #[test]
+    fn test_trojan_rejects_missing_users() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[trojan]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::TrojanMissingUsers)
+        ));
+    }
+
+    #[test]
+    fn test_trojan_rejects_vless_users() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[trojan]
+password = "secret"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::TrojanWithVlessUsers)
+        ));
+    }
+
+    #[test]
+    fn test_trojan_rejects_vless_transport() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[trojan]
+password = "secret"
+
+[tls]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::TrojanWithVlessTransport)
+        ));
+    }
+
+    #[test]
+    fn test_trojan_rejects_other_non_vless_inbound() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[trojan]
+password = "secret"
+
+[mixed]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::MultipleInboundProtocols)
         ));
     }
 }
