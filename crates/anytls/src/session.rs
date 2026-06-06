@@ -281,6 +281,26 @@ impl SingSession {
     }
 }
 
+fn apply_outgoing_stream_state(session: &Arc<Mutex<SingSession>>, job: &WriteJob) {
+    if job.cmd == CMD_FIN {
+        let mut sess = session.lock().unwrap();
+        sess.close_stream(job.sid);
+    }
+}
+
+fn drain_write_jobs(
+    conn: &mut ServerConnection,
+    stream: &mut TcpStream,
+    write_rx: &Receiver<WriteJob>,
+    session: &Arc<Mutex<SingSession>>,
+) -> Result<(), AnyTlsError> {
+    while let Ok(job) = write_rx.try_recv() {
+        write_frame(conn, stream, job.cmd, job.sid, &job.data)?;
+        apply_outgoing_stream_state(session, &job);
+    }
+    Ok(())
+}
+
 // ── Settings handshake ─────────────────────────────────────────────────────
 
 /// Parsed client settings from the cmdSettings body.
@@ -392,9 +412,7 @@ where
         };
 
         // Drain pending writes regardless of whether we got a frame
-        while let Ok(job) = write_rx.try_recv() {
-            write_frame(&mut conn, &mut stream, job.cmd, job.sid, &job.data)?;
-        }
+        drain_write_jobs(&mut conn, &mut stream, &write_rx, &session)?;
 
         // Now handle the frame (or lack thereof)
         let (cmd, sid, data_len) = match frame_result {
@@ -414,9 +432,7 @@ where
                     Ok(()) => break,
                     Err(AnyTlsError::Io(ref ioe)) if ioe.kind() == ErrorKind::WouldBlock => {
                         // Drain writes while waiting for frame data
-                        while let Ok(job) = write_rx.try_recv() {
-                            write_frame(&mut conn, &mut stream, job.cmd, job.sid, &job.data)?;
-                        }
+                        drain_write_jobs(&mut conn, &mut stream, &write_rx, &session)?;
                         std::thread::sleep(Duration::from_millis(5));
                         continue;
                     }
@@ -426,9 +442,7 @@ where
         }
 
         // Drain writes again after reading
-        while let Ok(job) = write_rx.try_recv() {
-            write_frame(&mut conn, &mut stream, job.cmd, job.sid, &job.data)?;
-        }
+        drain_write_jobs(&mut conn, &mut stream, &write_rx, &session)?;
 
         match cmd {
             CMD_SYN => {
@@ -467,5 +481,52 @@ where
                 tracing::debug!("sing-anytls unknown cmd={cmd} sid={sid}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_session() -> Arc<Mutex<SingSession>> {
+        Arc::new(Mutex::new(SingSession::new(2, "test-client".into())))
+    }
+
+    #[test]
+    fn outgoing_fin_closes_session_stream_state() {
+        let session = test_session();
+        let mut stream = session.lock().unwrap().create_stream(7);
+
+        assert_eq!(session.lock().unwrap().streams.len(), 1);
+        assert!(stream.try_read_chunk().is_none());
+        assert!(!stream.is_closed());
+
+        let job = WriteJob {
+            cmd: CMD_FIN,
+            sid: 7,
+            data: Vec::new(),
+        };
+        apply_outgoing_stream_state(&session, &job);
+
+        assert_eq!(session.lock().unwrap().streams.len(), 0);
+        assert!(stream.try_read_chunk().is_none());
+        assert!(stream.is_closed());
+    }
+
+    #[test]
+    fn outgoing_non_fin_keeps_session_stream_state() {
+        let session = test_session();
+        let mut stream = session.lock().unwrap().create_stream(11);
+
+        let job = WriteJob {
+            cmd: CMD_PSH,
+            sid: 11,
+            data: b"payload".to_vec(),
+        };
+        apply_outgoing_stream_state(&session, &job);
+
+        assert_eq!(session.lock().unwrap().streams.len(), 1);
+        assert!(stream.try_read_chunk().is_none());
+        assert!(!stream.is_closed());
     }
 }
