@@ -39,6 +39,9 @@ cargo test --test integration test_reality_echo -- --nocapture
 # Shadowsocks classic AEAD and AEAD-2022 TCP/UDP relay
 cargo test --test shadowsocks_tests
 
+# Real-client Shadowsocks 2022 coverage is part of lifecycle tests when the
+# corresponding sing-box, mihomo, or xray binary is available.
+
 # Mixed SOCKS4/4A / SOCKS5 / HTTP proxy relay
 cargo test --test mixed_proxy_tests
 

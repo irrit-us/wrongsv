@@ -1,7 +1,7 @@
 //! Xray lifecycle integration tests.
 //!
 //! These tests verify the full proxy lifecycle using a real xray client:
-//! deploy → REALITY handshake → VLESS relay → HTTP response → cleanup.
+//! deploy → REALITY/VLESS or Shadowsocks 2022 → relay → response → cleanup.
 //!
 //! Requires xray binary. Set `XRAY_BIN` env var or place at
 //! `test-deploy/xray`. Tests are skipped if xray is not available.
@@ -13,8 +13,10 @@ use std::thread;
 use std::time::Duration;
 
 use common::{
-    TEST_PRIVATE_KEY, TEST_PUBLIC_KEY, TEST_SHORT_ID, TEST_SNI, TEST_UUID, init_logging,
-    lifecycle_test_lock, pick_ports, socks5_get, spawn_multi_user_server, spawn_server,
+    TEST_PRIVATE_KEY, TEST_PUBLIC_KEY, TEST_SHORT_ID, TEST_SNI, TEST_SS_2022_AES_128_PASSWORD,
+    TEST_SS_2022_AES_256_PASSWORD, TEST_UUID, init_logging, lifecycle_test_lock, pick_ports,
+    socks5_get, socks5_tcp_echo, socks5_udp_echo, spawn_multi_user_server, spawn_server,
+    spawn_shadowsocks_server, spawn_tcp_echo_target, spawn_udp_echo_target,
 };
 
 fn xray_bin() -> Option<String> {
@@ -99,6 +101,53 @@ fn write_xray_config(
           "shortId": "{short_id}",
           "fingerprint": "chrome"
         }}
+      }}
+    }}
+  ],
+  "routing": {{
+    "rules": [
+      {{
+        "type": "field",
+        "inboundTag": ["socks-in"],
+        "outboundTag": "proxy"
+      }}
+    ]
+  }}
+}}"#
+    );
+    std::fs::write(path, json).unwrap();
+}
+
+fn write_xray_shadowsocks_config(
+    path: &str,
+    socks_port: u16,
+    server_port: u16,
+    method: &str,
+    password: &str,
+) {
+    let json = format!(
+        r#"{{
+  "log": {{ "loglevel": "warning" }},
+  "inbounds": [
+    {{
+      "port": {socks_port},
+      "protocol": "socks",
+      "listen": "127.0.0.1",
+      "tag": "socks-in",
+      "settings": {{
+        "udp": true
+      }}
+    }}
+  ],
+  "outbounds": [
+    {{
+      "protocol": "shadowsocks",
+      "tag": "proxy",
+      "settings": {{
+        "address": "127.0.0.1",
+        "port": {server_port},
+        "method": "{method}",
+        "password": "{password}"
       }}
     }}
   ],
@@ -438,4 +487,70 @@ fn test_xray_lifecycle_wrong_credential_rejected() {
         result.is_err(),
         "wrong short_id should be rejected, got: {result:?}"
     );
+}
+
+#[test]
+fn test_xray_shadowsocks_2022_tcp_echo() {
+    if xray_bin().is_none() {
+        eprintln!("SKIP: xray not found");
+        return;
+    }
+    let _guard = lifecycle_test_lock();
+    init_logging();
+
+    let ports = pick_ports(2);
+    let server_port = ports[0];
+    let socks_port = ports[1];
+    let echo_addr = spawn_tcp_echo_target();
+    let _server = spawn_shadowsocks_server(
+        server_port,
+        "2022-blake3-aes-128-gcm",
+        TEST_SS_2022_AES_128_PASSWORD,
+    );
+
+    let cfg = format!("/tmp/xray-ss2022-tcp-{server_port}.json");
+    write_xray_shadowsocks_config(
+        &cfg,
+        socks_port,
+        server_port,
+        "2022-blake3-aes-128-gcm",
+        TEST_SS_2022_AES_128_PASSWORD,
+    );
+    let _x = start_xray(&cfg, socks_port);
+
+    let response = socks5_tcp_echo(socks_port, echo_addr, b"xray ss2022 tcp").unwrap();
+    assert_eq!(response, b"xray ss2022 tcp");
+}
+
+#[test]
+fn test_xray_shadowsocks_2022_udp_echo() {
+    if xray_bin().is_none() {
+        eprintln!("SKIP: xray not found");
+        return;
+    }
+    let _guard = lifecycle_test_lock();
+    init_logging();
+
+    let ports = pick_ports(2);
+    let server_port = ports[0];
+    let socks_port = ports[1];
+    let echo_addr = spawn_udp_echo_target();
+    let _server = spawn_shadowsocks_server(
+        server_port,
+        "2022-blake3-aes-256-gcm",
+        TEST_SS_2022_AES_256_PASSWORD,
+    );
+
+    let cfg = format!("/tmp/xray-ss2022-udp-{server_port}.json");
+    write_xray_shadowsocks_config(
+        &cfg,
+        socks_port,
+        server_port,
+        "2022-blake3-aes-256-gcm",
+        TEST_SS_2022_AES_256_PASSWORD,
+    );
+    let _x = start_xray(&cfg, socks_port);
+
+    let response = socks5_udp_echo(socks_port, echo_addr, b"xray ss2022 udp").unwrap();
+    assert_eq!(response, b"xray ss2022 udp");
 }
