@@ -5,15 +5,20 @@
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use wrongsv_protocol::RequestCommand;
 use wrongsv_vless_encoding as encoding;
+use wrongsv_vless_encoding::LengthPacketWriter;
 use wrongsv_websocket as ws;
 
 const TEST_UUID: &str = "41309a00-3cbe-43a2-80e7-76c8a4fe65be";
+const XRV: &str = "xtls-rprx-vision";
 
 mod common;
-use common::{init_logging, pick_port, spawn_tcp_echo_target, spawn_ws_server};
+use common::{
+    init_logging, pick_port, spawn_tcp_echo_target, spawn_udp_echo_target, spawn_ws_server,
+};
 
 /// Perform a WebSocket upgrade handshake as a client over a raw TCP connection.
 /// Returns the TcpStream ready for framed I/O.
@@ -51,10 +56,16 @@ fn ws_upgrade(stream: &mut TcpStream, path: &str) -> String {
     ws::compute_accept_key(key)
 }
 
-/// Encode a VLESS request header into a byte buffer (same as server-side encoding).
-fn encode_vless_request(uuid: &str, target_addr: &str, target_port: u16) -> Vec<u8> {
+/// Encode a VLESS request header into a byte buffer.
+fn encode_vless_request(
+    uuid: &str,
+    target_addr: &str,
+    target_port: u16,
+    command: RequestCommand,
+    flow: &str,
+) -> Vec<u8> {
     use wrongsv_net_types::{Address, Port};
-    use wrongsv_protocol::{ID, MemoryAccount, MemoryUser, RequestCommand, RequestHeader};
+    use wrongsv_protocol::{ID, MemoryAccount, MemoryUser, RequestHeader};
     use wrongsv_uuid::Uuid;
     use wrongsv_vless_encoding::Addons;
 
@@ -62,7 +73,7 @@ fn encode_vless_request(uuid: &str, target_addr: &str, target_port: u16) -> Vec<
     let user = MemoryUser {
         account: MemoryAccount {
             id: ID::new(uuid),
-            flow: String::new(),
+            flow: flow.into(),
             encryption: String::new(),
             udp: true,
             xor_mode: 0,
@@ -77,14 +88,22 @@ fn encode_vless_request(uuid: &str, target_addr: &str, target_port: u16) -> Vec<
 
     let request = RequestHeader {
         version: 0,
-        command: RequestCommand::Tcp,
+        command,
         address: Address::parse(target_addr),
         port: Port(target_port),
         user,
     };
 
     let mut buf = bytes::BytesMut::new();
-    encoding::encode_request_header(&mut buf, &request, &Addons::default()).unwrap();
+    encoding::encode_request_header(
+        &mut buf,
+        &request,
+        &Addons {
+            flow: flow.into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     buf.to_vec()
 }
 
@@ -113,6 +132,90 @@ fn ws_read_frame(stream: &mut TcpStream) -> Result<ws::Frame, ws::FrameError> {
     ws::read_frame(stream, false)
 }
 
+fn ws_read_length_packet(stream: &mut TcpStream) -> Vec<u8> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut buf = Vec::new();
+
+    while Instant::now() < deadline {
+        let frame = ws_read_frame(stream).unwrap();
+        if frame.opcode != ws::Opcode::Binary {
+            continue;
+        }
+        buf.extend_from_slice(&frame.payload);
+        if buf.len() < 2 {
+            continue;
+        }
+        let len = u16::from_be_bytes([buf[0], buf[1]]) as usize;
+        if buf.len() >= len + 2 {
+            return buf[2..2 + len].to_vec();
+        }
+    }
+
+    panic!("timed out waiting for length-prefixed WS packet");
+}
+
+fn encode_mux_udp_frame(
+    session_id: u16,
+    status: u8,
+    target_port: u16,
+    payload: &[u8],
+    include_global_id: bool,
+) -> Vec<u8> {
+    let mut meta = Vec::new();
+    meta.extend_from_slice(&session_id.to_be_bytes());
+    meta.push(status);
+    meta.push(0x01); // Opt: data
+    meta.push(0x02); // UDP
+    meta.extend_from_slice(&target_port.to_be_bytes());
+    meta.push(0x01); // IPv4
+    meta.extend_from_slice(&[127, 0, 0, 1]);
+    if include_global_id {
+        meta.extend_from_slice(&[0u8; 8]); // XUDP global ID
+    }
+
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&(meta.len() as u16).to_be_bytes());
+    frame.extend_from_slice(&meta);
+    frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    frame.extend_from_slice(payload);
+    frame
+}
+
+fn encode_mux_udp_new_frame(session_id: u16, target_port: u16, payload: &[u8]) -> Vec<u8> {
+    encode_mux_udp_frame(session_id, 0x01, target_port, payload, true)
+}
+
+fn encode_mux_udp_keep_frame(session_id: u16, target_port: u16, payload: &[u8]) -> Vec<u8> {
+    encode_mux_udp_frame(session_id, 0x02, target_port, payload, false)
+}
+
+fn ws_read_mux_udp_payload(stream: &mut TcpStream) -> Vec<u8> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut buf = Vec::new();
+
+    while Instant::now() < deadline {
+        let frame = ws_read_frame(stream).unwrap();
+        if frame.opcode != ws::Opcode::Binary {
+            continue;
+        }
+        buf.extend_from_slice(&frame.payload);
+        if buf.len() < 2 {
+            continue;
+        }
+        let meta_len = u16::from_be_bytes([buf[0], buf[1]]) as usize;
+        if buf.len() < 2 + meta_len + 2 {
+            continue;
+        }
+        let data_len_pos = 2 + meta_len;
+        let data_len = u16::from_be_bytes([buf[data_len_pos], buf[data_len_pos + 1]]) as usize;
+        if buf.len() >= data_len_pos + 2 + data_len {
+            return buf[data_len_pos + 2..data_len_pos + 2 + data_len].to_vec();
+        }
+    }
+
+    panic!("timed out waiting for Mux UDP WS packet");
+}
+
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -132,7 +235,13 @@ fn test_ws_echo_raw() {
     ws_upgrade(&mut stream, "/");
 
     // Send VLESS request over WS
-    let vless_req = encode_vless_request(TEST_UUID, "127.0.0.1", echo_addr.port());
+    let vless_req = encode_vless_request(
+        TEST_UUID,
+        "127.0.0.1",
+        echo_addr.port(),
+        RequestCommand::Tcp,
+        "",
+    );
     ws_write_binary(&mut stream, &vless_req);
 
     // Read VLESS response (server sends back a response header)
@@ -155,6 +264,41 @@ fn test_ws_echo_raw() {
 }
 
 #[test]
+fn test_ws_echo_raw_pipelined_initial_payload() {
+    init_logging();
+    let server_port = pick_port();
+    let echo_addr = spawn_tcp_echo_target();
+
+    let _server = spawn_ws_server(server_port, TEST_UUID, "", "/");
+    std::thread::sleep(Duration::from_millis(100));
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{server_port}")).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    ws_upgrade(&mut stream, "/");
+
+    let payload = b"pipelined-over-websocket";
+    let mut vless_req = encode_vless_request(
+        TEST_UUID,
+        "127.0.0.1",
+        echo_addr.port(),
+        RequestCommand::Tcp,
+        "",
+    );
+    vless_req.extend_from_slice(payload);
+    ws_write_binary(&mut stream, &vless_req);
+
+    let resp_frame = ws_read_frame(&mut stream).unwrap();
+    assert_eq!(resp_frame.opcode, ws::Opcode::Binary);
+    assert!(!resp_frame.payload.is_empty());
+
+    let echo_frame = ws_read_frame(&mut stream).unwrap();
+    assert_eq!(echo_frame.opcode, ws::Opcode::Binary);
+    assert_eq!(echo_frame.payload, payload);
+}
+
+#[test]
 fn test_ws_echo_custom_path() {
     init_logging();
     let server_port = pick_port();
@@ -169,7 +313,13 @@ fn test_ws_echo_custom_path() {
         .unwrap();
     ws_upgrade(&mut stream, "/api/ws");
 
-    let vless_req = encode_vless_request(TEST_UUID, "127.0.0.1", echo_addr.port());
+    let vless_req = encode_vless_request(
+        TEST_UUID,
+        "127.0.0.1",
+        echo_addr.port(),
+        RequestCommand::Tcp,
+        "",
+    );
     ws_write_binary(&mut stream, &vless_req);
 
     // Should get a VLESS response (not a 404)
@@ -222,7 +372,7 @@ fn test_ws_vision_relay() {
     let echo_addr = spawn_tcp_echo_target();
 
     // Use vision flow
-    let _server = spawn_ws_server(server_port, TEST_UUID, "xtls-rprx-vision", "/");
+    let _server = spawn_ws_server(server_port, TEST_UUID, XRV, "/");
     std::thread::sleep(Duration::from_millis(100));
 
     let mut stream = TcpStream::connect(format!("127.0.0.1:{server_port}")).unwrap();
@@ -232,7 +382,13 @@ fn test_ws_vision_relay() {
     ws_upgrade(&mut stream, "/");
 
     // Send VLESS request with vision flow over WS
-    let vless_req = encode_vless_request(TEST_UUID, "127.0.0.1", echo_addr.port());
+    let vless_req = encode_vless_request(
+        TEST_UUID,
+        "127.0.0.1",
+        echo_addr.port(),
+        RequestCommand::Tcp,
+        XRV,
+    );
     ws_write_binary(&mut stream, &vless_req);
 
     // Read VLESS response
@@ -261,4 +417,80 @@ fn test_ws_vision_relay() {
             // Accept any outcome — Vision relay over WS doesn't crash
         }
     }
+}
+
+#[test]
+fn test_ws_udp_echo_raw() {
+    init_logging();
+    let server_port = pick_port();
+    let echo_addr = spawn_udp_echo_target();
+
+    let _server = spawn_ws_server(server_port, TEST_UUID, "", "/ws");
+    std::thread::sleep(Duration::from_millis(100));
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{server_port}")).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    ws_upgrade(&mut stream, "/ws");
+
+    let vless_req = encode_vless_request(
+        TEST_UUID,
+        "127.0.0.1",
+        echo_addr.port(),
+        RequestCommand::Udp,
+        "",
+    );
+    ws_write_binary(&mut stream, &vless_req);
+
+    let resp_frame = ws_read_frame(&mut stream).unwrap();
+    assert_eq!(resp_frame.opcode, ws::Opcode::Binary);
+    assert!(!resp_frame.payload.is_empty());
+
+    let payload = b"udp-over-websocket";
+    let mut packet = Vec::new();
+    LengthPacketWriter::new(&mut packet)
+        .write_packet(payload)
+        .unwrap();
+    ws_write_binary(&mut stream, &packet);
+
+    let response = ws_read_length_packet(&mut stream);
+    assert_eq!(response, payload);
+}
+
+#[test]
+fn test_ws_mux_udp_echo() {
+    init_logging();
+    let server_port = pick_port();
+    let echo_addr = spawn_udp_echo_target();
+
+    let _server = spawn_ws_server(server_port, TEST_UUID, "", "/ws");
+    std::thread::sleep(Duration::from_millis(100));
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{server_port}")).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    ws_upgrade(&mut stream, "/ws");
+
+    let vless_req = encode_vless_request(TEST_UUID, "v1.mux.cool", 0, RequestCommand::Mux, "");
+    ws_write_binary(&mut stream, &vless_req);
+
+    let resp_frame = ws_read_frame(&mut stream).unwrap();
+    assert_eq!(resp_frame.opcode, ws::Opcode::Binary);
+    assert!(!resp_frame.payload.is_empty());
+
+    let payload = b"mux-udp-over-websocket";
+    let mux_frame = encode_mux_udp_new_frame(7, echo_addr.port(), payload);
+    ws_write_binary(&mut stream, &mux_frame);
+
+    let response = ws_read_mux_udp_payload(&mut stream);
+    assert_eq!(response, payload);
+
+    let payload = b"mux-udp-keep-over-websocket";
+    let mux_frame = encode_mux_udp_keep_frame(7, echo_addr.port(), payload);
+    ws_write_binary(&mut stream, &mux_frame);
+
+    let response = ws_read_mux_udp_payload(&mut stream);
+    assert_eq!(response, payload);
 }

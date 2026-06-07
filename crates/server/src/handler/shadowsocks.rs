@@ -25,7 +25,10 @@ pub(crate) fn parse_shadowsocks_config(
     )
     .map_err(|e| format!("shadowsocks: {e}"))
 }
-pub(crate) fn drain_shadowsocks_udp(socket: &UdpSocket, config: &wrongsv_shadowsocks::ServerConfig) {
+pub(crate) fn drain_shadowsocks_udp(
+    socket: &UdpSocket,
+    config: &wrongsv_shadowsocks::ServerConfig,
+) {
     loop {
         let mut packet = vec![0u8; 65535];
         match socket.recv_from(&mut packet) {

@@ -5,11 +5,7 @@ use std::time::Duration;
 use tracing::{debug, info, trace, warn};
 use wrongsv_protocol::{RequestCommand, RequestHeader};
 use wrongsv_vless::{MemoryValidator, Validator, XRV};
-use wrongsv_vless_encoding::{
-    self as encoding, Addons,
-    encoding::EncodeError,
-};
-
+use wrongsv_vless_encoding::{self as encoding, Addons, encoding::EncodeError};
 
 use super::*;
 
@@ -53,10 +49,11 @@ pub(crate) fn log_vless_request(peer: std::net::SocketAddr, request: &RequestHea
     info!(
         "{} {} {} -> {}:{}",
         peer,
-        if request.command == RequestCommand::Tcp {
-            "TCP"
-        } else {
-            "UDP"
+        match request.command {
+            RequestCommand::Tcp => "TCP",
+            RequestCommand::Udp => "UDP",
+            RequestCommand::Mux => "MUX",
+            RequestCommand::Rvs => "RVS",
         },
         request.user.email,
         request.address,
@@ -171,7 +168,7 @@ pub(crate) fn handle_connection(
         relay_vision(stream, target, &decoded.user_sent_id, &account.testseed)?;
     } else {
         trace!("{peer} starting raw relay");
-        relay_raw(stream, target)?;
+        relay_raw_with_initial(stream, target, remaining_body)?;
     }
     debug!("{peer} relay finished");
 

@@ -1319,7 +1319,6 @@ impl<W: Write> ShadowsocksWriter<W> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

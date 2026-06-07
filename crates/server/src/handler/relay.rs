@@ -1,18 +1,15 @@
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 use tracing::debug;
 use wrongsv_protocol::RequestHeader;
 use wrongsv_vless::vision::{TrafficState, VisionReader, VisionWriter};
-use wrongsv_vless_encoding::{
-    LengthPacketReader, LengthPacketWriter, PacketReadError,
-};
+use wrongsv_vless_encoding::{LengthPacketReader, LengthPacketWriter, PacketReadError};
 
 use crate::mixed_proxy::MixedProtocol;
-
 
 pub(crate) fn send_udp_datagram_to_target(
     address: &wrongsv_net_types::Address,

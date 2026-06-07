@@ -1,7 +1,7 @@
 use std::net::{TcpListener, UdpSocket};
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 use tracing::{debug, error, info, trace, warn};

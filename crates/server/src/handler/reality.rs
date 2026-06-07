@@ -5,8 +5,8 @@ use std::thread;
 use std::time::Duration;
 use tracing::{debug, info, trace};
 use wrongsv_protocol::{RequestCommand, RequestHeader};
-use wrongsv_vless::vision::{TrafficState, VisionReader, VisionWriter};
 use wrongsv_vless::MemoryValidator;
+use wrongsv_vless::vision::{TrafficState, VisionReader, VisionWriter};
 
 use crate::config::RealityServerConfig;
 

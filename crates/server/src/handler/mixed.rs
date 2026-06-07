@@ -7,7 +7,9 @@ use crate::mixed_proxy::{self, MixedProtocol};
 
 use super::*;
 
-pub(crate) fn parse_mixed_config(mc: &MixedServerConfig) -> Result<mixed_proxy::MixedProxyConfig, String> {
+pub(crate) fn parse_mixed_config(
+    mc: &MixedServerConfig,
+) -> Result<mixed_proxy::MixedProxyConfig, String> {
     mixed_proxy::MixedProxyConfig::new(mc.username.clone(), mc.password.clone())
         .map_err(|e| format!("mixed proxy: {e}"))
 }

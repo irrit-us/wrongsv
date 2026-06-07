@@ -72,7 +72,8 @@ cargo test --test anytls_tests
 ## Lifecycle tests (external clients)
 
 These tests spawn the wrongsv server and connect through real client binaries
-(sing-box, mihomo/Meta, xray-core), performing full REALITY+VLESS proxy cycles.
+(sing-box, mihomo/Meta, xray-core), performing full REALITY+VLESS,
+WebSocket+VLESS, Shadowsocks, and Trojan proxy cycles.
 
 ### Prerequisites
 
@@ -91,13 +92,13 @@ HTTP echo target for VLESS/REALITY relay assertions. They can be run with the
 default Rust test runner:
 
 ```bash
-# sing-box (12 tests)
+# sing-box
 cargo test --test singbox_lifecycle
 
-# mihomo/ClashMeta (12 tests)
+# mihomo/ClashMeta
 cargo test --test mihomo_lifecycle
 
-# xray-core (12 tests)
+# xray-core
 cargo test --test xray_lifecycle
 ```
 
@@ -111,6 +112,8 @@ cargo test --test xray_lifecycle
 | multi-user | Two users, two connections, both authenticate correctly |
 | restart | Server restart, client reconnects successfully |
 | wrong credential rejection | Invalid UUID → connection rejected, no data leak |
+| WebSocket TCP relay | VLESS over WS → local HTTP response |
+| WebSocket XUDP relay | VLESS over WS → Mux.Cool/XUDP UDP echo |
 
 ## Stress test
 

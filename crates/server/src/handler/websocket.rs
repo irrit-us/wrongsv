@@ -1,11 +1,14 @@
-use std::io::{Read, Result as IoResult, Write};
-use std::net::{Shutdown, SocketAddr, TcpStream};
+use std::collections::HashMap;
+use std::io::{ErrorKind, Read, Result as IoResult, Write};
+use std::net::{Shutdown, SocketAddr, TcpStream, UdpSocket};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, trace};
-use wrongsv_protocol::RequestCommand;
-use wrongsv_vless::vision::{TrafficState, VisionWriter};
+use wrongsv_net_types::{Address, Port};
+use wrongsv_protocol::{RequestCommand, RequestHeader};
 use wrongsv_vless::MemoryValidator;
+use wrongsv_vless::vision::{TrafficState, VisionWriter};
+use wrongsv_vless_encoding::LengthPacketWriter;
 
 use crate::config::WebSocketServerConfig;
 use wrongsv_websocket::{self as ws, WebSocketStream};
@@ -19,6 +22,330 @@ pub(crate) struct WebSocketConfig {
     pub tls_config: Option<Arc<rustls::ServerConfig>>,
     #[allow(dead_code)]
     pub tls_dest: Option<String>,
+}
+
+fn is_idle_read(err: &std::io::Error) -> bool {
+    matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
+}
+
+fn drain_ws_udp_packets(
+    input: &mut Vec<u8>,
+    socket: &UdpSocket,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let mut pos = 0;
+    let mut sent = false;
+
+    while input.len().saturating_sub(pos) >= 2 {
+        let len = u16::from_be_bytes([input[pos], input[pos + 1]]) as usize;
+        if input.len() - pos < len + 2 {
+            break;
+        }
+        let payload_start = pos + 2;
+        let payload_end = payload_start + len;
+        socket.send(&input[payload_start..payload_end])?;
+        sent = true;
+        pos = payload_end;
+    }
+
+    if pos > 0 {
+        input.drain(..pos);
+    }
+
+    Ok(sent)
+}
+
+fn flush_ws_udp_responses<S: Read + Write>(
+    ws: &mut WebSocketStream<S>,
+    socket: &UdpSocket,
+    timeout: Duration,
+) -> Result<(), Box<dyn std::error::Error>> {
+    socket.set_read_timeout(Some(timeout))?;
+    let mut buf = [0u8; 65535];
+
+    loop {
+        match socket.recv(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                let mut packet = Vec::with_capacity(n + 2);
+                LengthPacketWriter::new(&mut packet).write_packet(&buf[..n])?;
+                ws.write_all(&packet)?;
+                ws.flush()?;
+            }
+            Err(ref e) if is_idle_read(e) => break,
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    Ok(())
+}
+
+const MUX_OPTION_DATA: u8 = 0x01;
+const MUX_STATUS_NEW: u8 = 0x01;
+const MUX_STATUS_KEEP: u8 = 0x02;
+const MUX_STATUS_END: u8 = 0x03;
+const MUX_STATUS_KEEPALIVE: u8 = 0x04;
+const MUX_NETWORK_TCP: u8 = 0x01;
+const MUX_NETWORK_UDP: u8 = 0x02;
+const MUX_ADDR_IPV4: u8 = 0x01;
+const MUX_ADDR_DOMAIN: u8 = 0x02;
+const MUX_ADDR_IPV6: u8 = 0x03;
+const MUX_MAX_META_LEN: usize = 512;
+
+struct MuxFrame {
+    session_id: u16,
+    status: u8,
+    option: u8,
+    network: Option<u8>,
+    address: Option<Address>,
+    port: Option<Port>,
+    data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct MuxUdpKey {
+    session_id: u16,
+    address: Address,
+    port: Port,
+}
+
+struct MuxUdpSession {
+    socket: UdpSocket,
+    address: Address,
+    port: Port,
+}
+
+fn take_pending(pending: &mut Vec<u8>, out: &mut [u8], offset: &mut usize) {
+    let n = out.len().saturating_sub(*offset).min(pending.len());
+    out[*offset..*offset + n].copy_from_slice(&pending[..n]);
+    pending.drain(..n);
+    *offset += n;
+}
+
+fn read_ws_mux_exact<S: Read + Write>(
+    ws: &mut WebSocketStream<S>,
+    pending: &mut Vec<u8>,
+    out: &mut [u8],
+) -> IoResult<()> {
+    let mut offset = 0;
+
+    if !pending.is_empty() {
+        take_pending(pending, out, &mut offset);
+    }
+
+    let mut buf = [0u8; 32768];
+    while offset < out.len() {
+        let n = ws.read(&mut buf)?;
+        if n == 0 {
+            return Err(std::io::Error::new(
+                ErrorKind::UnexpectedEof,
+                "Mux stream closed",
+            ));
+        }
+        pending.extend_from_slice(&buf[..n]);
+        take_pending(pending, out, &mut offset);
+    }
+
+    Ok(())
+}
+
+fn parse_mux_address(meta: &[u8], pos: &mut usize) -> Result<(Address, Port), String> {
+    if meta.len().saturating_sub(*pos) < 3 {
+        return Err("short Mux address".into());
+    }
+    let port = Port(u16::from_be_bytes([meta[*pos], meta[*pos + 1]]));
+    *pos += 2;
+    let atyp = meta[*pos];
+    *pos += 1;
+
+    let address = match atyp {
+        MUX_ADDR_IPV4 => {
+            if meta.len().saturating_sub(*pos) < 4 {
+                return Err("short Mux IPv4 address".into());
+            }
+            let mut raw = [0u8; 4];
+            raw.copy_from_slice(&meta[*pos..*pos + 4]);
+            *pos += 4;
+            Address::IPv4(raw)
+        }
+        MUX_ADDR_DOMAIN => {
+            let len = *meta
+                .get(*pos)
+                .ok_or_else(|| "short Mux domain length".to_string())?
+                as usize;
+            *pos += 1;
+            if meta.len().saturating_sub(*pos) < len {
+                return Err("short Mux domain address".into());
+            }
+            let domain = std::str::from_utf8(&meta[*pos..*pos + len])
+                .map_err(|e| format!("invalid Mux domain: {e}"))?
+                .to_string();
+            *pos += len;
+            Address::Domain(domain)
+        }
+        MUX_ADDR_IPV6 => {
+            if meta.len().saturating_sub(*pos) < 16 {
+                return Err("short Mux IPv6 address".into());
+            }
+            let mut raw = [0u8; 16];
+            raw.copy_from_slice(&meta[*pos..*pos + 16]);
+            *pos += 16;
+            Address::IPv6(raw)
+        }
+        _ => return Err(format!("unsupported Mux address type: {atyp:#04x}")),
+    };
+
+    Ok((address, port))
+}
+
+fn parse_mux_metadata(meta: &[u8]) -> Result<MuxFrame, String> {
+    if meta.len() < 4 {
+        return Err("short Mux metadata".into());
+    }
+
+    let session_id = u16::from_be_bytes([meta[0], meta[1]]);
+    let status = meta[2];
+    let option = meta[3];
+    let mut network = None;
+    let mut address = None;
+    let mut port = None;
+
+    if status == MUX_STATUS_NEW
+        || (status == MUX_STATUS_KEEP && meta.len() > 4 && meta[4] == MUX_NETWORK_UDP)
+    {
+        if meta.len() < 8 {
+            return Err("short Mux target metadata".into());
+        }
+        let mut pos = 4;
+        let frame_network = meta[pos];
+        pos += 1;
+        let (frame_address, frame_port) = parse_mux_address(meta, &mut pos)?;
+        network = Some(frame_network);
+        address = Some(frame_address);
+        port = Some(frame_port);
+    }
+
+    Ok(MuxFrame {
+        session_id,
+        status,
+        option,
+        network,
+        address,
+        port,
+        data: Vec::new(),
+    })
+}
+
+fn read_ws_mux_frame<S: Read + Write>(
+    ws: &mut WebSocketStream<S>,
+    pending: &mut Vec<u8>,
+) -> Result<Option<MuxFrame>, Box<dyn std::error::Error>> {
+    let mut len_buf = [0u8; 2];
+    match read_ws_mux_exact(ws, pending, &mut len_buf) {
+        Ok(()) => {}
+        Err(ref e) if e.kind() == ErrorKind::UnexpectedEof => return Ok(None),
+        Err(e) => return Err(e.into()),
+    }
+
+    let meta_len = u16::from_be_bytes(len_buf) as usize;
+    if meta_len > MUX_MAX_META_LEN {
+        return Err(format!("Mux metadata too large: {meta_len}").into());
+    }
+
+    let mut meta = vec![0u8; meta_len];
+    read_ws_mux_exact(ws, pending, &mut meta)?;
+    let mut frame = parse_mux_metadata(&meta)?;
+
+    if frame.option & MUX_OPTION_DATA != 0 {
+        let mut data_len = [0u8; 2];
+        read_ws_mux_exact(ws, pending, &mut data_len)?;
+        let data_len = u16::from_be_bytes(data_len) as usize;
+        frame.data = vec![0u8; data_len];
+        read_ws_mux_exact(ws, pending, &mut frame.data)?;
+    }
+
+    Ok(Some(frame))
+}
+
+fn write_mux_address(out: &mut Vec<u8>, address: &Address, port: Port) -> Result<(), String> {
+    out.extend_from_slice(&port.0.to_be_bytes());
+    match address {
+        Address::IPv4(raw) => {
+            out.push(MUX_ADDR_IPV4);
+            out.extend_from_slice(raw);
+        }
+        Address::Domain(domain) => {
+            if domain.len() > u8::MAX as usize {
+                return Err("Mux domain address too long".into());
+            }
+            out.push(MUX_ADDR_DOMAIN);
+            out.push(domain.len() as u8);
+            out.extend_from_slice(domain.as_bytes());
+        }
+        Address::IPv6(raw) => {
+            out.push(MUX_ADDR_IPV6);
+            out.extend_from_slice(raw);
+        }
+    }
+    Ok(())
+}
+
+fn write_ws_mux_udp_response<S: Read + Write>(
+    ws: &mut WebSocketStream<S>,
+    session_id: u16,
+    address: &Address,
+    port: Port,
+    payload: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut meta = Vec::new();
+    meta.extend_from_slice(&session_id.to_be_bytes());
+    meta.push(MUX_STATUS_KEEP);
+    meta.push(MUX_OPTION_DATA);
+    meta.push(MUX_NETWORK_UDP);
+    write_mux_address(&mut meta, address, port)?;
+
+    let mut frame = Vec::with_capacity(2 + meta.len() + 2 + payload.len());
+    frame.extend_from_slice(&(meta.len() as u16).to_be_bytes());
+    frame.extend_from_slice(&meta);
+    frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    frame.extend_from_slice(payload);
+    ws.write_all(&frame)?;
+    ws.flush()?;
+    Ok(())
+}
+
+fn flush_ws_mux_udp_responses<S: Read + Write>(
+    ws: &mut WebSocketStream<S>,
+    session_id: u16,
+    session: &MuxUdpSession,
+    timeout: Duration,
+) -> Result<(), Box<dyn std::error::Error>> {
+    session.socket.set_read_timeout(Some(timeout))?;
+    let mut buf = [0u8; 65535];
+    loop {
+        match session.socket.recv(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => write_ws_mux_udp_response(
+                ws,
+                session_id,
+                &session.address,
+                session.port,
+                &buf[..n],
+            )?,
+            Err(ref e) if is_idle_read(e) => break,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
+}
+
+fn mux_udp_socket(address: &Address, port: Port) -> IoResult<UdpSocket> {
+    let bind_addr = match address {
+        Address::IPv6(_) => "[::]:0",
+        _ => "0.0.0.0:0",
+    };
+    let socket = UdpSocket::bind(bind_addr)?;
+    socket.connect(format!("{address}:{port}"))?;
+    Ok(socket)
 }
 
 pub(crate) fn parse_ws_config(wc: &WebSocketServerConfig) -> Result<WebSocketConfig, String> {
@@ -147,7 +474,7 @@ pub(crate) fn handle_vless_over_ws<S: Read + Write>(
 
     let VlessRequest {
         decoded,
-        remaining_body: _,
+        remaining_body,
         use_vision,
     } = decode_vless_request(first, &validator, peer)?;
     let request = &decoded.header;
@@ -165,9 +492,14 @@ pub(crate) fn handle_vless_over_ws<S: Read + Write>(
         if !account.udp {
             return Err("UDP not enabled for this user".into());
         }
-        // UDP over WebSocket not yet implemented — send close and return
-        let _ = ws_stream.write_close(1000);
-        debug!("{peer} WS UDP not implemented, closing");
+        relay_ws_udp(ws_stream, request, remaining_body)?;
+        debug!("{peer} WS UDP relay finished");
+        return Ok(());
+    }
+
+    if request.command == RequestCommand::Mux {
+        relay_ws_mux_udp(ws_stream, remaining_body, account.udp)?;
+        debug!("{peer} WS Mux UDP relay finished");
         return Ok(());
     }
 
@@ -179,21 +511,135 @@ pub(crate) fn handle_vless_over_ws<S: Read + Write>(
     target.set_read_timeout(Some(Duration::from_secs(60)))?;
 
     if use_vision {
-        relay_ws_vision(ws_stream, target, &decoded.user_sent_id, &account.testseed)?;
+        relay_ws_vision(
+            ws_stream,
+            target,
+            remaining_body,
+            &decoded.user_sent_id,
+            &account.testseed,
+        )?;
     } else {
-        relay_ws_raw(ws_stream, target)?;
+        relay_ws_raw(ws_stream, target, remaining_body)?;
     }
     debug!("{peer} WS relay finished");
+    Ok(())
+}
+
+pub(crate) fn relay_ws_udp<S: Read + Write>(
+    ws: &mut WebSocketStream<S>,
+    request: &RequestHeader,
+    remaining: Vec<u8>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let target_addr = format!("{}:{}", request.address, request.port);
+    debug!(
+        "WS UDP relay to {target_addr}, {} remaining bytes",
+        remaining.len()
+    );
+
+    let socket = UdpSocket::bind("0.0.0.0:0")?;
+    socket.connect(&target_addr)?;
+
+    let mut input = remaining;
+    let mut ws_buf = [0u8; 32768];
+
+    loop {
+        if drain_ws_udp_packets(&mut input, &socket)? {
+            flush_ws_udp_responses(ws, &socket, Duration::from_millis(500))?;
+        }
+
+        match ws.read(&mut ws_buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                input.extend_from_slice(&ws_buf[..n]);
+            }
+            Err(ref e) if is_idle_read(e) => {
+                flush_ws_udp_responses(ws, &socket, Duration::from_millis(10))?;
+            }
+            Err(ref e) if e.kind() == ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn relay_ws_mux_udp<S: Read + Write>(
+    ws: &mut WebSocketStream<S>,
+    remaining: Vec<u8>,
+    udp_enabled: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut pending = remaining;
+    let mut sessions: HashMap<MuxUdpKey, MuxUdpSession> = HashMap::new();
+
+    while let Some(frame) = read_ws_mux_frame(ws, &mut pending)? {
+        match frame.status {
+            MUX_STATUS_NEW | MUX_STATUS_KEEP => {
+                let network = frame.network.unwrap_or(MUX_NETWORK_TCP);
+                if network != MUX_NETWORK_UDP {
+                    return Err("Mux.Cool TCP relay is not implemented".into());
+                }
+                if !udp_enabled {
+                    return Err("UDP not enabled for this user".into());
+                }
+
+                let address = frame.address.ok_or("Mux UDP frame missing address")?;
+                let port = frame.port.ok_or("Mux UDP frame missing port")?;
+                let key = MuxUdpKey {
+                    session_id: frame.session_id,
+                    address: address.clone(),
+                    port,
+                };
+                if !sessions.contains_key(&key) {
+                    let socket = mux_udp_socket(&address, port)?;
+                    sessions.insert(
+                        key.clone(),
+                        MuxUdpSession {
+                            socket,
+                            address,
+                            port,
+                        },
+                    );
+                }
+
+                if !frame.data.is_empty() {
+                    let session = sessions.get(&key).expect("session inserted");
+                    session.socket.send(&frame.data)?;
+                    flush_ws_mux_udp_responses(
+                        ws,
+                        frame.session_id,
+                        session,
+                        Duration::from_millis(500),
+                    )?;
+                }
+            }
+            MUX_STATUS_END => {
+                sessions.retain(|key, _| key.session_id != frame.session_id);
+            }
+            MUX_STATUS_KEEPALIVE => {}
+            status => return Err(format!("unsupported Mux status: {status:#04x}").into()),
+        }
+
+        for (key, session) in &sessions {
+            flush_ws_mux_udp_responses(ws, key.session_id, session, Duration::from_millis(10))?;
+        }
+    }
+
     Ok(())
 }
 
 pub(crate) fn relay_ws_raw<S: Read + Write>(
     ws: &mut WebSocketStream<S>,
     mut target: TcpStream,
+    initial_data: Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = [0u8; 32768];
     target.set_nodelay(true)?;
     target.set_read_timeout(Some(Duration::from_secs(2)))?;
+
+    if !initial_data.is_empty() {
+        target.write_all(&initial_data)?;
+        target.set_read_timeout(Some(Duration::from_millis(10)))?;
+    }
 
     loop {
         // ── Target → Client (downlink) ──
@@ -227,7 +673,7 @@ pub(crate) fn relay_ws_raw<S: Read + Write>(
                 target.write_all(&buf[..n])?;
                 target.set_read_timeout(Some(Duration::from_millis(10)))?;
             }
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(ref e) if is_idle_read(e) => {}
             Err(e) => return Err(e.into()),
         }
     }
@@ -239,6 +685,7 @@ pub(crate) fn relay_ws_raw<S: Read + Write>(
 pub(crate) fn relay_ws_vision<S: Read + Write>(
     ws: &mut WebSocketStream<S>,
     mut target: TcpStream,
+    initial_data: Vec<u8>,
     user_sent_id: &[u8],
     testseed: &[u32],
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -254,6 +701,14 @@ pub(crate) fn relay_ws_vision<S: Read + Write>(
     target.set_nodelay(true)?;
     target.set_read_timeout(Some(Duration::from_secs(2)))?;
     let mut buf = [0u8; 32768];
+
+    if !initial_data.is_empty() {
+        let unpadded = wrongsv_vless::vision::xtls_unpadding(&initial_data, &mut up_state, true);
+        if !unpadded.is_empty() {
+            target.write_all(&unpadded)?;
+            target.set_read_timeout(Some(Duration::from_millis(10)))?;
+        }
+    }
 
     loop {
         // Downlink: target → Vision encode → WS frame
@@ -314,7 +769,7 @@ pub(crate) fn relay_ws_vision<S: Read + Write>(
                         target.set_read_timeout(Some(Duration::from_millis(10)))?;
                     }
                 }
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break false,
+                Err(ref e) if is_idle_read(e) => break false,
                 Err(e) => return Err(e.into()),
             }
         };

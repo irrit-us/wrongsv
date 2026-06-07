@@ -5,14 +5,16 @@ use std::thread;
 use std::time::Duration;
 use tracing::{debug, info, trace, warn};
 use wrongsv_protocol::{RequestCommand, RequestHeader};
-use wrongsv_vless::vision::{TrafficState, VisionWriter};
 use wrongsv_vless::MemoryValidator;
+use wrongsv_vless::vision::{TrafficState, VisionWriter};
 
 use crate::config::AnyTlsServerConfig;
 
 use super::*;
 
-pub(crate) fn parse_anytls_config(ac: &AnyTlsServerConfig) -> Result<wrongsv_anytls::AnyTlsConfig, String> {
+pub(crate) fn parse_anytls_config(
+    ac: &AnyTlsServerConfig,
+) -> Result<wrongsv_anytls::AnyTlsConfig, String> {
     use sha2::{Digest, Sha256};
     let password_sha256: [u8; 32] = Sha256::digest(ac.password.as_bytes()).into();
 
@@ -795,4 +797,3 @@ pub(crate) fn relay_anytls_udp(
 }
 
 // ── WebSocket relay functions ─────────────────────────────────────────────────
-

@@ -100,7 +100,9 @@ impl<S> WebSocketStream<S> {
                         return Ok(false);
                     }
                 },
-                Err(FrameError::Io(e)) if e.kind() == WouldBlock => {
+                Err(FrameError::Io(e))
+                    if matches!(e.kind(), WouldBlock | std::io::ErrorKind::TimedOut) =>
+                {
                     return Err(e);
                 }
                 Err(e) => {

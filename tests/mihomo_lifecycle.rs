@@ -152,9 +152,12 @@ proxies:
     port: {server_port}
     uuid: "{uuid}"
     udp: true
+    packet-encoding: ""
     network: "ws"
     ws-opts:
       path: "{ws_path}"
+    smux:
+      enabled: false
 rules:
   - MATCH, proxy
 "#
@@ -693,4 +696,28 @@ fn test_mihomo_lifecycle_ws_tcp_http() {
 
     let body = socks5_get(socks_port, &local_http_url(http_addr, "/ip")).unwrap();
     assert!(body.contains("origin"), "unexpected response: {body}");
+}
+
+#[test]
+fn test_mihomo_lifecycle_ws_udp_echo() {
+    if mihomo_bin().is_none() {
+        eprintln!("SKIP: mihomo not found");
+        return;
+    }
+    let _guard = lifecycle_test_lock();
+    init_logging();
+
+    let ports = pick_ports(2);
+    let server_port = ports[0];
+    let socks_port = ports[1];
+    let echo_addr = spawn_udp_echo_target();
+
+    let _server = spawn_ws_server(server_port, TEST_UUID, "", "/ws");
+
+    let cfg = format!("/tmp/mihomo-ws-udp-{server_port}.yaml");
+    write_mihomo_ws_config(&cfg, socks_port, server_port, TEST_UUID, "/ws");
+    let _m = start_mihomo(&cfg, socks_port);
+
+    let response = socks5_udp_echo(socks_port, echo_addr, b"mihomo ws udp").unwrap();
+    assert_eq!(response, b"mihomo ws udp");
 }

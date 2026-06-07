@@ -73,7 +73,10 @@ fn write_xray_config(
       "port": {socks_port},
       "protocol": "socks",
       "listen": "127.0.0.1",
-      "tag": "socks-in"
+      "tag": "socks-in",
+      "settings": {{
+        "udp": true
+      }}
     }}
   ],
   "outbounds": [
@@ -231,7 +234,10 @@ fn write_xray_ws_config(path: &str, socks_port: u16, server_port: u16, uuid: &st
       "port": {socks_port},
       "protocol": "socks",
       "listen": "127.0.0.1",
-      "tag": "socks-in"
+      "tag": "socks-in",
+      "settings": {{
+        "udp": true
+      }}
     }}
   ],
   "outbounds": [
@@ -258,6 +264,10 @@ fn write_xray_ws_config(path: &str, socks_port: u16, server_port: u16, uuid: &st
         "wsSettings": {{
           "path": "{ws_path}"
         }}
+      }},
+      "mux": {{
+        "enabled": false,
+        "xudpConcurrency": -1
       }}
     }}
   ],
@@ -819,4 +829,28 @@ fn test_xray_lifecycle_ws_tcp_http() {
 
     let body = socks5_get(socks_port, &local_http_url(http_addr, "/ip")).unwrap();
     assert!(body.contains("origin"), "unexpected response: {body}");
+}
+
+#[test]
+fn test_xray_lifecycle_ws_udp_echo() {
+    if xray_bin().is_none() {
+        eprintln!("SKIP: xray not found");
+        return;
+    }
+    let _guard = lifecycle_test_lock();
+    init_logging();
+
+    let ports = pick_ports(2);
+    let server_port = ports[0];
+    let socks_port = ports[1];
+    let echo_addr = spawn_udp_echo_target();
+
+    let _server = spawn_ws_server(server_port, TEST_UUID, "", "/ws");
+
+    let cfg = format!("/tmp/xray-ws-udp-{server_port}.json");
+    write_xray_ws_config(&cfg, socks_port, server_port, TEST_UUID, "/ws");
+    let _x = start_xray(&cfg, socks_port);
+
+    let response = socks5_udp_echo(socks_port, echo_addr, b"xray ws udp").unwrap();
+    assert_eq!(response, b"xray ws udp");
 }

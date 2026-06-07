@@ -206,20 +206,12 @@ fn write_singbox_ws_config(
         "type": "ws",
         "path": "{ws_path}"
       }}
-    }},
-    {{
-      "type": "direct",
-      "tag": "direct"
     }}
   ],
   "route": {{
     "rules": [
       {{
         "inbound": ["mixed-in"],
-        "outbound": "direct"
-      }},
-      {{
-        "domain": ["*"],
         "outbound": "proxy"
       }}
     ]
@@ -751,4 +743,28 @@ fn test_singbox_lifecycle_ws_tcp_http() {
 
     let body = socks5_get(socks_port, &local_http_url(http_addr, "/ip")).unwrap();
     assert!(body.contains("origin"), "unexpected response: {body}");
+}
+
+#[test]
+fn test_singbox_lifecycle_ws_udp_echo() {
+    if singbox_bin().is_none() {
+        eprintln!("SKIP: sing-box not found");
+        return;
+    }
+    let _guard = lifecycle_test_lock();
+    init_logging();
+
+    let ports = pick_ports(2);
+    let server_port = ports[0];
+    let socks_port = ports[1];
+    let echo_addr = spawn_udp_echo_target();
+
+    let _server = spawn_ws_server(server_port, TEST_UUID, "", "/ws");
+
+    let cfg = format!("/tmp/singbox-ws-udp-{server_port}.json");
+    write_singbox_ws_config(&cfg, socks_port, server_port, TEST_UUID, "/ws");
+    let _sb = start_singbox(&cfg, socks_port);
+
+    let response = socks5_udp_echo(socks_port, echo_addr, b"sing-box ws udp").unwrap();
+    assert_eq!(response, b"sing-box ws udp");
 }
