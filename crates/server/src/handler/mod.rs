@@ -30,6 +30,8 @@ pub(crate) mod httpupgrade;
 pub(crate) use httpupgrade::*;
 pub(crate) mod grpc;
 pub(crate) use grpc::*;
+pub(crate) mod hysteria2;
+pub(crate) use hysteria2::*;
 pub(crate) mod anytls;
 pub(crate) use anytls::*;
 pub(crate) mod shadowsocks;
@@ -132,6 +134,7 @@ pub struct InboundServer {
     ws_config: Option<WebSocketConfig>,
     httpupgrade_config: Option<HttpUpgradeConfig>,
     grpc_config: Option<GrpcConfig>,
+    hysteria2_config: Option<Hysteria2Config>,
 }
 
 impl InboundServer {
@@ -213,6 +216,21 @@ impl InboundServer {
             }
             None => None,
         };
+        let hysteria2_config = match &config.hysteria2 {
+            Some(hc) => {
+                let cfg = parse_hysteria2_config(hc)?;
+                info!(
+                    "Hysteria2 enabled{}",
+                    if cfg.disable_udp {
+                        " (TCP only)"
+                    } else {
+                        " (TCP + UDP)"
+                    }
+                );
+                Some(cfg)
+            }
+            None => None,
+        };
         if let Some(ref rc) = reality_config {
             let rpk_hex: String = rc
                 .cert_material
@@ -275,6 +293,7 @@ impl InboundServer {
             ws_config,
             httpupgrade_config,
             grpc_config,
+            hysteria2_config,
         })
     }
 
@@ -307,6 +326,18 @@ impl InboundServer {
         &self,
         shutdown: ShutdownSignal,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(config) = self.hysteria2_config.clone() {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            return runtime
+                .block_on(run_hysteria2_endpoint(
+                    &self.config.listen,
+                    config,
+                    shutdown,
+                ))
+                .map_err(|e| std::io::Error::other(e.to_string()).into());
+        }
         let listener = TcpListener::bind(&self.config.listen)?;
         self.run_with_listener(listener, shutdown)
     }
@@ -323,6 +354,8 @@ impl InboundServer {
             "Mixed proxy"
         } else if self.trojan_config.is_some() {
             "Trojan"
+        } else if self.hysteria2_config.is_some() {
+            "Hysteria2"
         } else if self.httpupgrade_config.is_some() {
             "VLESS HTTPUpgrade"
         } else if self.grpc_config.is_some() {
@@ -346,6 +379,7 @@ impl InboundServer {
         let ws_config = self.ws_config.clone();
         let httpupgrade_config = self.httpupgrade_config.clone();
         let grpc_config = self.grpc_config.clone();
+        let hysteria2_enabled = self.hysteria2_config.is_some();
         let shadowsocks_udp_socket =
             match (&self.shadowsocks_config, self.config.shadowsocks.as_ref()) {
                 (Some(_), Some(raw_config)) if raw_config.udp => {
@@ -392,6 +426,11 @@ impl InboundServer {
                                 handle_httpupgrade_connection(stream, v, kyber_sk, hc)
                             } else if let Some(ref gc) = gc {
                                 handle_grpc_connection(stream, v, kyber_sk, gc)
+                            } else if hysteria2_enabled {
+                                Err(
+                                    "Hysteria2 inbound uses QUIC and does not accept TCP sockets"
+                                        .into(),
+                                )
                             } else if let Some(ref tc) = tc {
                                 handle_tls_connection(stream, v, kyber_sk, tc)
                             } else if let Some(ref sc) = sc {

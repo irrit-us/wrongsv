@@ -53,6 +53,10 @@ pub struct Config {
     /// HTTP/2 + gRPC handshake before VLESS (V2Ray-compatible).
     #[serde(default)]
     pub grpc: Option<GrpcServerConfig>,
+    /// Hysteria2 inbound configuration. When set, the listener accepts
+    /// Hysteria2 QUIC/TCP/UDP traffic instead of VLESS.
+    #[serde(default)]
+    pub hysteria2: Option<Hysteria2ServerConfig>,
 }
 
 /// REALITY server-side configuration.
@@ -260,6 +264,63 @@ pub struct GrpcServerConfig {
     pub tls: Option<GrpcTlsConfig>,
 }
 
+/// Hysteria2 authentication user.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Hysteria2UserConfig {
+    /// Username for userpass auth.
+    pub name: String,
+    /// Password for this user.
+    pub password: String,
+}
+
+/// Hysteria2 TLS configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Hysteria2TlsConfig {
+    #[serde(default)]
+    pub certificate: Option<String>,
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub dest: Option<String>,
+}
+
+/// Hysteria2 server-side configuration.
+///
+/// Supports password and `username:password` authentication, TCP relay,
+/// and UDP relay over QUIC. Obfuscation and realm/NAT traversal are
+/// intentionally left for future slices.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Hysteria2ServerConfig {
+    /// Single-password authentication value.
+    #[serde(default)]
+    pub password: Option<String>,
+    /// Userpass authentication entries.
+    #[serde(default)]
+    pub users: Vec<Hysteria2UserConfig>,
+    /// Disable UDP forwarding.
+    #[serde(default)]
+    pub disable_udp: bool,
+    /// Optional upload bandwidth hint in Mbps.
+    #[serde(default)]
+    pub up_mbps: Option<u64>,
+    /// Optional download bandwidth hint in Mbps.
+    #[serde(default)]
+    pub down_mbps: Option<u64>,
+    /// Ask clients to use BBR instead of Hysteria CC when bandwidth hints are absent.
+    #[serde(default)]
+    pub ignore_client_bandwidth: bool,
+    /// Optional UDP session idle timeout in seconds.
+    #[serde(default = "default_hysteria2_udp_idle_timeout")]
+    pub udp_idle_timeout: u64,
+    /// Optional TLS configuration for the QUIC listener.
+    #[serde(default)]
+    pub tls: Option<Hysteria2TlsConfig>,
+}
+
+fn default_hysteria2_udp_idle_timeout() -> u64 {
+    60
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct UserConfig {
     /// UUID string
@@ -330,6 +391,16 @@ pub enum ConfigError {
     GrpcWithNonVless,
     #[error("gRPC inbound requires VLESS users")]
     GrpcMissingUsers,
+    #[error("Hysteria2 inbound cannot be combined with VLESS users")]
+    Hysteria2WithVlessUsers,
+    #[error("Hysteria2 inbound cannot be combined with VLESS transport layers")]
+    Hysteria2WithVlessTransport,
+    #[error("Hysteria2 inbound cannot be combined with non-VLESS protocols")]
+    Hysteria2WithNonVless,
+    #[error("Hysteria2 inbound requires `password` or at least one `[[hysteria2.users]]` entry")]
+    Hysteria2MissingAuth,
+    #[error("Hysteria2 user passwords must be non-empty")]
+    Hysteria2InvalidPassword,
 }
 
 impl Config {
@@ -351,6 +422,7 @@ impl Config {
             self.shadowsocks.is_some(),
             self.mixed.is_some(),
             self.trojan.is_some(),
+            self.hysteria2.is_some(),
         ]
         .into_iter()
         .filter(|enabled| *enabled)
@@ -505,6 +577,32 @@ impl Config {
                 return Err(ConfigError::GrpcMissingUsers);
             }
         }
+        if let Some(hysteria2) = &self.hysteria2 {
+            if !self.users.is_empty() {
+                return Err(ConfigError::Hysteria2WithVlessUsers);
+            }
+            if self.reality.is_some()
+                || self.anytls.is_some()
+                || self.tls.is_some()
+                || self.websocket.is_some()
+                || self.httpupgrade.is_some()
+                || self.grpc.is_some()
+            {
+                return Err(ConfigError::Hysteria2WithVlessTransport);
+            }
+            if self.shadowsocks.is_some() || self.mixed.is_some() || self.trojan.is_some() {
+                return Err(ConfigError::Hysteria2WithNonVless);
+            }
+            if hysteria2.password.as_deref().is_some_and(str::is_empty)
+                || hysteria2.users.iter().any(|user| user.password.is_empty())
+            {
+                return Err(ConfigError::Hysteria2InvalidPassword);
+            }
+            if hysteria2.password.as_deref().is_none_or(str::is_empty) && hysteria2.users.is_empty()
+            {
+                return Err(ConfigError::Hysteria2MissingAuth);
+            }
+        }
         Ok(())
     }
 }
@@ -553,6 +651,7 @@ flow = "xtls-rprx-vision"
             websocket: None,
             httpupgrade: None,
             grpc: None,
+            hysteria2: None,
         };
         assert!(config.validate().is_err());
     }
@@ -580,6 +679,7 @@ flow = "xtls-rprx-vision"
             websocket: None,
             httpupgrade: None,
             grpc: None,
+            hysteria2: None,
         };
         assert!(config.validate().is_err());
     }
@@ -842,6 +942,83 @@ password = "secret"
         assert!(matches!(
             config.validate(),
             Err(ConfigError::MultipleInboundProtocols)
+        ));
+    }
+
+    #[test]
+    fn test_parse_hysteria2_config() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[hysteria2]
+password = "secret"
+down_mbps = 200
+ignore_client_bandwidth = true
+disable_udp = true
+
+[[hysteria2.users]]
+name = "alice"
+password = "alice-password"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        let hysteria2 = config.hysteria2.unwrap();
+        assert_eq!(hysteria2.password.as_deref(), Some("secret"));
+        assert_eq!(hysteria2.down_mbps, Some(200));
+        assert!(hysteria2.ignore_client_bandwidth);
+        assert!(hysteria2.disable_udp);
+        assert_eq!(hysteria2.users.len(), 1);
+        assert_eq!(hysteria2.users[0].name, "alice");
+    }
+
+    #[test]
+    fn test_hysteria2_rejects_missing_auth() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[hysteria2]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::Hysteria2MissingAuth)
+        ));
+    }
+
+    #[test]
+    fn test_hysteria2_rejects_empty_passwords() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[hysteria2]
+password = ""
+
+[[hysteria2.users]]
+name = "alice"
+password = "secret"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::Hysteria2InvalidPassword)
+        ));
+    }
+
+    #[test]
+    fn test_hysteria2_rejects_vless_users() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[hysteria2]
+password = "secret"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::Hysteria2WithVlessUsers)
         ));
     }
 

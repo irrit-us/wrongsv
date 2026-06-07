@@ -592,6 +592,7 @@ mod tests {
             websocket: None,
             httpupgrade: None,
             grpc: None,
+            hysteria2: None,
         }
     }
 

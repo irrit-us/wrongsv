@@ -1,0 +1,11 @@
+listen = "0.0.0.0:443"
+
+[hysteria2]
+password = "secret"
+down_mbps = 100
+ignore_client_bandwidth = false
+disable_udp = false
+
+[[hysteria2.users]]
+name = "alice"
+password = "alice-password"
