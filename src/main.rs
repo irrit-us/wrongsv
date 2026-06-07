@@ -18,6 +18,9 @@ enum Transport {
     /// WebSocket carrier (optional TLS)
     #[clap(name = "ws")]
     WebSocket,
+    /// HTTPUpgrade carrier
+    #[clap(name = "httpupgrade")]
+    HttpUpgrade,
 }
 
 #[derive(ValueEnum, Clone, Copy, PartialEq)]
@@ -56,7 +59,7 @@ struct Cli {
     #[arg(long, default_value = "wrongsv")]
     client_name: String,
 
-    /// Override transport type detection (reality, anytls, tls, raw)
+    /// Override transport type detection (reality, anytls, tls, raw, ws, httpupgrade)
     #[arg(long)]
     transport: Option<Transport>,
 
@@ -149,6 +152,7 @@ fn build_default_config() -> Config {
         mixed: None,
         trojan: None,
         websocket: None,
+        httpupgrade: None,
     }
 }
 
@@ -164,6 +168,7 @@ fn load_config(path: &str) -> Result<wrongsv_server::Config, Box<dyn std::error:
 
 struct ClientConfigValues {
     uuid: String,
+    flow: String,
     port: String,
     short_id: String,
     x25519_pk: String,
@@ -190,6 +195,7 @@ fn resolve_client_values(cli: &Cli) -> ClientConfigValues {
         Some(cfg) if cfg.reality.is_some() => Transport::Reality,
         Some(cfg) if cfg.anytls.is_some() => Transport::AnyTls,
         Some(cfg) if cfg.websocket.is_some() => Transport::WebSocket,
+        Some(cfg) if cfg.httpupgrade.is_some() => Transport::HttpUpgrade,
         Some(cfg) if cfg.tls.is_some() => Transport::Tls,
         _ => Transport::Raw,
     });
@@ -201,6 +207,12 @@ fn resolve_client_values(cli: &Cli) -> ClientConfigValues {
                 .first()
                 .map(|u| u.id.as_str())
                 .unwrap_or(build_uuid());
+            let flow = cfg
+                .users
+                .first()
+                .and_then(|u| (!u.flow.is_empty()).then_some(u.flow.as_str()))
+                .or(cfg.flow.as_deref())
+                .unwrap_or("");
             let port = cfg.listen.rsplit(':').next().unwrap_or(build_port());
             let (pk, sid) = match &cfg.reality {
                 Some(rc) => {
@@ -237,10 +249,21 @@ fn resolve_client_values(cli: &Cli) -> ClientConfigValues {
                         format!("/{p}")
                     }
                 })
+                .or_else(|| {
+                    cfg.httpupgrade.as_ref().map(|h| {
+                        let p = &h.path;
+                        if p.starts_with('/') {
+                            p.clone()
+                        } else {
+                            format!("/{p}")
+                        }
+                    })
+                })
                 .unwrap_or_else(|| "/".to_string());
 
             ClientConfigValues {
                 uuid: uuid.to_string(),
+                flow: flow.to_string(),
                 port: port.to_string(),
                 short_id: sid,
                 x25519_pk: pk,
@@ -251,6 +274,7 @@ fn resolve_client_values(cli: &Cli) -> ClientConfigValues {
         }
         None => ClientConfigValues {
             uuid: build_uuid().to_string(),
+            flow: "xtls-rprx-vision".to_string(),
             port: build_port().to_string(),
             short_id: build_sid().to_string(),
             x25519_pk: build_pk().to_string(),
@@ -284,10 +308,14 @@ fn mihomo_format(cli: &Cli, vals: &ClientConfigValues) -> String {
             ",\n  \"network\": \"ws\",\n  \"ws-opts\": {{\n    \"path\": \"{}\"\n  }}",
             vals.ws_path
         ),
+        Transport::HttpUpgrade => format!(
+            ",\n  \"network\": \"ws\",\n  \"ws-opts\": {{\n    \"path\": \"{}\",\n    \"v2ray-http-upgrade\": true\n  }}",
+            vals.ws_path
+        ),
         _ => String::new(),
     };
     let tls_line = match vals.transport {
-        Transport::Raw | Transport::WebSocket => String::new(),
+        Transport::Raw | Transport::WebSocket | Transport::HttpUpgrade => String::new(),
         _ => format!(
             ",\n  \"tls\": true,\n  \"client-fingerprint\": \"chrome\",\n  \"servername\": \"{sni}\"",
             sni = vals.servername,
@@ -302,13 +330,14 @@ fn mihomo_format(cli: &Cli, vals: &ClientConfigValues) -> String {
   "port": {port},
   "uuid": "{uuid}",
   "encryption": "none",
-  "flow": "xtls-rprx-vision",
+  "flow": "{flow}",
   "udp": true{tls}{reality}{transport}
 }}"#,
         name = cli.client_name,
         server = cli.server_host,
         port = vals.port,
         uuid = vals.uuid,
+        flow = vals.flow,
         tls = tls_line,
         reality = reality_opts,
         transport = transport,
@@ -339,7 +368,7 @@ fn singbox_format(cli: &Cli, vals: &ClientConfigValues) -> String {
             r#"        "utls": { "enabled": true, "fingerprint": "chrome" }"#.to_string(),
             r#"      }"#.to_string(),
         ],
-        Transport::Raw | Transport::WebSocket => vec![],
+        Transport::Raw | Transport::WebSocket | Transport::HttpUpgrade => vec![],
     };
 
     let transport_lines = match vals.transport {
@@ -349,11 +378,18 @@ fn singbox_format(cli: &Cli, vals: &ClientConfigValues) -> String {
             format!(r#"        "path": "{}""#, vals.ws_path),
             r#"      }"#.to_string(),
         ],
+        Transport::HttpUpgrade => vec![
+            r#"      "transport": {"#.to_string(),
+            r#"        "type": "httpupgrade","#.to_string(),
+            format!(r#"        "path": "{}""#, vals.ws_path),
+            r#"      }"#.to_string(),
+        ],
         _ => vec![],
     };
 
     let flow_line = format!(
-        r#"      "flow": ""{}"#,
+        r#"      "flow": "{}"{}"#,
+        vals.flow,
         if !tls_lines.is_empty() || !transport_lines.is_empty() {
             ","
         } else {

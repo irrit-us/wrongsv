@@ -26,6 +26,8 @@ pub(crate) mod tls;
 pub(crate) use tls::*;
 pub(crate) mod websocket;
 pub(crate) use websocket::*;
+pub(crate) mod httpupgrade;
+pub(crate) use httpupgrade::*;
 pub(crate) mod anytls;
 pub(crate) use anytls::*;
 pub(crate) mod shadowsocks;
@@ -126,6 +128,7 @@ pub struct InboundServer {
     mixed_config: Option<mixed_proxy::MixedProxyConfig>,
     trojan_config: Option<trojan::TrojanConfig>,
     ws_config: Option<WebSocketConfig>,
+    httpupgrade_config: Option<HttpUpgradeConfig>,
 }
 
 impl InboundServer {
@@ -169,6 +172,22 @@ impl InboundServer {
                         " (TLS + WS)"
                     } else {
                         " (WS)"
+                    }
+                );
+                Some(cfg)
+            }
+            None => None,
+        };
+        let httpupgrade_config = match &config.httpupgrade {
+            Some(hc) => {
+                let cfg = parse_httpupgrade_config(hc)?;
+                info!(
+                    "HTTPUpgrade enabled on path '{}'{}",
+                    cfg.path,
+                    if cfg.tls_config.is_some() {
+                        " (TLS + HTTPUpgrade)"
+                    } else {
+                        " (HTTPUpgrade)"
                     }
                 );
                 Some(cfg)
@@ -235,6 +254,7 @@ impl InboundServer {
             mixed_config,
             trojan_config,
             ws_config,
+            httpupgrade_config,
         })
     }
 
@@ -283,6 +303,8 @@ impl InboundServer {
             "Mixed proxy"
         } else if self.trojan_config.is_some() {
             "Trojan"
+        } else if self.httpupgrade_config.is_some() {
+            "VLESS HTTPUpgrade"
         } else {
             "VLESS"
         };
@@ -300,6 +322,7 @@ impl InboundServer {
         let mixed_config = self.mixed_config.clone();
         let trojan_config = self.trojan_config.clone();
         let ws_config = self.ws_config.clone();
+        let httpupgrade_config = self.httpupgrade_config.clone();
         let shadowsocks_udp_socket =
             match (&self.shadowsocks_config, self.config.shadowsocks.as_ref()) {
                 (Some(_), Some(raw_config)) if raw_config.udp => {
@@ -332,6 +355,7 @@ impl InboundServer {
                     let mc = mixed_config.clone();
                     let trc = trojan_config.clone();
                     let wsc = ws_config.clone();
+                    let huc = httpupgrade_config.clone();
                     thread::spawn(move || {
                         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                             if let Some(ref rc) = rc {
@@ -340,6 +364,8 @@ impl InboundServer {
                                 handle_anytls_connection(stream, v, kyber_sk, ac)
                             } else if let Some(ref wc) = wsc {
                                 handle_ws_connection(stream, v, kyber_sk, wc)
+                            } else if let Some(ref hc) = huc {
+                                handle_httpupgrade_connection(stream, v, kyber_sk, hc)
                             } else if let Some(ref tc) = tc {
                                 handle_tls_connection(stream, v, kyber_sk, tc)
                             } else if let Some(ref sc) = sc {

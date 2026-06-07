@@ -590,6 +590,7 @@ mod tests {
             mixed: None,
             trojan: None,
             websocket: None,
+            httpupgrade: None,
         }
     }
 

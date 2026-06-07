@@ -73,7 +73,7 @@ cargo test --test anytls_tests
 
 These tests spawn the wrongsv server and connect through real client binaries
 (sing-box, mihomo/Meta, xray-core), performing full REALITY+VLESS,
-WebSocket+VLESS, Shadowsocks, and Trojan proxy cycles.
+WebSocket+VLESS, HTTPUpgrade+VLESS, Shadowsocks, and Trojan proxy cycles.
 
 ### Prerequisites
 
@@ -115,6 +115,7 @@ cargo test --test xray_lifecycle
 | packetaddr UDP relay | VLESS UDP `sp.packet-addr.v2fly.arpa` → local UDP echo |
 | WebSocket TCP relay | VLESS over WS → local HTTP response |
 | WebSocket XUDP relay | VLESS over WS → Mux.Cool/XUDP UDP echo |
+| HTTPUpgrade TCP relay | VLESS over HTTPUpgrade → local HTTP response |
 
 ## Stress test
 

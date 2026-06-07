@@ -45,6 +45,10 @@ pub struct Config {
     /// WebSocket upgrade after any TLS handshake, before VLESS.
     #[serde(default)]
     pub websocket: Option<WebSocketServerConfig>,
+    /// HTTPUpgrade carrier configuration. When set, the listener performs
+    /// a V2Ray HTTPUpgrade handshake before VLESS.
+    #[serde(default)]
+    pub httpupgrade: Option<HttpUpgradeServerConfig>,
 }
 
 /// REALITY server-side configuration.
@@ -193,6 +197,40 @@ fn default_ws_path() -> String {
     "/".to_string()
 }
 
+/// HTTPUpgrade carrier TLS configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HttpUpgradeTlsConfig {
+    #[serde(default)]
+    pub certificate: Option<String>,
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub dest: Option<String>,
+}
+
+/// HTTPUpgrade carrier configuration.
+///
+/// HTTPUpgrade performs the V2Ray "fake websocket" HTTP/1.1 upgrade and then
+/// relays raw VLESS bytes on the upgraded stream, without WebSocket frames.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HttpUpgradeServerConfig {
+    /// URL path for the HTTPUpgrade endpoint (default "/").
+    #[serde(default = "default_ws_path")]
+    pub path: String,
+    /// Optional Host header to validate on the server side.
+    #[serde(default)]
+    pub host: Option<String>,
+    /// Optional maximum VLESS early-data bytes accepted from a custom header.
+    #[serde(default)]
+    pub max_early_data: usize,
+    /// Optional header name carrying URL-safe base64 early data.
+    #[serde(default)]
+    pub early_data_header_name: Option<String>,
+    /// Optional TLS configuration for HTTPS HTTPUpgrade mode.
+    #[serde(default)]
+    pub tls: Option<HttpUpgradeTlsConfig>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct UserConfig {
     /// UUID string
@@ -251,6 +289,12 @@ pub enum ConfigError {
     WebsocketWithVlessTransport,
     #[error("WebSocket inbound cannot be combined with non-VLESS protocols")]
     WebsocketWithNonVless,
+    #[error("HTTPUpgrade inbound cannot be combined with other VLESS transport layers")]
+    HttpUpgradeWithVlessTransport,
+    #[error("HTTPUpgrade inbound cannot be combined with non-VLESS protocols")]
+    HttpUpgradeWithNonVless,
+    #[error("HTTPUpgrade early data requires a non-empty header name")]
+    HttpUpgradeInvalidEarlyData,
 }
 
 impl Config {
@@ -287,6 +331,7 @@ impl Config {
                 || self.anytls.is_some()
                 || self.tls.is_some()
                 || self.websocket.is_some()
+                || self.httpupgrade.is_some()
             {
                 return Err(ConfigError::ShadowsocksWithVlessTransport);
             }
@@ -313,6 +358,7 @@ impl Config {
                 || self.anytls.is_some()
                 || self.tls.is_some()
                 || self.websocket.is_some()
+                || self.httpupgrade.is_some()
             {
                 return Err(ConfigError::MixedWithVlessTransport);
             }
@@ -338,6 +384,7 @@ impl Config {
                 || self.anytls.is_some()
                 || self.tls.is_some()
                 || self.websocket.is_some()
+                || self.httpupgrade.is_some()
             {
                 return Err(ConfigError::TrojanWithVlessTransport);
             }
@@ -355,7 +402,11 @@ impl Config {
             // WebSocket is a VLESS transport — must NOT be combined with
             // non-VLESS protocols or other VLESS transport layers.
             // VLESS users are expected (same as reality/anytls/tls).
-            if self.shadowsocks.is_some() || self.mixed.is_some() || self.trojan.is_some() {
+            if self.shadowsocks.is_some()
+                || self.mixed.is_some()
+                || self.trojan.is_some()
+                || self.httpupgrade.is_some()
+            {
                 return Err(ConfigError::WebsocketWithNonVless);
             }
             if self.reality.is_some() || self.anytls.is_some() || self.tls.is_some() {
@@ -368,6 +419,26 @@ impl Config {
             if let Some(ref tls) = ws.tls {
                 // TLS certificate/key will be validated at parse time
                 let _ = tls;
+            }
+        }
+        if let Some(httpupgrade) = &self.httpupgrade {
+            if self.shadowsocks.is_some()
+                || self.mixed.is_some()
+                || self.trojan.is_some()
+                || self.websocket.is_some()
+            {
+                return Err(ConfigError::HttpUpgradeWithNonVless);
+            }
+            if self.reality.is_some() || self.anytls.is_some() || self.tls.is_some() {
+                return Err(ConfigError::HttpUpgradeWithVlessTransport);
+            }
+            if httpupgrade.max_early_data > 0
+                && httpupgrade
+                    .early_data_header_name
+                    .as_deref()
+                    .is_none_or(str::is_empty)
+            {
+                return Err(ConfigError::HttpUpgradeInvalidEarlyData);
             }
         }
         Ok(())
@@ -416,6 +487,7 @@ flow = "xtls-rprx-vision"
             mixed: None,
             trojan: None,
             websocket: None,
+            httpupgrade: None,
         };
         assert!(config.validate().is_err());
     }
@@ -441,6 +513,7 @@ flow = "xtls-rprx-vision"
             mixed: None,
             trojan: None,
             websocket: None,
+            httpupgrade: None,
         };
         assert!(config.validate().is_err());
     }
@@ -803,6 +876,129 @@ path = "/"
         assert!(matches!(
             config.validate(),
             Err(ConfigError::WebsocketWithVlessTransport)
+        ));
+    }
+
+    // ── HTTPUpgrade config tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_httpupgrade_config() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[httpupgrade]
+path = "/up"
+host = "example.com"
+max_early_data = 128
+early_data_header_name = "X-ED"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        let httpupgrade = config.httpupgrade.unwrap();
+        assert_eq!(httpupgrade.path, "/up");
+        assert_eq!(httpupgrade.host.as_deref(), Some("example.com"));
+        assert_eq!(httpupgrade.max_early_data, 128);
+        assert_eq!(httpupgrade.early_data_header_name.as_deref(), Some("X-ED"));
+        assert!(httpupgrade.tls.is_none());
+    }
+
+    #[test]
+    fn test_parse_httpupgrade_tls_config() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[httpupgrade]
+path = "/up"
+
+[httpupgrade.tls]
+certificate = '''-----BEGIN CERTIFICATE-----...'''
+key = '''-----BEGIN PRIVATE KEY-----...'''
+dest = "127.0.0.1:8080"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        let httpupgrade = config.httpupgrade.unwrap();
+        assert_eq!(httpupgrade.path, "/up");
+        let tls = httpupgrade.tls.as_ref().unwrap();
+        assert!(tls.certificate.is_some());
+        assert_eq!(tls.dest.as_deref(), Some("127.0.0.1:8080"));
+    }
+
+    #[test]
+    fn test_httpupgrade_rejects_missing_early_data_header_name() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[httpupgrade]
+max_early_data = 64
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::HttpUpgradeInvalidEarlyData)
+        ));
+    }
+
+    #[test]
+    fn test_httpupgrade_rejects_non_vless() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[httpupgrade]
+path = "/"
+
+[shadowsocks]
+method = "chacha20-ietf-poly1305"
+password = "secret"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::ShadowsocksWithVlessTransport)
+        ));
+    }
+
+    #[test]
+    fn test_httpupgrade_rejects_other_vless_transport() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[httpupgrade]
+path = "/"
+
+[tls]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::HttpUpgradeWithVlessTransport)
+        ));
+    }
+
+    #[test]
+    fn test_httpupgrade_rejects_websocket_transport() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[httpupgrade]
+path = "/up"
+
+[websocket]
+path = "/ws"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::WebsocketWithNonVless)
         ));
     }
 }

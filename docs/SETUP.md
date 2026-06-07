@@ -186,6 +186,20 @@ Add a `[tls]` section:
 
 Use `--servername` to set the SNI (e.g., `cloudfront.net`) for DPI resistance. Enable uTLS Chrome fingerprint to mimic browser TLS behavior.
 
+### HTTPUpgrade configuration
+
+HTTPUpgrade performs the V2Ray/Xray HTTP/1.1 `Upgrade: websocket` handshake and then relays raw VLESS bytes on the upgraded stream. It is not WebSocket framing.
+
+```toml
+[httpupgrade]
+path = "/up"
+# host = "example.com"                  # optional Host validation
+# max_early_data = 2048                 # optional V2Ray early data limit
+# early_data_header_name = "X-VLESS-ED" # required when max_early_data > 0
+```
+
+Optional HTTPS wrapping is available with `[httpupgrade.tls]`, using the same certificate/key/dest fields as `[websocket.tls]`. HTTPUpgrade is a VLESS carrier and is mutually exclusive with REALITY, AnyTLS, plain TLS, WebSocket, Shadowsocks, mixed proxy, and Trojan listener modes.
+
 ### Shadowsocks configuration
 
 Shadowsocks provides a standalone AEAD inbound for clients compatible with Shadowsocks, Outline, GOST, sing-box, xray-core, and mihomo. Classic AEAD and AEAD-2022 methods support TCP/UDP.
@@ -359,12 +373,12 @@ Generate client config JSON in mihomo/FlClash format (default) or sing-box forma
 ./target/release/wrongsv --config configs/tls-vision.toml \
     --print-client-config --server-host YOUR_IP --servername cloudfront.net
 
-# Explicit transport override (reality, anytls, tls, raw)
-./target/release/wrongsv --transport tls \
+# Explicit transport override (reality, anytls, tls, raw, ws, httpupgrade)
+./target/release/wrongsv --transport httpupgrade \
     --print-client-config --server-host YOUR_IP --servername cloudfront.net
 ```
 
-Transport type is auto-detected from the TOML config file (reality → `reality-opts`, tls/anytls → `tls`, none → raw). Use `--transport` to override.
+Transport type is auto-detected from the TOML config file (reality → `reality-opts`, tls/anytls → `tls`, websocket → `ws`, httpupgrade → HTTPUpgrade transport fields, none → raw). Use `--transport` to override.
 
 The generated JSON keys match Go struct tags in mihomo/sing-box (`client-fingerprint`, `public-key`, `short-id` in kebab-case). For REALITY transport, `reality-opts` block is included.
 
@@ -400,7 +414,8 @@ wrongsv/
 │   ├── anytls-tcp.toml
 │   ├── anytls-udp.toml
 │   ├── anytls-fallback.toml
-│   └── anytls-custom.toml
+│   ├── anytls-custom.toml
+│   └── httpupgrade.toml
 ├── src/
 │   └── main.rs                 # CLI binary, client config generation
 ├── benches/
@@ -417,9 +432,10 @@ wrongsv/
 │   ├── mixed_proxy_tests.rs     # SOCKS4/4A, SOCKS5, HTTP proxy tests
 │   ├── trojan_tests.rs          # Trojan TLS TCP/UDP tests
 │   ├── websocket_tests.rs       # VLESS WebSocket TCP, raw UDP, packetaddr UDP, and Mux.Cool/XUDP tests
-│   ├── singbox_lifecycle.rs     # sing-box REALITY+VLESS, packetaddr, WS, Shadowsocks AEAD/2022, and Trojan lifecycle
-│   ├── mihomo_lifecycle.rs      # mihomo REALITY+VLESS, packetaddr, WS, Shadowsocks AEAD/2022, and Trojan lifecycle
-│   └── xray_lifecycle.rs        # xray-core REALITY+VLESS, WS, Shadowsocks AEAD/2022, and Trojan lifecycle
+│   ├── httpupgrade_tests.rs     # VLESS HTTPUpgrade TCP, raw UDP, and packetaddr UDP tests
+│   ├── singbox_lifecycle.rs     # sing-box REALITY+VLESS, packetaddr, WS/HTTPUpgrade, Shadowsocks AEAD/2022, and Trojan lifecycle
+│   ├── mihomo_lifecycle.rs      # mihomo REALITY+VLESS, packetaddr, WS/HTTPUpgrade, Shadowsocks AEAD/2022, and Trojan lifecycle
+│   └── xray_lifecycle.rs        # xray-core REALITY+VLESS, WS/HTTPUpgrade, Shadowsocks AEAD/2022, and Trojan lifecycle
 └── crates/
     ├── uuid/                   # UUID v4/v5, ProcessUUID
     ├── net-types/              # Address, Port, AddressFamily

@@ -17,9 +17,9 @@ use common::{
     TEST_PRIVATE_KEY, TEST_PUBLIC_KEY, TEST_SHORT_ID, TEST_SNI, TEST_SS_2022_AES_128_PASSWORD,
     TEST_SS_2022_AES_256_PASSWORD, TEST_SS_AEAD_PASSWORD, TEST_TROJAN_PASSWORD, TEST_UUID,
     init_logging, lifecycle_test_lock, local_http_url, pick_ports, socks5_get, socks5_tcp_echo,
-    socks5_udp_echo, spawn_http_echo_target, spawn_multi_user_server, spawn_server,
-    spawn_shadowsocks_server, spawn_tcp_echo_target, spawn_trojan_server, spawn_udp_echo_target,
-    spawn_ws_server,
+    socks5_udp_echo, spawn_http_echo_target, spawn_httpupgrade_server, spawn_multi_user_server,
+    spawn_server, spawn_shadowsocks_server, spawn_tcp_echo_target, spawn_trojan_server,
+    spawn_udp_echo_target, spawn_ws_server,
 };
 
 fn mihomo_bin() -> Option<String> {
@@ -189,6 +189,37 @@ proxies:
     network: "ws"
     ws-opts:
       path: "{ws_path}"
+    smux:
+      enabled: false
+rules:
+  - MATCH, proxy
+"#
+    );
+    std::fs::write(path, yaml).unwrap();
+}
+
+fn write_mihomo_httpupgrade_config(
+    path: &str,
+    socks_port: u16,
+    server_port: u16,
+    uuid: &str,
+    upgrade_path: &str,
+) {
+    let yaml = format!(
+        r#"socks-port: {socks_port}
+log-level: error
+proxies:
+  - name: "proxy"
+    type: vless
+    server: "127.0.0.1"
+    port: {server_port}
+    uuid: "{uuid}"
+    udp: true
+    packet-encoding: ""
+    network: "ws"
+    ws-opts:
+      path: "{upgrade_path}"
+      v2ray-http-upgrade: true
     smux:
       enabled: false
 rules:
@@ -792,4 +823,30 @@ fn test_mihomo_lifecycle_ws_udp_echo() {
 
     let response = socks5_udp_echo(socks_port, echo_addr, b"mihomo ws udp").unwrap();
     assert_eq!(response, b"mihomo ws udp");
+}
+
+// ── HTTPUpgrade transport tests ────────────────────────────────────────────
+
+#[test]
+fn test_mihomo_lifecycle_httpupgrade_tcp_http() {
+    if mihomo_bin().is_none() {
+        eprintln!("SKIP: mihomo not found");
+        return;
+    }
+    let _guard = lifecycle_test_lock();
+    init_logging();
+
+    let ports = pick_ports(2);
+    let server_port = ports[0];
+    let socks_port = ports[1];
+    let http_addr = spawn_http_echo_target();
+
+    let _server = spawn_httpupgrade_server(server_port, TEST_UUID, "", "/up");
+
+    let cfg = format!("/tmp/mihomo-httpupgrade-{server_port}.yaml");
+    write_mihomo_httpupgrade_config(&cfg, socks_port, server_port, TEST_UUID, "/up");
+    let _m = start_mihomo(&cfg, socks_port);
+
+    let body = socks5_get(socks_port, &local_http_url(http_addr, "/ip")).unwrap();
+    assert!(body.contains("origin"), "unexpected response: {body}");
 }

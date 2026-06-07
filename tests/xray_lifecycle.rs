@@ -16,9 +16,9 @@ use common::{
     TEST_PRIVATE_KEY, TEST_PUBLIC_KEY, TEST_SHORT_ID, TEST_SNI, TEST_SS_2022_AES_128_PASSWORD,
     TEST_SS_2022_AES_256_PASSWORD, TEST_SS_AEAD_PASSWORD, TEST_TROJAN_PASSWORD, TEST_UUID,
     init_logging, lifecycle_test_lock, local_http_url, pick_ports, socks5_get, socks5_tcp_echo,
-    socks5_udp_echo, spawn_http_echo_target, spawn_multi_user_server, spawn_server,
-    spawn_shadowsocks_server, spawn_tcp_echo_target, spawn_trojan_server_with_pinned_cert,
-    spawn_udp_echo_target, spawn_ws_server,
+    socks5_udp_echo, spawn_http_echo_target, spawn_httpupgrade_server, spawn_multi_user_server,
+    spawn_server, spawn_shadowsocks_server, spawn_tcp_echo_target,
+    spawn_trojan_server_with_pinned_cert, spawn_udp_echo_target, spawn_ws_server,
 };
 
 fn xray_bin() -> Option<String> {
@@ -268,6 +268,68 @@ fn write_xray_ws_config(path: &str, socks_port: u16, server_port: u16, uuid: &st
       "mux": {{
         "enabled": false,
         "xudpConcurrency": -1
+      }}
+    }}
+  ],
+  "routing": {{
+    "rules": [
+      {{
+        "type": "field",
+        "inboundTag": ["socks-in"],
+        "outboundTag": "proxy"
+      }}
+    ]
+  }}
+}}"#
+    );
+    std::fs::write(path, json).unwrap();
+}
+
+fn write_xray_httpupgrade_config(
+    path: &str,
+    socks_port: u16,
+    server_port: u16,
+    uuid: &str,
+    upgrade_path: &str,
+) {
+    let json = format!(
+        r#"{{
+  "log": {{ "loglevel": "warning" }},
+  "inbounds": [
+    {{
+      "port": {socks_port},
+      "protocol": "socks",
+      "listen": "127.0.0.1",
+      "tag": "socks-in",
+      "settings": {{
+        "udp": true
+      }}
+    }}
+  ],
+  "outbounds": [
+    {{
+      "protocol": "vless",
+      "tag": "proxy",
+      "settings": {{
+        "vnext": [
+          {{
+            "address": "127.0.0.1",
+            "port": {server_port},
+            "users": [
+              {{
+                "id": "{uuid}",
+                "encryption": "none"
+              }}
+            ]
+          }}
+        ]
+      }},
+      "streamSettings": {{
+        "network": "httpupgrade",
+        "security": "none",
+        "httpupgradeSettings": {{
+          "path": "{upgrade_path}"
+        }}
       }}
     }}
   ],
@@ -853,4 +915,30 @@ fn test_xray_lifecycle_ws_udp_echo() {
 
     let response = socks5_udp_echo(socks_port, echo_addr, b"xray ws udp").unwrap();
     assert_eq!(response, b"xray ws udp");
+}
+
+// ── HTTPUpgrade transport tests ────────────────────────────────────────────
+
+#[test]
+fn test_xray_lifecycle_httpupgrade_tcp_http() {
+    if xray_bin().is_none() {
+        eprintln!("SKIP: xray not found");
+        return;
+    }
+    let _guard = lifecycle_test_lock();
+    init_logging();
+
+    let ports = pick_ports(2);
+    let server_port = ports[0];
+    let socks_port = ports[1];
+    let http_addr = spawn_http_echo_target();
+
+    let _server = spawn_httpupgrade_server(server_port, TEST_UUID, "", "/up");
+
+    let cfg = format!("/tmp/xray-httpupgrade-{server_port}.json");
+    write_xray_httpupgrade_config(&cfg, socks_port, server_port, TEST_UUID, "/up");
+    let _x = start_xray(&cfg, socks_port);
+
+    let body = socks5_get(socks_port, &local_http_url(http_addr, "/ip")).unwrap();
+    assert!(body.contains("origin"), "unexpected response: {body}");
 }

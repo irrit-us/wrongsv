@@ -1,0 +1,25 @@
+# VLESS over HTTPUpgrade.
+#
+# This carrier performs an HTTP/1.1 "Upgrade: websocket" handshake, then
+# carries raw VLESS bytes directly without WebSocket frames.
+
+listen = "0.0.0.0:8080"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+email = "user@example.com"
+flow = ""
+
+[httpupgrade]
+path = "/up"
+# host = "example.com"
+
+# Optional V2Ray/Xray early data header support.
+# max_early_data = 2048
+# early_data_header_name = "X-VLESS-ED"
+
+# Optional HTTPS wrapping for HTTPUpgrade.
+# [httpupgrade.tls]
+# certificate = """-----BEGIN CERTIFICATE-----..."""
+# key = """-----BEGIN PRIVATE KEY-----..."""
+# dest = "127.0.0.1:8080"
