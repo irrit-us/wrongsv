@@ -395,19 +395,11 @@ impl InboundServer {
         let trojan_config = self.trojan_config.clone();
         let shadowsocks_udp_socket =
             match (&self.shadowsocks_config, self.config.shadowsocks.as_ref()) {
-                (Some(config), Some(raw_config))
-                    if raw_config.udp && !config.method.is_aead_2022() =>
-                {
+                (Some(_), Some(raw_config)) if raw_config.udp => {
                     let socket = UdpSocket::bind(&self.config.listen)?;
                     socket.set_nonblocking(true)?;
                     info!("Shadowsocks UDP relay listening on {}", self.config.listen);
                     Some(socket)
-                }
-                (Some(config), Some(raw_config))
-                    if raw_config.udp && config.method.is_aead_2022() =>
-                {
-                    info!("Shadowsocks AEAD-2022 UDP relay is not enabled yet");
-                    None
                 }
                 _ => None,
             };
@@ -1375,6 +1367,10 @@ fn handle_shadowsocks_udp_packet(
     packet: Vec<u8>,
     config: wrongsv_shadowsocks::ServerConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if config.method.is_aead_2022() {
+        return handle_shadowsocks_aead_2022_udp_packet(socket, client_addr, packet, config);
+    }
+
     let plaintext = wrongsv_shadowsocks::decrypt_udp_packet(&packet, &config)?;
     let (address, port, consumed) = wrongsv_shadowsocks::parse_request_header(&plaintext)?;
     let payload = plaintext
@@ -1400,6 +1396,40 @@ fn handle_shadowsocks_udp_packet(
     );
     response_plaintext.extend_from_slice(&response_payload);
     let response_packet = wrongsv_shadowsocks::encrypt_udp_packet(&response_plaintext, &config)?;
+    socket.send_to(&response_packet, client_addr)?;
+    Ok(())
+}
+
+fn handle_shadowsocks_aead_2022_udp_packet(
+    socket: UdpSocket,
+    client_addr: SocketAddr,
+    packet: Vec<u8>,
+    config: wrongsv_shadowsocks::ServerConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let request = wrongsv_shadowsocks::decrypt_aead_2022_udp_request(&packet, &config)?;
+    let response_context =
+        config.accept_aead_2022_udp_packet(request.client_session_id, request.packet_id)?;
+    if request.payload.is_empty() {
+        return Ok(());
+    }
+
+    let target_addr = format!("{}:{}", request.address, request.port);
+    debug!(
+        "{client_addr} Shadowsocks AEAD-2022 UDP -> {target_addr} ({}B)",
+        request.payload.len()
+    );
+    let (response_addr, response_payload) =
+        send_udp_datagram_to_target(&request.address, request.port, &request.payload)?;
+    let (response_address, response_port) = socket_addr_to_destination(response_addr);
+    let response_packet = wrongsv_shadowsocks::encrypt_aead_2022_udp_response(
+        &config,
+        response_context.server_session_id,
+        response_context.packet_id,
+        request.client_session_id,
+        &response_address,
+        response_port,
+        &response_payload,
+    )?;
     socket.send_to(&response_packet, client_addr)?;
     Ok(())
 }

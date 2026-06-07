@@ -59,7 +59,7 @@ The server reads a TOML config file passed via `--config`. Pre-built examples ar
 | `kyber-vision.toml` | raw TCP | Vision | Post-quantum key exchange |
 | `anytls-custom.toml` | AnyTLS | Vision | Custom TLS cert + padding |
 | `shadowsocks-aead.toml` | Shadowsocks AEAD | n/a | TCP/UDP relay |
-| `shadowsocks-2022.toml` | Shadowsocks AEAD-2022 | n/a | TCP relay |
+| `shadowsocks-2022.toml` | Shadowsocks AEAD-2022 | n/a | TCP/UDP relay |
 | `mixed-proxy.toml` | SOCKS4/4A, SOCKS5, HTTP | n/a | Local/LAN mixed proxy |
 | `trojan-tls.toml` | Trojan over TLS | n/a | TCP/UDP relay with fallback |
 
@@ -188,7 +188,7 @@ Use `--servername` to set the SNI (e.g., `cloudfront.net`) for DPI resistance. E
 
 ### Shadowsocks configuration
 
-Shadowsocks provides a standalone AEAD inbound for clients compatible with Shadowsocks, Outline, GOST, sing-box, xray-core, and mihomo. Classic AEAD methods support TCP/UDP; AEAD-2022 currently supports TCP for the required BLAKE3/AES-GCM methods.
+Shadowsocks provides a standalone AEAD inbound for clients compatible with Shadowsocks, Outline, GOST, sing-box, xray-core, and mihomo. Classic AEAD and AEAD-2022 methods support TCP/UDP.
 
 ```toml
 [shadowsocks]
@@ -205,7 +205,7 @@ AEAD-2022 uses fixed-length base64 pre-shared keys instead of password-derived k
 [shadowsocks]
 method = "2022-blake3-aes-128-gcm"          # or 2022-blake3-aes-256-gcm
 password = "AAAAAAAAAAAAAAAAAAAAAA=="        # replace with openssl rand -base64 16
-udp = false                                 # AEAD-2022 UDP is not implemented yet
+udp = true                                  # default true
 ```
 
 ### Mixed proxy configuration
@@ -413,7 +413,7 @@ wrongsv/
 │   ├── integration.rs           # end-to-end REALITY integration tests
 │   ├── vision_relay_tests.rs    # XTLS Vision relay tests
 │   ├── anytls_tests.rs          # AnyTLS protocol tests
-│   ├── shadowsocks_tests.rs     # Shadowsocks AEAD TCP/UDP and AEAD-2022 TCP tests
+│   ├── shadowsocks_tests.rs     # Shadowsocks AEAD/AEAD-2022 TCP/UDP tests
 │   ├── mixed_proxy_tests.rs     # SOCKS4/4A, SOCKS5, HTTP proxy tests
 │   ├── trojan_tests.rs          # Trojan TLS TCP tests
 │   ├── singbox_lifecycle.rs     # sing-box REALITY+VLESS lifecycle

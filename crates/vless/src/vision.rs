@@ -72,6 +72,7 @@ pub struct DirectionState {
     pub remaining_padding: i32,
     pub current_command: i32,
     pub is_padding: bool,
+    pub initial_buffer: Vec<u8>,
 }
 
 impl TrafficState {
@@ -95,6 +96,7 @@ impl TrafficState {
                 remaining_padding: -1,
                 current_command: 0,
                 is_padding: true,
+                initial_buffer: Vec::new(),
             },
             outbound: DirectionState {
                 within_padding_buffers: true,
@@ -104,6 +106,7 @@ impl TrafficState {
                 remaining_padding: -1,
                 current_command: 0,
                 is_padding: true,
+                initial_buffer: Vec::new(),
             },
         }
     }
@@ -171,6 +174,7 @@ pub fn xtls_padding(
 
 /// Remove XTLS Vision padding from a buffer. Returns the extracted content.
 pub fn xtls_unpadding(buf: &[u8], state: &mut TrafficState, is_uplink: bool) -> Vec<u8> {
+    let user_uuid = state.user_uuid;
     let dir = if is_uplink {
         &mut state.inbound
     } else {
@@ -179,7 +183,26 @@ pub fn xtls_unpadding(buf: &[u8], state: &mut TrafficState, is_uplink: bool) -> 
 
     // Initial state: check for user_uuid prefix
     if dir.remaining_command == -1 && dir.remaining_content == -1 && dir.remaining_padding == -1 {
-        if buf.len() >= 21 && state.user_uuid[..] == buf[..16] {
+        if !dir.initial_buffer.is_empty() || buf.len() < 21 {
+            dir.initial_buffer.extend_from_slice(buf);
+            if dir
+                .initial_buffer
+                .iter()
+                .zip(user_uuid.iter())
+                .any(|(got, expected)| got != expected)
+            {
+                return std::mem::take(&mut dir.initial_buffer);
+            }
+            if dir.initial_buffer.len() < 21 {
+                return Vec::new();
+            }
+
+            let pending = std::mem::take(&mut dir.initial_buffer);
+            dir.remaining_command = 5;
+            return unpadding_loop(&pending[16..], dir);
+        }
+
+        if buf.len() >= 21 && user_uuid[..] == buf[..16] {
             let buf = &buf[16..]; // consume uuid, process rest below
             dir.remaining_command = 5;
             return unpadding_loop(buf, dir);
@@ -368,54 +391,67 @@ impl<R: Read> VisionReader<R> {
 
     /// Read data, applying unpadding and TLS filtering.
     pub fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
         if self.raw_buf.len() < buf.len() {
             self.raw_buf.resize(buf.len(), 0);
         }
-        let n = self.inner.read(&mut self.raw_buf[..buf.len()])?;
-        if n == 0 {
-            return Ok(0);
-        }
 
-        if self.direct {
-            let copy_len = n.min(buf.len());
-            buf[..copy_len].copy_from_slice(&self.raw_buf[..copy_len]);
-            return Ok(copy_len);
-        }
-
-        // Check within-buffers state before borrowing raw_buf slice
-        let within = {
-            let dir = self.direction();
-            dir.within_padding_buffers || self.state.number_of_packet_to_filter > 0
-        };
-        if !within {
-            let copy_len = n.min(buf.len());
-            buf[..copy_len].copy_from_slice(&self.raw_buf[..copy_len]);
-            return Ok(copy_len);
-        }
-
-        let is_uplink = self.is_uplink;
-        let unpadded = xtls_unpadding(&self.raw_buf[..n], &mut self.state, is_uplink);
-
-        {
-            let dir = self.direction();
-            if dir.remaining_content > 0 || dir.remaining_padding > 0 || dir.current_command == 0 {
-                dir.within_padding_buffers = true;
-            } else if dir.current_command == 1 {
-                dir.within_padding_buffers = false;
-            } else if dir.current_command == 2 {
-                dir.within_padding_buffers = false;
-                dir.direct_copy = true;
-                self.direct = true;
+        loop {
+            let n = self.inner.read(&mut self.raw_buf[..buf.len()])?;
+            if n == 0 {
+                return Ok(0);
             }
-        }
 
-        if self.state.number_of_packet_to_filter > 0 {
-            xtls_filter_tls(&unpadded, &mut self.state);
-        }
+            if self.direct {
+                let copy_len = n.min(buf.len());
+                buf[..copy_len].copy_from_slice(&self.raw_buf[..copy_len]);
+                return Ok(copy_len);
+            }
 
-        let copy_len = unpadded.len().min(buf.len());
-        buf[..copy_len].copy_from_slice(&unpadded[..copy_len]);
-        Ok(copy_len)
+            // Check within-buffers state before borrowing raw_buf slice.
+            let within = {
+                let dir = self.direction();
+                dir.within_padding_buffers || self.state.number_of_packet_to_filter > 0
+            };
+            if !within {
+                let copy_len = n.min(buf.len());
+                buf[..copy_len].copy_from_slice(&self.raw_buf[..copy_len]);
+                return Ok(copy_len);
+            }
+
+            let is_uplink = self.is_uplink;
+            let unpadded = xtls_unpadding(&self.raw_buf[..n], &mut self.state, is_uplink);
+
+            {
+                let dir = self.direction();
+                if dir.remaining_content > 0
+                    || dir.remaining_padding > 0
+                    || dir.current_command == 0
+                {
+                    dir.within_padding_buffers = true;
+                } else if dir.current_command == 1 {
+                    dir.within_padding_buffers = false;
+                } else if dir.current_command == 2 {
+                    dir.within_padding_buffers = false;
+                    dir.direct_copy = true;
+                    self.direct = true;
+                }
+            }
+
+            if self.state.number_of_packet_to_filter > 0 {
+                xtls_filter_tls(&unpadded, &mut self.state);
+            }
+
+            if unpadded.is_empty() {
+                continue;
+            }
+
+            let copy_len = unpadded.len().min(buf.len());
+            buf[..copy_len].copy_from_slice(&unpadded[..copy_len]);
+            return Ok(copy_len);
+        }
     }
 
     #[inline]
@@ -622,6 +658,32 @@ mod tests {
             sum > 0 || padding.is_empty(),
             "padding should contain non-zero bytes"
         );
+    }
+
+    #[test]
+    fn test_reader_skips_fragmented_padding_without_false_eof() {
+        let uuid = [0x42u8; 16];
+        let content = b"fragmented-vision-payload";
+        let mut frame_uuid = Some(uuid);
+        let frame = xtls_padding(
+            content,
+            CMD_PADDING_CONTINUE,
+            &mut frame_uuid,
+            false,
+            &[900, 500, 900, 256],
+        );
+        let mut reader =
+            VisionReader::new(std::io::Cursor::new(frame), TrafficState::new(&uuid), true);
+
+        let mut recovered = Vec::new();
+        let mut first = [0u8; 4];
+        let n = reader.read(&mut first).unwrap();
+        assert!(n > 0, "partial Vision headers must not look like EOF");
+        recovered.extend_from_slice(&first[..n]);
+
+        reader.read_to_end(&mut recovered).unwrap();
+
+        assert_eq!(recovered, content);
     }
 
     #[test]

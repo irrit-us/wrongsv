@@ -101,7 +101,7 @@ pub struct TlsServerConfig {
 
 /// Shadowsocks server-side configuration.
 ///
-/// Supports classic AEAD TCP/UDP and AEAD-2022 TCP methods shared by
+/// Supports classic AEAD TCP/UDP and AEAD-2022 TCP/UDP methods shared by
 /// Shadowsocks, Outline, sing-box, xray-core, mihomo, and GOST clients.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ShadowsocksServerConfig {

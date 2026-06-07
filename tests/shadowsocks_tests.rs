@@ -187,3 +187,43 @@ fn test_shadowsocks_aead_2022_tcp_echo() {
         assert_eq!(response, b"hello shadowsocks 2022");
     }
 }
+
+#[test]
+fn test_shadowsocks_aead_2022_udp_echo() {
+    let listen = reserve_addr();
+    let echo_addr = spawn_udp_echo_target();
+    let method = "2022-blake3-aes-128-gcm";
+    let password = aead_2022_password(16);
+    let _server = spawn_shadowsocks_server(&listen, method, &password);
+    thread::sleep(Duration::from_millis(200));
+
+    let ss_config = wrongsv_shadowsocks::ServerConfig::new(method, password).unwrap();
+    let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+
+    let client_session_id = *b"client01";
+    let packet = wrongsv_shadowsocks::encrypt_aead_2022_udp_request(
+        &ss_config,
+        client_session_id,
+        0,
+        &Address::IPv4([127, 0, 0, 1]),
+        Port(echo_addr.port()),
+        b"hello udp 2022",
+    )
+    .unwrap();
+    client.send_to(&packet, &listen).unwrap();
+
+    let mut response_packet = [0u8; 65535];
+    let (n, _) = client.recv_from(&mut response_packet).unwrap();
+    let response =
+        wrongsv_shadowsocks::decrypt_aead_2022_udp_response(&response_packet[..n], &ss_config)
+            .unwrap();
+
+    assert_eq!(response.client_session_id, client_session_id);
+    assert_eq!(response.packet_id, 0);
+    assert_eq!(response.address, Address::IPv4([127, 0, 0, 1]));
+    assert_eq!(response.port, Port(echo_addr.port()));
+    assert_eq!(response.payload, b"hello udp 2022");
+}

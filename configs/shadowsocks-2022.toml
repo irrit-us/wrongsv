@@ -1,6 +1,6 @@
-# Shadowsocks AEAD-2022 TCP inbound.
+# Shadowsocks AEAD-2022 TCP/UDP inbound.
 # Compatible with sing-box, mihomo, xray-core, and other clients that support
-# the required 2022 BLAKE3/AES-GCM Shadowsocks methods over TCP.
+# the required 2022 BLAKE3/AES-GCM Shadowsocks methods.
 #
 # AEAD-2022 requires a fixed-length base64 pre-shared key:
 #   2022-blake3-aes-128-gcm -> 16 bytes -> openssl rand -base64 16
@@ -11,4 +11,4 @@ listen = "0.0.0.0:8388"
 [shadowsocks]
 method = "2022-blake3-aes-128-gcm"
 password = "AAAAAAAAAAAAAAAAAAAAAA==" # example 16-byte PSK; replace before use
-udp = false
+udp = true

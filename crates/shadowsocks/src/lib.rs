@@ -1,4 +1,6 @@
-use aes_gcm::aead::{Aead, KeyInit};
+use aes::cipher::{Block, BlockDecrypt, BlockEncrypt, KeyInit as BlockKeyInit};
+use aes::{Aes128, Aes256};
+use aes_gcm::aead::Aead;
 use aes_gcm::{Aes128Gcm, Aes256Gcm};
 use base64::Engine;
 use chacha20poly1305::ChaCha20Poly1305;
@@ -6,7 +8,7 @@ use hkdf::Hkdf;
 use md5::{Digest, Md5};
 use rand::RngCore;
 use sha1::Sha1;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -21,11 +23,32 @@ const MAX_2022_CHUNK_LEN: usize = 0xffff;
 const AEAD_2022_REQUEST_FIXED_HEADER_LEN: usize = 11;
 const AEAD_2022_HEADER_TYPE_CLIENT_STREAM: u8 = 0;
 const AEAD_2022_HEADER_TYPE_SERVER_STREAM: u8 = 1;
+const AEAD_2022_HEADER_TYPE_CLIENT_PACKET: u8 = 0;
+const AEAD_2022_HEADER_TYPE_SERVER_PACKET: u8 = 1;
 const AEAD_2022_MAX_TIME_DIFF_SECS: u64 = 30;
 const AEAD_2022_REPLAY_WINDOW_SECS: u64 = 60;
+const AEAD_2022_UDP_SEPARATE_HEADER_LEN: usize = 16;
+const AEAD_2022_UDP_SESSION_ID_LEN: usize = 8;
+const AEAD_2022_UDP_REPLAY_WINDOW: u64 = 128;
 
 type ReplayEntry = (Instant, Vec<u8>);
 type ReplayCache = Arc<Mutex<VecDeque<ReplayEntry>>>;
+type UdpSessionCache = Arc<Mutex<HashMap<[u8; AEAD_2022_UDP_SESSION_ID_LEN], Aead2022UdpSession>>>;
+
+#[derive(Debug, Clone)]
+struct Aead2022UdpSession {
+    last_seen: Instant,
+    server_session_id: [u8; AEAD_2022_UDP_SESSION_ID_LEN],
+    next_server_packet_id: u64,
+    replay_window: UdpReplayWindow,
+}
+
+#[derive(Debug, Clone, Default)]
+struct UdpReplayWindow {
+    highest: u64,
+    bitmap: u128,
+    initialized: bool,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
@@ -92,6 +115,7 @@ pub struct ServerConfig {
     tcp_prefix: Vec<u8>,
     udp_prefix: Vec<u8>,
     replay_cache: ReplayCache,
+    udp_session_cache: UdpSessionCache,
 }
 
 impl ServerConfig {
@@ -117,6 +141,7 @@ impl ServerConfig {
                 tcp_prefix,
                 udp_prefix,
                 replay_cache: Arc::new(Mutex::new(VecDeque::new())),
+                udp_session_cache: Arc::new(Mutex::new(HashMap::new())),
             });
         }
         Ok(Self {
@@ -125,6 +150,7 @@ impl ServerConfig {
             tcp_prefix,
             udp_prefix,
             replay_cache: Arc::new(Mutex::new(VecDeque::new())),
+            udp_session_cache: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -159,6 +185,86 @@ impl ServerConfig {
         cache.push_back((now, salt.to_vec()));
         Ok(())
     }
+
+    pub fn accept_aead_2022_udp_packet(
+        &self,
+        client_session_id: [u8; AEAD_2022_UDP_SESSION_ID_LEN],
+        client_packet_id: u64,
+    ) -> Result<Aead2022UdpResponseContext, ShadowsocksError> {
+        if !self.method.is_aead_2022() {
+            return Err(ShadowsocksError::UnsupportedUdpMethod(
+                self.method.name().into(),
+            ));
+        }
+        let mut cache = self
+            .udp_session_cache
+            .lock()
+            .map_err(|_| ShadowsocksError::ReplayCachePoisoned)?;
+        let now = Instant::now();
+        cache.retain(|_, session| {
+            now.duration_since(session.last_seen)
+                <= Duration::from_secs(AEAD_2022_REPLAY_WINDOW_SECS)
+        });
+
+        let session = cache.entry(client_session_id).or_insert_with(|| {
+            let mut server_session_id = [0u8; AEAD_2022_UDP_SESSION_ID_LEN];
+            rand::thread_rng().fill_bytes(&mut server_session_id);
+            Aead2022UdpSession {
+                last_seen: now,
+                server_session_id,
+                next_server_packet_id: 0,
+                replay_window: UdpReplayWindow::default(),
+            }
+        });
+        session.replay_window.check(client_packet_id)?;
+        session.last_seen = now;
+        let response = Aead2022UdpResponseContext {
+            server_session_id: session.server_session_id,
+            packet_id: session.next_server_packet_id,
+        };
+        session.next_server_packet_id = session.next_server_packet_id.wrapping_add(1);
+        Ok(response)
+    }
+}
+
+impl UdpReplayWindow {
+    fn check(&mut self, packet_id: u64) -> Result<(), ShadowsocksError> {
+        if !self.initialized {
+            self.initialized = true;
+            self.highest = packet_id;
+            self.bitmap = 1;
+            return Ok(());
+        }
+
+        if packet_id > self.highest {
+            let shift = packet_id - self.highest;
+            self.bitmap = if shift >= AEAD_2022_UDP_REPLAY_WINDOW {
+                0
+            } else {
+                self.bitmap << shift
+            };
+            self.highest = packet_id;
+            self.bitmap |= 1;
+            return Ok(());
+        }
+
+        let offset = self.highest - packet_id;
+        if offset >= AEAD_2022_UDP_REPLAY_WINDOW {
+            return Err(ShadowsocksError::ReplayDetected);
+        }
+        let bit = 1u128 << offset;
+        if self.bitmap & bit != 0 {
+            return Err(ShadowsocksError::ReplayDetected);
+        }
+        self.bitmap |= bit;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Aead2022UdpResponseContext {
+    pub server_session_id: [u8; AEAD_2022_UDP_SESSION_ID_LEN],
+    pub packet_id: u64,
 }
 
 fn validate_salt_prefix(method: Method, prefix: &[u8]) -> Result<(), ShadowsocksError> {
@@ -203,6 +309,14 @@ fn decode_aead_2022_psk(password: &str, method: Method) -> Result<Vec<u8>, Shado
         });
     }
     Ok(decoded)
+}
+
+fn derive_aead_2022_subkey(method: Method, master_key: &[u8], salt: &[u8]) -> Vec<u8> {
+    let mut key_material = Vec::with_capacity(master_key.len() + salt.len());
+    key_material.extend_from_slice(master_key);
+    key_material.extend_from_slice(salt);
+    let derived = blake3::derive_key(AEAD_2022_INFO, &key_material);
+    derived[..method.key_len()].to_vec()
 }
 
 pub fn parse_request_header(data: &[u8]) -> Result<(Address, Port, usize), ShadowsocksError> {
@@ -307,6 +421,325 @@ pub fn encrypt_udp_packet_with_salt(
     packet.extend_from_slice(salt);
     packet.extend_from_slice(&encrypted_payload);
     Ok(packet)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Aead2022UdpRequest {
+    pub client_session_id: [u8; 8],
+    pub packet_id: u64,
+    pub address: Address,
+    pub port: Port,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Aead2022UdpResponse {
+    pub server_session_id: [u8; 8],
+    pub packet_id: u64,
+    pub client_session_id: [u8; 8],
+    pub address: Address,
+    pub port: Port,
+    pub payload: Vec<u8>,
+}
+
+pub fn decrypt_aead_2022_udp_request(
+    packet: &[u8],
+    config: &ServerConfig,
+) -> Result<Aead2022UdpRequest, ShadowsocksError> {
+    let (separate_header, body) = decrypt_aead_2022_udp_packet(packet, config)?;
+    let client_session_id = session_id_from_header(&separate_header);
+    let packet_id = packet_id_from_header(&separate_header);
+    let mut pos = 0;
+    let header_type = read_u8(body.as_slice(), &mut pos)?;
+    if header_type != AEAD_2022_HEADER_TYPE_CLIENT_PACKET {
+        return Err(ShadowsocksError::InvalidHeader);
+    }
+    let timestamp = read_u64_be(body.as_slice(), &mut pos)?;
+    validate_timestamp(timestamp)?;
+    let padding_len = read_u16_be(body.as_slice(), &mut pos)? as usize;
+    if body.len() < pos + padding_len {
+        return Err(ShadowsocksError::InvalidHeader);
+    }
+    pos += padding_len;
+    let (address, port, consumed) = parse_request_header(&body[pos..])?;
+    pos += consumed;
+    let payload = body[pos..].to_vec();
+
+    Ok(Aead2022UdpRequest {
+        client_session_id,
+        packet_id,
+        address,
+        port,
+        payload,
+    })
+}
+
+pub fn encrypt_aead_2022_udp_request(
+    config: &ServerConfig,
+    client_session_id: [u8; 8],
+    packet_id: u64,
+    address: &Address,
+    port: Port,
+    payload: &[u8],
+) -> Result<Vec<u8>, ShadowsocksError> {
+    let mut body = Vec::new();
+    body.push(AEAD_2022_HEADER_TYPE_CLIENT_PACKET);
+    body.extend_from_slice(&unix_time_secs()?.to_be_bytes());
+    body.extend_from_slice(&0u16.to_be_bytes());
+    write_request_header(&mut body, address, port);
+    body.extend_from_slice(payload);
+    encrypt_aead_2022_udp_body(config, client_session_id, packet_id, &body)
+}
+
+pub fn decrypt_aead_2022_udp_response(
+    packet: &[u8],
+    config: &ServerConfig,
+) -> Result<Aead2022UdpResponse, ShadowsocksError> {
+    let (separate_header, body) = decrypt_aead_2022_udp_packet(packet, config)?;
+    let server_session_id = session_id_from_header(&separate_header);
+    let packet_id = packet_id_from_header(&separate_header);
+    let mut pos = 0;
+    let header_type = read_u8(body.as_slice(), &mut pos)?;
+    if header_type != AEAD_2022_HEADER_TYPE_SERVER_PACKET {
+        return Err(ShadowsocksError::InvalidHeader);
+    }
+    let timestamp = read_u64_be(body.as_slice(), &mut pos)?;
+    validate_timestamp(timestamp)?;
+    if body.len() < pos + AEAD_2022_UDP_SESSION_ID_LEN {
+        return Err(ShadowsocksError::InvalidHeader);
+    }
+    let mut client_session_id = [0u8; AEAD_2022_UDP_SESSION_ID_LEN];
+    client_session_id.copy_from_slice(&body[pos..pos + AEAD_2022_UDP_SESSION_ID_LEN]);
+    pos += AEAD_2022_UDP_SESSION_ID_LEN;
+    let padding_len = read_u16_be(body.as_slice(), &mut pos)? as usize;
+    if body.len() < pos + padding_len {
+        return Err(ShadowsocksError::InvalidHeader);
+    }
+    pos += padding_len;
+    let (address, port, consumed) = parse_request_header(&body[pos..])?;
+    pos += consumed;
+    let payload = body[pos..].to_vec();
+
+    Ok(Aead2022UdpResponse {
+        server_session_id,
+        packet_id,
+        client_session_id,
+        address,
+        port,
+        payload,
+    })
+}
+
+pub fn encrypt_aead_2022_udp_response(
+    config: &ServerConfig,
+    server_session_id: [u8; 8],
+    packet_id: u64,
+    client_session_id: [u8; 8],
+    address: &Address,
+    port: Port,
+    payload: &[u8],
+) -> Result<Vec<u8>, ShadowsocksError> {
+    let mut body = Vec::new();
+    body.push(AEAD_2022_HEADER_TYPE_SERVER_PACKET);
+    body.extend_from_slice(&unix_time_secs()?.to_be_bytes());
+    body.extend_from_slice(&client_session_id);
+    body.extend_from_slice(&0u16.to_be_bytes());
+    write_request_header(&mut body, address, port);
+    body.extend_from_slice(payload);
+    encrypt_aead_2022_udp_body(config, server_session_id, packet_id, &body)
+}
+
+fn decrypt_aead_2022_udp_packet(
+    packet: &[u8],
+    config: &ServerConfig,
+) -> Result<([u8; AEAD_2022_UDP_SEPARATE_HEADER_LEN], Vec<u8>), ShadowsocksError> {
+    if !config.method.is_aead_2022() {
+        return Err(ShadowsocksError::UnsupportedUdpMethod(
+            config.method.name().into(),
+        ));
+    }
+    if packet.len() < AEAD_2022_UDP_SEPARATE_HEADER_LEN + TAG_LEN {
+        return Err(ShadowsocksError::ShortUdpPacket);
+    }
+    let master_key = config.master_key()?;
+    let mut encrypted_header = [0u8; AEAD_2022_UDP_SEPARATE_HEADER_LEN];
+    encrypted_header.copy_from_slice(&packet[..AEAD_2022_UDP_SEPARATE_HEADER_LEN]);
+    let separate_header =
+        crypt_aead_2022_separate_header(config.method, &master_key, encrypted_header, false)?;
+    let session_id = session_id_from_header(&separate_header);
+    let nonce = nonce_from_separate_header(&separate_header);
+    let body = aead_2022_open_once(
+        config.method,
+        &master_key,
+        &session_id,
+        &nonce,
+        &packet[AEAD_2022_UDP_SEPARATE_HEADER_LEN..],
+    )?;
+    Ok((separate_header, body))
+}
+
+fn encrypt_aead_2022_udp_body(
+    config: &ServerConfig,
+    session_id: [u8; AEAD_2022_UDP_SESSION_ID_LEN],
+    packet_id: u64,
+    body: &[u8],
+) -> Result<Vec<u8>, ShadowsocksError> {
+    if !config.method.is_aead_2022() {
+        return Err(ShadowsocksError::UnsupportedUdpMethod(
+            config.method.name().into(),
+        ));
+    }
+    let master_key = config.master_key()?;
+    let separate_header = build_separate_header(session_id, packet_id);
+    let nonce = nonce_from_separate_header(&separate_header);
+    let encrypted_body =
+        aead_2022_seal_once(config.method, &master_key, &session_id, &nonce, body)?;
+    let encrypted_header =
+        crypt_aead_2022_separate_header(config.method, &master_key, separate_header, true)?;
+
+    let mut packet = Vec::with_capacity(encrypted_header.len() + encrypted_body.len());
+    packet.extend_from_slice(&encrypted_header);
+    packet.extend_from_slice(&encrypted_body);
+    Ok(packet)
+}
+
+fn build_separate_header(
+    session_id: [u8; AEAD_2022_UDP_SESSION_ID_LEN],
+    packet_id: u64,
+) -> [u8; AEAD_2022_UDP_SEPARATE_HEADER_LEN] {
+    let mut header = [0u8; AEAD_2022_UDP_SEPARATE_HEADER_LEN];
+    header[..AEAD_2022_UDP_SESSION_ID_LEN].copy_from_slice(&session_id);
+    header[AEAD_2022_UDP_SESSION_ID_LEN..].copy_from_slice(&packet_id.to_be_bytes());
+    header
+}
+
+fn session_id_from_header(
+    header: &[u8; AEAD_2022_UDP_SEPARATE_HEADER_LEN],
+) -> [u8; AEAD_2022_UDP_SESSION_ID_LEN] {
+    let mut session_id = [0u8; AEAD_2022_UDP_SESSION_ID_LEN];
+    session_id.copy_from_slice(&header[..AEAD_2022_UDP_SESSION_ID_LEN]);
+    session_id
+}
+
+fn packet_id_from_header(header: &[u8; AEAD_2022_UDP_SEPARATE_HEADER_LEN]) -> u64 {
+    u64::from_be_bytes(
+        header[AEAD_2022_UDP_SESSION_ID_LEN..]
+            .try_into()
+            .expect("packet ID slice is 8 bytes"),
+    )
+}
+
+fn nonce_from_separate_header(header: &[u8; AEAD_2022_UDP_SEPARATE_HEADER_LEN]) -> [u8; 12] {
+    let mut nonce = [0u8; 12];
+    nonce[..4].copy_from_slice(&header[4..8]);
+    nonce[4..].copy_from_slice(&header[8..16]);
+    nonce
+}
+
+fn crypt_aead_2022_separate_header(
+    method: Method,
+    master_key: &[u8],
+    input: [u8; AEAD_2022_UDP_SEPARATE_HEADER_LEN],
+    encrypt: bool,
+) -> Result<[u8; AEAD_2022_UDP_SEPARATE_HEADER_LEN], ShadowsocksError> {
+    let mut block = Block::<Aes128>::clone_from_slice(&input);
+    match method {
+        Method::Aead2022Blake3Aes128Gcm => {
+            let cipher =
+                Aes128::new_from_slice(master_key).map_err(|_| ShadowsocksError::InvalidKey)?;
+            if encrypt {
+                cipher.encrypt_block(&mut block);
+            } else {
+                cipher.decrypt_block(&mut block);
+            }
+        }
+        Method::Aead2022Blake3Aes256Gcm => {
+            let cipher =
+                Aes256::new_from_slice(master_key).map_err(|_| ShadowsocksError::InvalidKey)?;
+            if encrypt {
+                cipher.encrypt_block(&mut block);
+            } else {
+                cipher.decrypt_block(&mut block);
+            }
+        }
+        _ => {
+            return Err(ShadowsocksError::UnsupportedUdpMethod(method.name().into()));
+        }
+    }
+
+    let mut output = [0u8; AEAD_2022_UDP_SEPARATE_HEADER_LEN];
+    output.copy_from_slice(&block);
+    Ok(output)
+}
+
+fn aead_2022_seal_once(
+    method: Method,
+    master_key: &[u8],
+    session_id: &[u8; AEAD_2022_UDP_SESSION_ID_LEN],
+    nonce: &[u8; 12],
+    plaintext: &[u8],
+) -> Result<Vec<u8>, ShadowsocksError> {
+    let subkey = derive_aead_2022_subkey(method, master_key, session_id);
+    match method {
+        Method::Aead2022Blake3Aes128Gcm => Aes128Gcm::new_from_slice(&subkey)
+            .map_err(|_| ShadowsocksError::InvalidKey)?
+            .encrypt(nonce.into(), plaintext)
+            .map_err(|_| ShadowsocksError::Encrypt),
+        Method::Aead2022Blake3Aes256Gcm => Aes256Gcm::new_from_slice(&subkey)
+            .map_err(|_| ShadowsocksError::InvalidKey)?
+            .encrypt(nonce.into(), plaintext)
+            .map_err(|_| ShadowsocksError::Encrypt),
+        _ => Err(ShadowsocksError::UnsupportedUdpMethod(method.name().into())),
+    }
+}
+
+fn aead_2022_open_once(
+    method: Method,
+    master_key: &[u8],
+    session_id: &[u8; AEAD_2022_UDP_SESSION_ID_LEN],
+    nonce: &[u8; 12],
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, ShadowsocksError> {
+    let subkey = derive_aead_2022_subkey(method, master_key, session_id);
+    match method {
+        Method::Aead2022Blake3Aes128Gcm => Aes128Gcm::new_from_slice(&subkey)
+            .map_err(|_| ShadowsocksError::InvalidKey)?
+            .decrypt(nonce.into(), ciphertext)
+            .map_err(|_| ShadowsocksError::Decrypt),
+        Method::Aead2022Blake3Aes256Gcm => Aes256Gcm::new_from_slice(&subkey)
+            .map_err(|_| ShadowsocksError::InvalidKey)?
+            .decrypt(nonce.into(), ciphertext)
+            .map_err(|_| ShadowsocksError::Decrypt),
+        _ => Err(ShadowsocksError::UnsupportedUdpMethod(method.name().into())),
+    }
+}
+
+fn read_u8(data: &[u8], pos: &mut usize) -> Result<u8, ShadowsocksError> {
+    let value = *data.get(*pos).ok_or(ShadowsocksError::InvalidHeader)?;
+    *pos += 1;
+    Ok(value)
+}
+
+fn read_u16_be(data: &[u8], pos: &mut usize) -> Result<u16, ShadowsocksError> {
+    if data.len() < *pos + 2 {
+        return Err(ShadowsocksError::InvalidHeader);
+    }
+    let value = u16::from_be_bytes([data[*pos], data[*pos + 1]]);
+    *pos += 2;
+    Ok(value)
+}
+
+fn read_u64_be(data: &[u8], pos: &mut usize) -> Result<u64, ShadowsocksError> {
+    if data.len() < *pos + 8 {
+        return Err(ShadowsocksError::InvalidHeader);
+    }
+    let value = u64::from_be_bytes(
+        data[*pos..*pos + 8]
+            .try_into()
+            .map_err(|_| ShadowsocksError::InvalidHeader)?,
+    );
+    *pos += 8;
+    Ok(value)
 }
 
 pub struct ShadowsocksReader<R> {
@@ -754,11 +1187,7 @@ impl CryptoState {
             });
         }
         let subkey = if method.is_aead_2022() {
-            let mut key_material = Vec::with_capacity(master_key.len() + salt.len());
-            key_material.extend_from_slice(master_key);
-            key_material.extend_from_slice(salt);
-            let derived = blake3::derive_key(AEAD_2022_INFO, &key_material);
-            derived[..method.key_len()].to_vec()
+            derive_aead_2022_subkey(method, master_key, salt)
         } else {
             let mut subkey = vec![0u8; method.key_len()];
             Hkdf::<Sha1>::new(Some(salt), master_key)
@@ -1031,6 +1460,65 @@ mod tests {
             assert_eq!(reader.read_chunk().unwrap(), b"first response");
             assert_eq!(reader.read_chunk().unwrap(), b"second response");
         }
+    }
+
+    #[test]
+    fn aead_2022_udp_packets_roundtrip_for_required_methods() {
+        for method in [
+            Method::Aead2022Blake3Aes128Gcm,
+            Method::Aead2022Blake3Aes256Gcm,
+        ] {
+            let config = config_2022(method);
+            let client_session_id = *b"client01";
+            let server_session_id = *b"server01";
+
+            let request_packet = encrypt_aead_2022_udp_request(
+                &config,
+                client_session_id,
+                7,
+                &Address::Domain("example.com".into()),
+                Port(443),
+                b"udp request",
+            )
+            .unwrap();
+            let request = decrypt_aead_2022_udp_request(&request_packet, &config).unwrap();
+            assert_eq!(request.client_session_id, client_session_id);
+            assert_eq!(request.packet_id, 7);
+            assert_eq!(request.address, Address::Domain("example.com".into()));
+            assert_eq!(request.port, Port(443));
+            assert_eq!(request.payload, b"udp request");
+
+            let response_packet = encrypt_aead_2022_udp_response(
+                &config,
+                server_session_id,
+                3,
+                client_session_id,
+                &Address::IPv4([127, 0, 0, 1]),
+                Port(53),
+                b"udp response",
+            )
+            .unwrap();
+            let response = decrypt_aead_2022_udp_response(&response_packet, &config).unwrap();
+            assert_eq!(response.server_session_id, server_session_id);
+            assert_eq!(response.packet_id, 3);
+            assert_eq!(response.client_session_id, client_session_id);
+            assert_eq!(response.address, Address::IPv4([127, 0, 0, 1]));
+            assert_eq!(response.port, Port(53));
+            assert_eq!(response.payload, b"udp response");
+        }
+    }
+
+    #[test]
+    fn aead_2022_udp_session_rejects_replayed_packet_id() {
+        let config = config_2022(Method::Aead2022Blake3Aes128Gcm);
+        let session_id = *b"client01";
+
+        assert!(config.accept_aead_2022_udp_packet(session_id, 0).is_ok());
+        assert!(config.accept_aead_2022_udp_packet(session_id, 1).is_ok());
+        assert!(matches!(
+            config.accept_aead_2022_udp_packet(session_id, 0),
+            Err(ShadowsocksError::ReplayDetected)
+        ));
     }
 
     #[test]

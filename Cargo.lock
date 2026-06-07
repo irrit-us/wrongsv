@@ -2314,6 +2314,7 @@ dependencies = [
 name = "wrongsv-shadowsocks"
 version = "0.2.4"
 dependencies = [
+ "aes",
  "aes-gcm",
  "base64",
  "blake3",

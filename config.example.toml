@@ -18,7 +18,7 @@ listen = "0.0.0.0:443"
 #   [reality]  — X25519 ECDH + HKDF auth, dynamic certs, spider fallback
 #   [anytls]   — Standard TLS with SHA-256 password auth
 #   [tls]      — Plain TLS 1.3, compatible with sing-box/mihomo TLS transport
-#   [shadowsocks] — Shadowsocks AEAD TCP/UDP or AEAD-2022 TCP inbound
+#   [shadowsocks] — Shadowsocks AEAD/AEAD-2022 TCP/UDP inbound
 #   [mixed]   — SOCKS4/4A + SOCKS5 CONNECT + HTTP forward/CONNECT inbound
 #   [trojan]  — Trojan over TLS TCP/UDP inbound
 
@@ -57,14 +57,14 @@ listen = "0.0.0.0:443"
 # tcp_prefix = "HTTP/1.1 "
 # udp_prefix = "k{\u0001 "
 
-# ── Shadowsocks AEAD-2022 TCP example ─────────────────────────────────────────
+# ── Shadowsocks AEAD-2022 TCP/UDP example ─────────────────────────────────────
 # 2022 methods use fixed-length base64 PSKs, not password-derived keys.
 # Generate with: openssl rand -base64 16  # aes-128
 # Generate with: openssl rand -base64 32  # aes-256
 # [shadowsocks]
 # method = "2022-blake3-aes-128-gcm"
 # password = "AAAAAAAAAAAAAAAAAAAAAA==" # example 16-byte PSK; replace before use
-# udp = false                          # AEAD-2022 UDP is tracked separately
+# udp = true                           # default true
 
 # ── Mixed SOCKS4/4A / SOCKS5 / HTTP proxy example ─────────────────────────────
 # Use this instead of users/VLESS transports for a local/LAN plain proxy.

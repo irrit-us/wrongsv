@@ -21,7 +21,7 @@
 
 ---
 
-A minimal, high-performance proxy server with VLESS, XTLS Vision flow, REALITY / AnyTLS / plain TLS transport layers, Shadowsocks AEAD TCP/UDP and AEAD-2022 TCP inbound, mixed SOCKS4/4A/SOCKS5/HTTP proxy inbound, Trojan TLS TCP/UDP inbound, and NIST ML-KEM post-quantum key encapsulation.
+A minimal, high-performance proxy server with VLESS, XTLS Vision flow, REALITY / AnyTLS / plain TLS transport layers, Shadowsocks AEAD/AEAD-2022 TCP/UDP inbound, mixed SOCKS4/4A/SOCKS5/HTTP proxy inbound, Trojan TLS TCP/UDP inbound, and NIST ML-KEM post-quantum key encapsulation.
 
 ## Architecture
 
@@ -30,7 +30,7 @@ wrongsv (binary)
 ├── server          — inbound handler, config, connection relay
 ├── reality         — REALITY TLS 1.3 authentication with spider fallback
 ├── anytls          — AnyTLS TLS disguise with SHA-256 password auth + fallback
-├── shadowsocks     — Shadowsocks AEAD TCP/UDP and AEAD-2022 TCP codec and relay
+├── shadowsocks     — Shadowsocks AEAD/AEAD-2022 TCP/UDP codec and relay
 ├── mixed proxy     — SOCKS4/4A, SOCKS5 CONNECT, and HTTP forward/CONNECT inbound relay
 ├── trojan          — Trojan over TLS TCP/UDP inbound relay with fallback
 ├── vless           — user validator, XTLS Vision padding/unpadding
@@ -45,7 +45,7 @@ wrongsv (binary)
 ## Features
 
 - **VLESS** — stateless proxy with UUID authentication and extensible addons
-- **Shadowsocks AEAD TCP/UDP + AEAD-2022 TCP** — classic `aes-128-gcm`, `aes-256-gcm`, `chacha20-ietf-poly1305`, plus `2022-blake3-aes-128-gcm` and `2022-blake3-aes-256-gcm` TCP
+- **Shadowsocks AEAD/AEAD-2022 TCP/UDP** — classic `aes-128-gcm`, `aes-256-gcm`, `chacha20-ietf-poly1305`, plus required `2022-blake3-aes-128-gcm` and `2022-blake3-aes-256-gcm`
 - **Mixed proxy inbound** — SOCKS4/4A, SOCKS5 CONNECT, HTTP absolute-form forwarding, and HTTP CONNECT; optional shared credentials apply to SOCKS5/HTTP and disable SOCKS4/4A
 - **Trojan TLS TCP/UDP inbound** — SHA224 password authentication, SOCKS5-style destination headers, pipelined TCP payload relay, UDP ASSOCIATE packet relay, and decrypted plaintext fallback
 - **REALITY** — TLS 1.3 handshake hijacking, X25519 ECDH auth, dynamic certs, spider fallback
@@ -80,7 +80,7 @@ Pick an example from [`configs/`](configs/):
 | [`basic-tcp.toml`](configs/basic-tcp.toml) | raw TCP | none | Simplest setup |
 | [`kyber-vision.toml`](configs/kyber-vision.toml) | raw TCP | Vision | Post-quantum KEM |
 | [`shadowsocks-aead.toml`](configs/shadowsocks-aead.toml) | Shadowsocks AEAD | n/a | TCP/UDP relay for Shadowsocks-compatible clients |
-| [`shadowsocks-2022.toml`](configs/shadowsocks-2022.toml) | Shadowsocks AEAD-2022 | n/a | TCP relay for sing-box/mihomo/xray Shadowsocks 2022 clients |
+| [`shadowsocks-2022.toml`](configs/shadowsocks-2022.toml) | Shadowsocks AEAD-2022 | n/a | TCP/UDP relay for sing-box/mihomo/xray Shadowsocks 2022 clients |
 | [`mixed-proxy.toml`](configs/mixed-proxy.toml) | SOCKS4/4A / SOCKS5 / HTTP proxy | n/a | Local/LAN mixed proxy inbound |
 | [`trojan-tls.toml`](configs/trojan-tls.toml) | Trojan over TLS | n/a | TCP/UDP relay for Trojan-compatible clients |
 
@@ -135,7 +135,7 @@ manual proxy testing procedures.
 - **mihomo / FlClash** — REALITY+Vision and TLS+uTLS full proxy cycle verified
 - **REALITY spider fallback** — unauthenticated probes forwarded to `dest`
 - **AnyTLS echo, Vision, UDP, fallback** — all verified end-to-end
-- **Shadowsocks AEAD/2022** — local echo relay coverage for classic TCP/UDP and both required AEAD-2022 TCP methods; codec unit coverage for AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305, and 2022 BLAKE3/AES-GCM framing
+- **Shadowsocks AEAD/2022** — local echo relay coverage for classic TCP/UDP and AEAD-2022 TCP/UDP; codec unit coverage for AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305, and 2022 BLAKE3/AES-GCM framing
 - **Mixed SOCKS4/4A/SOCKS5/HTTP proxy** — no-auth and authenticated end-to-end echo coverage
 - **Trojan TLS TCP/UDP** — local TLS echo relay coverage, UDP ASSOCIATE coverage, multi-user password coverage, and plaintext fallback coverage
 - **Concurrent connections** — 6+ simultaneous REALITY connections, 30 rapid-fire requests, 5×1MB concurrent downloads
