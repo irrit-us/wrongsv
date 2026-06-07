@@ -261,7 +261,6 @@ impl UdpReplayWindow {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Aead2022UdpResponseContext {
     pub server_session_id: [u8; AEAD_2022_UDP_SESSION_ID_LEN],
     pub packet_id: u64,
@@ -742,6 +741,288 @@ fn read_u64_be(data: &[u8], pos: &mut usize) -> Result<u64, ShadowsocksError> {
     Ok(value)
 }
 
+fn unix_time_secs() -> Result<u64, ShadowsocksError> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| ShadowsocksError::InvalidTimestamp)?
+        .as_secs())
+}
+
+fn validate_timestamp(timestamp: u64) -> Result<(), ShadowsocksError> {
+    let now = unix_time_secs()?;
+    let diff = now.abs_diff(timestamp);
+    if diff > AEAD_2022_MAX_TIME_DIFF_SECS {
+        return Err(ShadowsocksError::InvalidTimestamp);
+    }
+    Ok(())
+}
+
+fn parse_aead_2022_request_fixed_header(data: &[u8]) -> Result<usize, ShadowsocksError> {
+    if data.len() != AEAD_2022_REQUEST_FIXED_HEADER_LEN {
+        return Err(ShadowsocksError::InvalidHeader);
+    }
+    if data[0] != AEAD_2022_HEADER_TYPE_CLIENT_STREAM {
+        return Err(ShadowsocksError::InvalidHeader);
+    }
+    let timestamp = u64::from_be_bytes(
+        data[1..9]
+            .try_into()
+            .map_err(|_| ShadowsocksError::InvalidHeader)?,
+    );
+    validate_timestamp(timestamp)?;
+    Ok(u16::from_be_bytes([data[9], data[10]]) as usize)
+}
+
+fn encode_aead_2022_request_fixed_header(
+    variable_header_len: usize,
+) -> Result<Vec<u8>, ShadowsocksError> {
+    let len = u16::try_from(variable_header_len)
+        .map_err(|_| ShadowsocksError::ChunkTooLarge(variable_header_len))?;
+    let mut out = Vec::with_capacity(AEAD_2022_REQUEST_FIXED_HEADER_LEN);
+    out.push(AEAD_2022_HEADER_TYPE_CLIENT_STREAM);
+    out.extend_from_slice(&unix_time_secs()?.to_be_bytes());
+    out.extend_from_slice(&len.to_be_bytes());
+    Ok(out)
+}
+
+fn encode_aead_2022_request_variable_header(
+    address: &Address,
+    port: Port,
+    initial_payload: &[u8],
+) -> Result<Vec<u8>, ShadowsocksError> {
+    let mut out = Vec::new();
+    write_request_header(&mut out, address, port);
+    if initial_payload.is_empty() {
+        out.extend_from_slice(&1u16.to_be_bytes());
+        let mut padding = [0u8; 1];
+        rand::thread_rng().fill_bytes(&mut padding);
+        out.extend_from_slice(&padding);
+    } else {
+        out.extend_from_slice(&0u16.to_be_bytes());
+        out.extend_from_slice(initial_payload);
+    }
+    if out.len() > u16::MAX as usize {
+        return Err(ShadowsocksError::ChunkTooLarge(out.len()));
+    }
+    Ok(out)
+}
+
+fn decode_aead_2022_request_variable_header(data: &[u8]) -> Result<Vec<u8>, ShadowsocksError> {
+    let (_address, _port, consumed) = parse_request_header(data)?;
+    if data.len() < consumed + 2 {
+        return Err(ShadowsocksError::InvalidHeader);
+    }
+    let padding_len = u16::from_be_bytes([data[consumed], data[consumed + 1]]) as usize;
+    let payload_start = consumed + 2 + padding_len;
+    if data.len() < payload_start {
+        return Err(ShadowsocksError::InvalidHeader);
+    }
+    let initial_payload = &data[payload_start..];
+    if padding_len == 0 && initial_payload.is_empty() {
+        return Err(ShadowsocksError::InvalidHeader);
+    }
+
+    let mut first_chunk = Vec::with_capacity(consumed + initial_payload.len());
+    first_chunk.extend_from_slice(&data[..consumed]);
+    first_chunk.extend_from_slice(initial_payload);
+    Ok(first_chunk)
+}
+
+fn aead_2022_response_fixed_header_len(method: Method) -> usize {
+    1 + 8 + method.salt_len() + 2
+}
+
+fn parse_aead_2022_response_fixed_header(
+    data: &[u8],
+    method: Method,
+    request_salt: &[u8],
+) -> Result<usize, ShadowsocksError> {
+    if data.len() != aead_2022_response_fixed_header_len(method) {
+        return Err(ShadowsocksError::InvalidHeader);
+    }
+    if data[0] != AEAD_2022_HEADER_TYPE_SERVER_STREAM {
+        return Err(ShadowsocksError::InvalidHeader);
+    }
+    let timestamp = u64::from_be_bytes(
+        data[1..9]
+            .try_into()
+            .map_err(|_| ShadowsocksError::InvalidHeader)?,
+    );
+    validate_timestamp(timestamp)?;
+    let salt_end = 9 + method.salt_len();
+    if &data[9..salt_end] != request_salt {
+        return Err(ShadowsocksError::InvalidHeader);
+    }
+    Ok(u16::from_be_bytes([data[salt_end], data[salt_end + 1]]) as usize)
+}
+
+fn encode_aead_2022_response_fixed_header(
+    request_salt: &[u8],
+    payload_len: usize,
+) -> Result<Vec<u8>, ShadowsocksError> {
+    let len =
+        u16::try_from(payload_len).map_err(|_| ShadowsocksError::ChunkTooLarge(payload_len))?;
+    let mut out = Vec::with_capacity(1 + 8 + request_salt.len() + 2);
+    out.push(AEAD_2022_HEADER_TYPE_SERVER_STREAM);
+    out.extend_from_slice(&unix_time_secs()?.to_be_bytes());
+    out.extend_from_slice(request_salt);
+    out.extend_from_slice(&len.to_be_bytes());
+    Ok(out)
+}
+
+enum Cipher {
+    Aes128(Box<Aes128Gcm>),
+    Aes256(Box<Aes256Gcm>),
+    ChaCha(Box<ChaCha20Poly1305>),
+}
+
+struct CryptoState {
+    cipher: Cipher,
+    nonce: [u8; 12],
+}
+
+impl CryptoState {
+    fn new(method: Method, master_key: &[u8], salt: &[u8]) -> Result<Self, ShadowsocksError> {
+        if salt.len() != method.salt_len() {
+            return Err(ShadowsocksError::InvalidSaltLength {
+                expected: method.salt_len(),
+                actual: salt.len(),
+            });
+        }
+        let subkey = if method.is_aead_2022() {
+            derive_aead_2022_subkey(method, master_key, salt)
+        } else {
+            let mut subkey = vec![0u8; method.key_len()];
+            Hkdf::<Sha1>::new(Some(salt), master_key)
+                .expand(INFO, &mut subkey)
+                .map_err(|_| ShadowsocksError::KeyDerivation)?;
+            subkey
+        };
+
+        let cipher = match method {
+            Method::Aes128Gcm | Method::Aead2022Blake3Aes128Gcm => {
+                Cipher::Aes128(Box::new(Aes128Gcm::new_from_slice(&subkey).unwrap()))
+            }
+            Method::Aes256Gcm | Method::Aead2022Blake3Aes256Gcm => {
+                Cipher::Aes256(Box::new(Aes256Gcm::new_from_slice(&subkey).unwrap()))
+            }
+            Method::ChaCha20IetfPoly1305 => {
+                Cipher::ChaCha(Box::new(ChaCha20Poly1305::new_from_slice(&subkey).unwrap()))
+            }
+        };
+
+        Ok(Self {
+            cipher,
+            nonce: [0u8; 12],
+        })
+    }
+
+    fn seal(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, ShadowsocksError> {
+        let nonce = self.next_nonce();
+        match &self.cipher {
+            Cipher::Aes128(cipher) => cipher
+                .encrypt((&nonce).into(), plaintext)
+                .map_err(|_| ShadowsocksError::Encrypt),
+            Cipher::Aes256(cipher) => cipher
+                .encrypt((&nonce).into(), plaintext)
+                .map_err(|_| ShadowsocksError::Encrypt),
+            Cipher::ChaCha(cipher) => cipher
+                .encrypt((&nonce).into(), plaintext)
+                .map_err(|_| ShadowsocksError::Encrypt),
+        }
+    }
+
+    fn open(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>, ShadowsocksError> {
+        let nonce = self.next_nonce();
+        match &self.cipher {
+            Cipher::Aes128(cipher) => cipher
+                .decrypt((&nonce).into(), ciphertext)
+                .map_err(|_| ShadowsocksError::Decrypt),
+            Cipher::Aes256(cipher) => cipher
+                .decrypt((&nonce).into(), ciphertext)
+                .map_err(|_| ShadowsocksError::Decrypt),
+            Cipher::ChaCha(cipher) => cipher
+                .decrypt((&nonce).into(), ciphertext)
+                .map_err(|_| ShadowsocksError::Decrypt),
+        }
+    }
+
+    fn next_nonce(&mut self) -> [u8; 12] {
+        let current = self.nonce;
+        for byte in &mut self.nonce {
+            *byte = byte.wrapping_add(1);
+            if *byte != 0 {
+                break;
+            }
+        }
+        current
+    }
+}
+
+fn evp_bytes_to_key(password: &[u8], key_len: usize) -> Vec<u8> {
+    let mut key = Vec::with_capacity(key_len);
+    let mut previous = Vec::new();
+    while key.len() < key_len {
+        let mut hasher = Md5::new();
+        if !previous.is_empty() {
+            hasher.update(&previous);
+        }
+        hasher.update(password);
+        previous = hasher.finalize().to_vec();
+        key.extend_from_slice(&previous);
+    }
+    key.truncate(key_len);
+    key
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ShadowsocksError {
+    #[error("unsupported shadowsocks method: {0}")]
+    UnsupportedMethod(String),
+    #[error("unsupported shadowsocks UDP method: {0}")]
+    UnsupportedUdpMethod(String),
+    #[error("invalid Shadowsocks key")]
+    InvalidKey,
+    #[error("invalid Shadowsocks key length: expected {expected}, got {actual}")]
+    InvalidKeyLength { expected: usize, actual: usize },
+    #[error("invalid salt length: expected {expected}, got {actual}")]
+    InvalidSaltLength { expected: usize, actual: usize },
+    #[error("invalid salt prefix length: max {max}, got {actual}")]
+    InvalidSaltPrefixLength { max: usize, actual: usize },
+    #[error("salt prefixes are not supported for shadowsocks method: {0}")]
+    SaltPrefixUnsupportedForMethod(String),
+    #[error("failed to derive shadowsocks subkey")]
+    KeyDerivation,
+    #[error("shadowsocks encryption failed")]
+    Encrypt,
+    #[error("shadowsocks decryption failed")]
+    Decrypt,
+    #[error("invalid shadowsocks chunk length plaintext: {0}")]
+    InvalidChunkLength(usize),
+    #[error("shadowsocks chunk too large: {0}")]
+    ChunkTooLarge(usize),
+    #[error("short shadowsocks address header")]
+    ShortAddress,
+    #[error("invalid shadowsocks address type: {0}")]
+    InvalidAddressType(u8),
+    #[error("invalid shadowsocks address")]
+    InvalidAddress,
+    #[error("invalid Shadowsocks 2022 header")]
+    InvalidHeader,
+    #[error("invalid Shadowsocks 2022 timestamp")]
+    InvalidTimestamp,
+    #[error("replayed Shadowsocks 2022 salt")]
+    ReplayDetected,
+    #[error("Shadowsocks 2022 replay cache is poisoned")]
+    ReplayCachePoisoned,
+    #[error("missing Shadowsocks 2022 request salt")]
+    MissingRequestSalt,
+    #[error("short Shadowsocks UDP packet")]
+    ShortUdpPacket,
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+}
+
 pub struct ShadowsocksReader<R> {
     inner: R,
     crypto: CryptoState,
@@ -1038,287 +1319,6 @@ impl<W: Write> ShadowsocksWriter<W> {
     }
 }
 
-fn unix_time_secs() -> Result<u64, ShadowsocksError> {
-    Ok(SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| ShadowsocksError::InvalidTimestamp)?
-        .as_secs())
-}
-
-fn validate_timestamp(timestamp: u64) -> Result<(), ShadowsocksError> {
-    let now = unix_time_secs()?;
-    let diff = now.abs_diff(timestamp);
-    if diff > AEAD_2022_MAX_TIME_DIFF_SECS {
-        return Err(ShadowsocksError::InvalidTimestamp);
-    }
-    Ok(())
-}
-
-fn parse_aead_2022_request_fixed_header(data: &[u8]) -> Result<usize, ShadowsocksError> {
-    if data.len() != AEAD_2022_REQUEST_FIXED_HEADER_LEN {
-        return Err(ShadowsocksError::InvalidHeader);
-    }
-    if data[0] != AEAD_2022_HEADER_TYPE_CLIENT_STREAM {
-        return Err(ShadowsocksError::InvalidHeader);
-    }
-    let timestamp = u64::from_be_bytes(
-        data[1..9]
-            .try_into()
-            .map_err(|_| ShadowsocksError::InvalidHeader)?,
-    );
-    validate_timestamp(timestamp)?;
-    Ok(u16::from_be_bytes([data[9], data[10]]) as usize)
-}
-
-fn encode_aead_2022_request_fixed_header(
-    variable_header_len: usize,
-) -> Result<Vec<u8>, ShadowsocksError> {
-    let len = u16::try_from(variable_header_len)
-        .map_err(|_| ShadowsocksError::ChunkTooLarge(variable_header_len))?;
-    let mut out = Vec::with_capacity(AEAD_2022_REQUEST_FIXED_HEADER_LEN);
-    out.push(AEAD_2022_HEADER_TYPE_CLIENT_STREAM);
-    out.extend_from_slice(&unix_time_secs()?.to_be_bytes());
-    out.extend_from_slice(&len.to_be_bytes());
-    Ok(out)
-}
-
-fn encode_aead_2022_request_variable_header(
-    address: &Address,
-    port: Port,
-    initial_payload: &[u8],
-) -> Result<Vec<u8>, ShadowsocksError> {
-    let mut out = Vec::new();
-    write_request_header(&mut out, address, port);
-    if initial_payload.is_empty() {
-        out.extend_from_slice(&1u16.to_be_bytes());
-        let mut padding = [0u8; 1];
-        rand::thread_rng().fill_bytes(&mut padding);
-        out.extend_from_slice(&padding);
-    } else {
-        out.extend_from_slice(&0u16.to_be_bytes());
-        out.extend_from_slice(initial_payload);
-    }
-    if out.len() > u16::MAX as usize {
-        return Err(ShadowsocksError::ChunkTooLarge(out.len()));
-    }
-    Ok(out)
-}
-
-fn decode_aead_2022_request_variable_header(data: &[u8]) -> Result<Vec<u8>, ShadowsocksError> {
-    let (_address, _port, consumed) = parse_request_header(data)?;
-    if data.len() < consumed + 2 {
-        return Err(ShadowsocksError::InvalidHeader);
-    }
-    let padding_len = u16::from_be_bytes([data[consumed], data[consumed + 1]]) as usize;
-    let payload_start = consumed + 2 + padding_len;
-    if data.len() < payload_start {
-        return Err(ShadowsocksError::InvalidHeader);
-    }
-    let initial_payload = &data[payload_start..];
-    if padding_len == 0 && initial_payload.is_empty() {
-        return Err(ShadowsocksError::InvalidHeader);
-    }
-
-    let mut first_chunk = Vec::with_capacity(consumed + initial_payload.len());
-    first_chunk.extend_from_slice(&data[..consumed]);
-    first_chunk.extend_from_slice(initial_payload);
-    Ok(first_chunk)
-}
-
-fn aead_2022_response_fixed_header_len(method: Method) -> usize {
-    1 + 8 + method.salt_len() + 2
-}
-
-fn parse_aead_2022_response_fixed_header(
-    data: &[u8],
-    method: Method,
-    request_salt: &[u8],
-) -> Result<usize, ShadowsocksError> {
-    if data.len() != aead_2022_response_fixed_header_len(method) {
-        return Err(ShadowsocksError::InvalidHeader);
-    }
-    if data[0] != AEAD_2022_HEADER_TYPE_SERVER_STREAM {
-        return Err(ShadowsocksError::InvalidHeader);
-    }
-    let timestamp = u64::from_be_bytes(
-        data[1..9]
-            .try_into()
-            .map_err(|_| ShadowsocksError::InvalidHeader)?,
-    );
-    validate_timestamp(timestamp)?;
-    let salt_end = 9 + method.salt_len();
-    if &data[9..salt_end] != request_salt {
-        return Err(ShadowsocksError::InvalidHeader);
-    }
-    Ok(u16::from_be_bytes([data[salt_end], data[salt_end + 1]]) as usize)
-}
-
-fn encode_aead_2022_response_fixed_header(
-    request_salt: &[u8],
-    payload_len: usize,
-) -> Result<Vec<u8>, ShadowsocksError> {
-    let len =
-        u16::try_from(payload_len).map_err(|_| ShadowsocksError::ChunkTooLarge(payload_len))?;
-    let mut out = Vec::with_capacity(1 + 8 + request_salt.len() + 2);
-    out.push(AEAD_2022_HEADER_TYPE_SERVER_STREAM);
-    out.extend_from_slice(&unix_time_secs()?.to_be_bytes());
-    out.extend_from_slice(request_salt);
-    out.extend_from_slice(&len.to_be_bytes());
-    Ok(out)
-}
-
-enum Cipher {
-    Aes128(Box<Aes128Gcm>),
-    Aes256(Box<Aes256Gcm>),
-    ChaCha(Box<ChaCha20Poly1305>),
-}
-
-struct CryptoState {
-    cipher: Cipher,
-    nonce: [u8; 12],
-}
-
-impl CryptoState {
-    fn new(method: Method, master_key: &[u8], salt: &[u8]) -> Result<Self, ShadowsocksError> {
-        if salt.len() != method.salt_len() {
-            return Err(ShadowsocksError::InvalidSaltLength {
-                expected: method.salt_len(),
-                actual: salt.len(),
-            });
-        }
-        let subkey = if method.is_aead_2022() {
-            derive_aead_2022_subkey(method, master_key, salt)
-        } else {
-            let mut subkey = vec![0u8; method.key_len()];
-            Hkdf::<Sha1>::new(Some(salt), master_key)
-                .expand(INFO, &mut subkey)
-                .map_err(|_| ShadowsocksError::KeyDerivation)?;
-            subkey
-        };
-
-        let cipher = match method {
-            Method::Aes128Gcm | Method::Aead2022Blake3Aes128Gcm => {
-                Cipher::Aes128(Box::new(Aes128Gcm::new_from_slice(&subkey).unwrap()))
-            }
-            Method::Aes256Gcm | Method::Aead2022Blake3Aes256Gcm => {
-                Cipher::Aes256(Box::new(Aes256Gcm::new_from_slice(&subkey).unwrap()))
-            }
-            Method::ChaCha20IetfPoly1305 => {
-                Cipher::ChaCha(Box::new(ChaCha20Poly1305::new_from_slice(&subkey).unwrap()))
-            }
-        };
-
-        Ok(Self {
-            cipher,
-            nonce: [0u8; 12],
-        })
-    }
-
-    fn seal(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, ShadowsocksError> {
-        let nonce = self.next_nonce();
-        match &self.cipher {
-            Cipher::Aes128(cipher) => cipher
-                .encrypt((&nonce).into(), plaintext)
-                .map_err(|_| ShadowsocksError::Encrypt),
-            Cipher::Aes256(cipher) => cipher
-                .encrypt((&nonce).into(), plaintext)
-                .map_err(|_| ShadowsocksError::Encrypt),
-            Cipher::ChaCha(cipher) => cipher
-                .encrypt((&nonce).into(), plaintext)
-                .map_err(|_| ShadowsocksError::Encrypt),
-        }
-    }
-
-    fn open(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>, ShadowsocksError> {
-        let nonce = self.next_nonce();
-        match &self.cipher {
-            Cipher::Aes128(cipher) => cipher
-                .decrypt((&nonce).into(), ciphertext)
-                .map_err(|_| ShadowsocksError::Decrypt),
-            Cipher::Aes256(cipher) => cipher
-                .decrypt((&nonce).into(), ciphertext)
-                .map_err(|_| ShadowsocksError::Decrypt),
-            Cipher::ChaCha(cipher) => cipher
-                .decrypt((&nonce).into(), ciphertext)
-                .map_err(|_| ShadowsocksError::Decrypt),
-        }
-    }
-
-    fn next_nonce(&mut self) -> [u8; 12] {
-        let current = self.nonce;
-        for byte in &mut self.nonce {
-            *byte = byte.wrapping_add(1);
-            if *byte != 0 {
-                break;
-            }
-        }
-        current
-    }
-}
-
-fn evp_bytes_to_key(password: &[u8], key_len: usize) -> Vec<u8> {
-    let mut key = Vec::with_capacity(key_len);
-    let mut previous = Vec::new();
-    while key.len() < key_len {
-        let mut hasher = Md5::new();
-        if !previous.is_empty() {
-            hasher.update(&previous);
-        }
-        hasher.update(password);
-        previous = hasher.finalize().to_vec();
-        key.extend_from_slice(&previous);
-    }
-    key.truncate(key_len);
-    key
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum ShadowsocksError {
-    #[error("unsupported shadowsocks method: {0}")]
-    UnsupportedMethod(String),
-    #[error("unsupported shadowsocks UDP method: {0}")]
-    UnsupportedUdpMethod(String),
-    #[error("invalid Shadowsocks key")]
-    InvalidKey,
-    #[error("invalid Shadowsocks key length: expected {expected}, got {actual}")]
-    InvalidKeyLength { expected: usize, actual: usize },
-    #[error("invalid salt length: expected {expected}, got {actual}")]
-    InvalidSaltLength { expected: usize, actual: usize },
-    #[error("invalid salt prefix length: max {max}, got {actual}")]
-    InvalidSaltPrefixLength { max: usize, actual: usize },
-    #[error("salt prefixes are not supported for shadowsocks method: {0}")]
-    SaltPrefixUnsupportedForMethod(String),
-    #[error("failed to derive shadowsocks subkey")]
-    KeyDerivation,
-    #[error("shadowsocks encryption failed")]
-    Encrypt,
-    #[error("shadowsocks decryption failed")]
-    Decrypt,
-    #[error("invalid shadowsocks chunk length plaintext: {0}")]
-    InvalidChunkLength(usize),
-    #[error("shadowsocks chunk too large: {0}")]
-    ChunkTooLarge(usize),
-    #[error("short shadowsocks address header")]
-    ShortAddress,
-    #[error("invalid shadowsocks address type: {0}")]
-    InvalidAddressType(u8),
-    #[error("invalid shadowsocks address")]
-    InvalidAddress,
-    #[error("invalid Shadowsocks 2022 header")]
-    InvalidHeader,
-    #[error("invalid Shadowsocks 2022 timestamp")]
-    InvalidTimestamp,
-    #[error("replayed Shadowsocks 2022 salt")]
-    ReplayDetected,
-    #[error("Shadowsocks 2022 replay cache is poisoned")]
-    ReplayCachePoisoned,
-    #[error("missing Shadowsocks 2022 request salt")]
-    MissingRequestSalt,
-    #[error("short shadowsocks UDP packet")]
-    ShortUdpPacket,
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
-}
 
 #[cfg(test)]
 mod tests {

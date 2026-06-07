@@ -1,4 +1,7 @@
 //! Shared helpers for lifecycle integration tests.
+// These functions are shared across multiple test binaries — not every
+// binary uses every helper, so suppress dead_code warnings for the module.
+#![allow(dead_code)]
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};

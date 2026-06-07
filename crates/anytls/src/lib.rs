@@ -367,7 +367,7 @@ pub fn build_tls_config(cert_pem: &str, key_pem: &str) -> Result<ServerConfig, A
         .map_err(|e| AnyTlsError::Tls(format!("parse key: {e}")))?
         .ok_or_else(|| AnyTlsError::Tls("no private key found".into()))?;
 
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     let mut tls_config = ServerConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
         .map_err(|e| AnyTlsError::Tls(format!("protocol versions: {e}")))?
