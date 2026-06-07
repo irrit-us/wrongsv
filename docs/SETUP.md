@@ -416,9 +416,9 @@ wrongsv/
 │   ├── shadowsocks_tests.rs     # Shadowsocks AEAD/AEAD-2022 TCP/UDP tests
 │   ├── mixed_proxy_tests.rs     # SOCKS4/4A, SOCKS5, HTTP proxy tests
 │   ├── trojan_tests.rs          # Trojan TLS TCP/UDP tests
-│   ├── singbox_lifecycle.rs     # sing-box REALITY+VLESS, Shadowsocks 2022, and Trojan lifecycle
-│   ├── mihomo_lifecycle.rs      # mihomo REALITY+VLESS, Shadowsocks 2022, and Trojan lifecycle
-│   └── xray_lifecycle.rs        # xray-core REALITY+VLESS, Shadowsocks 2022, and Trojan lifecycle
+│   ├── singbox_lifecycle.rs     # sing-box REALITY+VLESS, Shadowsocks AEAD/2022, and Trojan lifecycle
+│   ├── mihomo_lifecycle.rs      # mihomo REALITY+VLESS, Shadowsocks AEAD/2022, and Trojan lifecycle
+│   └── xray_lifecycle.rs        # xray-core REALITY+VLESS, Shadowsocks AEAD/2022, and Trojan lifecycle
 └── crates/
     ├── uuid/                   # UUID v4/v5, ProcessUUID
     ├── net-types/              # Address, Port, AddressFamily

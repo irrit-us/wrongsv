@@ -131,8 +131,8 @@ manual proxy testing procedures.
 ## Interop
 
 - **xray-core 26.5.9+** — REALITY handshake, Ed25519 certs, Chrome fingerprint
-- **sing-box** — REALITY+Vision, TLS+uTLS, Shadowsocks AEAD-2022 TCP/UDP, and Trojan TCP/UDP lifecycle tests passing
-- **mihomo / FlClash** — REALITY+Vision, TLS+uTLS, Shadowsocks AEAD-2022 TCP/UDP, and Trojan TCP/UDP full proxy cycle verified
+- **sing-box** — REALITY+Vision, TLS+uTLS, Shadowsocks AEAD/2022 TCP/UDP, and Trojan TCP/UDP lifecycle tests passing
+- **mihomo / FlClash** — REALITY+Vision, TLS+uTLS, Shadowsocks AEAD/2022 TCP/UDP, and Trojan TCP/UDP full proxy cycle verified
 - **REALITY spider fallback** — unauthenticated probes forwarded to `dest`
 - **AnyTLS echo, Vision, UDP, fallback** — all verified end-to-end
 - **Shadowsocks AEAD/2022** — local echo relay coverage for classic TCP/UDP and AEAD-2022 TCP/UDP; real-client sing-box/mihomo/xray lifecycle coverage; codec unit coverage for AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305, and 2022 BLAKE3/AES-GCM framing

@@ -39,8 +39,9 @@ cargo test --test integration test_reality_echo -- --nocapture
 # Shadowsocks classic AEAD and AEAD-2022 TCP/UDP relay
 cargo test --test shadowsocks_tests
 
-# Real-client Shadowsocks 2022 and Trojan TCP/UDP coverage is part of lifecycle
-# tests when the corresponding sing-box, mihomo, or xray binary is available.
+# Real-client Shadowsocks AEAD/2022 and Trojan TCP/UDP coverage is part of
+# lifecycle tests when the corresponding sing-box, mihomo, or xray binary is
+# available.
 
 # Mixed SOCKS4/4A / SOCKS5 / HTTP proxy relay
 cargo test --test mixed_proxy_tests
@@ -85,17 +86,18 @@ export XRAY_BIN=/path/to/xray
 
 ### Running
 
-Lifecycle tests serialize real-client process startup internally and can be run
-with the default Rust test runner:
+Lifecycle tests serialize real-client process startup internally and use a local
+HTTP echo target for VLESS/REALITY relay assertions. They can be run with the
+default Rust test runner:
 
 ```bash
-# sing-box (10 tests)
+# sing-box (12 tests)
 cargo test --test singbox_lifecycle
 
-# mihomo/ClashMeta (10 tests)
+# mihomo/ClashMeta (12 tests)
 cargo test --test mihomo_lifecycle
 
-# xray-core (10 tests)
+# xray-core (12 tests)
 cargo test --test xray_lifecycle
 ```
 
@@ -103,9 +105,9 @@ cargo test --test xray_lifecycle
 
 | Test | Description |
 |------|-------------|
-| vision HTTP relay | REALITY handshake → VLESS → Vision → HTTP response |
-| raw/no-flow relay | REALITY handshake → VLESS raw → HTTP response |
-| multi-request | 5 sequential HTTP requests on single connection |
+| vision HTTP relay | REALITY handshake → VLESS → Vision → local HTTP response |
+| raw/no-flow relay | REALITY handshake → VLESS raw → local HTTP response |
+| multi-request | 5 sequential proxied HTTP requests |
 | multi-user | Two users, two connections, both authenticate correctly |
 | restart | Server restart, client reconnects successfully |
 | wrong credential rejection | Invalid UUID → connection rejected, no data leak |

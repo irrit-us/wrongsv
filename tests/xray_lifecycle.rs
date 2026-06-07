@@ -14,10 +14,11 @@ use std::time::Duration;
 
 use common::{
     TEST_PRIVATE_KEY, TEST_PUBLIC_KEY, TEST_SHORT_ID, TEST_SNI, TEST_SS_2022_AES_128_PASSWORD,
-    TEST_SS_2022_AES_256_PASSWORD, TEST_TROJAN_PASSWORD, TEST_UUID, init_logging,
-    lifecycle_test_lock, pick_ports, socks5_get, socks5_tcp_echo, socks5_udp_echo,
-    spawn_multi_user_server, spawn_server, spawn_shadowsocks_server, spawn_tcp_echo_target,
-    spawn_trojan_server_with_pinned_cert, spawn_udp_echo_target,
+    TEST_SS_2022_AES_256_PASSWORD, TEST_SS_AEAD_PASSWORD, TEST_TROJAN_PASSWORD, TEST_UUID,
+    init_logging, lifecycle_test_lock, local_http_url, pick_ports, socks5_get, socks5_tcp_echo,
+    socks5_udp_echo, spawn_http_echo_target, spawn_multi_user_server, spawn_server,
+    spawn_shadowsocks_server, spawn_tcp_echo_target, spawn_trojan_server_with_pinned_cert,
+    spawn_udp_echo_target,
 };
 
 fn xray_bin() -> Option<String> {
@@ -254,6 +255,7 @@ fn test_xray_lifecycle_vision_http() {
     let ports = pick_ports(2);
     let server_port = ports[0];
     let socks_port = ports[1];
+    let http_addr = spawn_http_echo_target();
 
     let _server = spawn_server(
         server_port,
@@ -278,10 +280,10 @@ fn test_xray_lifecycle_vision_http() {
 
     let _x = start_xray(&cfg, socks_port);
 
-    let body = socks5_get(socks_port, "http://httpbin.org/ip").unwrap();
+    let body = socks5_get(socks_port, &local_http_url(http_addr, "/ip")).unwrap();
     assert!(body.contains("origin"), "unexpected response: {body}");
 
-    let body2 = socks5_get(socks_port, "http://httpbin.org/get?test=lc").unwrap();
+    let body2 = socks5_get(socks_port, &local_http_url(http_addr, "/get?test=lc")).unwrap();
     assert!(
         body2.contains("test") && body2.contains("lc"),
         "unexpected: {body2}"
@@ -300,6 +302,7 @@ fn test_xray_lifecycle_raw_http() {
     let ports = pick_ports(2);
     let server_port = ports[0];
     let socks_port = ports[1];
+    let http_addr = spawn_http_echo_target();
 
     let _server = spawn_server(
         server_port,
@@ -324,7 +327,7 @@ fn test_xray_lifecycle_raw_http() {
 
     let _x = start_xray(&cfg, socks_port);
 
-    let body = socks5_get(socks_port, "http://httpbin.org/ip").unwrap();
+    let body = socks5_get(socks_port, &local_http_url(http_addr, "/ip")).unwrap();
     assert!(body.contains("origin"), "unexpected: {body}");
 }
 
@@ -340,6 +343,7 @@ fn test_xray_lifecycle_multi_request() {
     let ports = pick_ports(2);
     let server_port = ports[0];
     let socks_port = ports[1];
+    let http_addr = spawn_http_echo_target();
 
     let _server = spawn_server(
         server_port,
@@ -365,7 +369,11 @@ fn test_xray_lifecycle_multi_request() {
     let _x = start_xray(&cfg, socks_port);
 
     for i in 0..5 {
-        let body = socks5_get(socks_port, &format!("http://httpbin.org/get?n={i}")).unwrap();
+        let body = socks5_get(
+            socks_port,
+            &local_http_url(http_addr, &format!("/get?n={i}")),
+        )
+        .unwrap();
         assert!(
             body.contains(&format!("n={i}")),
             "request {i} failed: {body}"
@@ -386,6 +394,7 @@ fn test_xray_lifecycle_multi_user() {
     let server_port = ports[0];
     let socks1 = ports[1];
     let socks2 = ports[2];
+    let http_addr = spawn_http_echo_target();
     let user1 = (
         "11111111-1111-1111-1111-111111111111".to_string(),
         "xtls-rprx-vision".to_string(),
@@ -428,10 +437,10 @@ fn test_xray_lifecycle_multi_user() {
     );
     let _x2 = start_xray(&cfg2, socks2);
 
-    let body1 = socks5_get(socks1, "http://httpbin.org/ip").unwrap();
+    let body1 = socks5_get(socks1, &local_http_url(http_addr, "/ip")).unwrap();
     assert!(body1.contains("origin"), "user1 Vision failed: {body1}");
 
-    let body2 = socks5_get(socks2, "http://httpbin.org/ip").unwrap();
+    let body2 = socks5_get(socks2, &local_http_url(http_addr, "/ip")).unwrap();
     assert!(body2.contains("origin"), "user2 raw failed: {body2}");
 }
 
@@ -447,6 +456,7 @@ fn test_xray_lifecycle_restart() {
     let ports = pick_ports(2);
     let server_port = ports[0];
     let socks_port = ports[1];
+    let http_addr = spawn_http_echo_target();
 
     {
         let _server = spawn_server(
@@ -469,7 +479,7 @@ fn test_xray_lifecycle_restart() {
             TEST_SHORT_ID,
         );
         let _x = start_xray(&cfg, socks_port);
-        let body = socks5_get(socks_port, "http://httpbin.org/get?run=1").unwrap();
+        let body = socks5_get(socks_port, &local_http_url(http_addr, "/get?run=1")).unwrap();
         assert!(body.contains("run=1"), "first run failed: {body}");
     }
 
@@ -496,7 +506,7 @@ fn test_xray_lifecycle_restart() {
             TEST_SHORT_ID,
         );
         let _x = start_xray(&cfg, socks_port);
-        let body = socks5_get(socks_port, "http://httpbin.org/get?run=2").unwrap();
+        let body = socks5_get(socks_port, &local_http_url(http_addr, "/get?run=2")).unwrap();
         assert!(body.contains("run=2"), "restart failed: {body}");
     }
 }
@@ -513,6 +523,7 @@ fn test_xray_lifecycle_wrong_credential_rejected() {
     let ports = pick_ports(2);
     let server_port = ports[0];
     let socks_port = ports[1];
+    let http_addr = spawn_http_echo_target();
 
     let _server = spawn_server(
         server_port,
@@ -537,11 +548,71 @@ fn test_xray_lifecycle_wrong_credential_rejected() {
 
     let _x = start_xray(&cfg, socks_port);
 
-    let result = socks5_get(socks_port, "http://httpbin.org/ip");
+    let result = socks5_get(socks_port, &local_http_url(http_addr, "/ip"));
     assert!(
         result.is_err(),
         "wrong short_id should be rejected, got: {result:?}"
     );
+}
+
+#[test]
+fn test_xray_shadowsocks_aead_tcp_echo() {
+    if xray_bin().is_none() {
+        eprintln!("SKIP: xray not found");
+        return;
+    }
+    let _guard = lifecycle_test_lock();
+    init_logging();
+
+    let ports = pick_ports(2);
+    let server_port = ports[0];
+    let socks_port = ports[1];
+    let echo_addr = spawn_tcp_echo_target();
+    let _server =
+        spawn_shadowsocks_server(server_port, "chacha20-ietf-poly1305", TEST_SS_AEAD_PASSWORD);
+
+    let cfg = format!("/tmp/xray-ss-aead-tcp-{server_port}.json");
+    write_xray_shadowsocks_config(
+        &cfg,
+        socks_port,
+        server_port,
+        "chacha20-ietf-poly1305",
+        TEST_SS_AEAD_PASSWORD,
+    );
+    let _x = start_xray(&cfg, socks_port);
+
+    let response = socks5_tcp_echo(socks_port, echo_addr, b"xray ss aead tcp").unwrap();
+    assert_eq!(response, b"xray ss aead tcp");
+}
+
+#[test]
+fn test_xray_shadowsocks_aead_udp_echo() {
+    if xray_bin().is_none() {
+        eprintln!("SKIP: xray not found");
+        return;
+    }
+    let _guard = lifecycle_test_lock();
+    init_logging();
+
+    let ports = pick_ports(2);
+    let server_port = ports[0];
+    let socks_port = ports[1];
+    let echo_addr = spawn_udp_echo_target();
+    let _server =
+        spawn_shadowsocks_server(server_port, "chacha20-ietf-poly1305", TEST_SS_AEAD_PASSWORD);
+
+    let cfg = format!("/tmp/xray-ss-aead-udp-{server_port}.json");
+    write_xray_shadowsocks_config(
+        &cfg,
+        socks_port,
+        server_port,
+        "chacha20-ietf-poly1305",
+        TEST_SS_AEAD_PASSWORD,
+    );
+    let _x = start_xray(&cfg, socks_port);
+
+    let response = socks5_udp_echo(socks_port, echo_addr, b"xray ss aead udp").unwrap();
+    assert_eq!(response, b"xray ss aead udp");
 }
 
 #[test]
