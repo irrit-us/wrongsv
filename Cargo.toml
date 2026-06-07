@@ -18,6 +18,7 @@ members = [
     "crates/anytls",
     "crates/shadowsocks",
     "crates/websocket",
+    "crates/grpc",
 ]
 
 [workspace.package]
@@ -38,6 +39,7 @@ wrongsv-reality = { path = "crates/reality" }
 wrongsv-anytls = { path = "crates/anytls" }
 wrongsv-shadowsocks = { path = "crates/shadowsocks" }
 wrongsv-websocket = { path = "crates/websocket" }
+wrongsv-grpc = { path = "crates/grpc" }
 
 bytes = "1"
 thiserror = "2"
@@ -87,6 +89,7 @@ wrongsv-reality.workspace = true
 wrongsv-anytls.workspace = true
 wrongsv-shadowsocks.workspace = true
 wrongsv-websocket.workspace = true
+wrongsv-grpc.workspace = true
 bytes.workspace = true
 rand.workspace = true
 tracing.workspace = true
@@ -102,6 +105,9 @@ pem = "3"
 hex = "0.4"
 webpki-roots = "1.0"
 base64.workspace = true
+h2 = "0.4"
+tokio = { version = "1", features = ["rt", "net", "macros"] }
+http = "1"
 
 [[bench]]
 name = "throughput"

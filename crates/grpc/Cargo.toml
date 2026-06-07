@@ -1,0 +1,13 @@
+[package]
+name = "wrongsv-grpc"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+prost.workspace = true
+bytes.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[build-dependencies]
+prost-build = "0.14"

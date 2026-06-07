@@ -153,6 +153,7 @@ fn build_default_config() -> Config {
         trojan: None,
         websocket: None,
         httpupgrade: None,
+        grpc: None,
     }
 }
 

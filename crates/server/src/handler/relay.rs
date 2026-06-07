@@ -591,6 +591,7 @@ mod tests {
             trojan: None,
             websocket: None,
             httpupgrade: None,
+            grpc: None,
         }
     }
 

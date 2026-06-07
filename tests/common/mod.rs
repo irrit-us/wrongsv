@@ -229,6 +229,29 @@ path = "{path}"
     ServerGuard { handle }
 }
 
+/// Spawn a wrongsv gRPC VLESS server (raw gRPC, no TLS).
+#[allow(dead_code)]
+pub fn spawn_grpc_server(port: u16, user_id: &str, flow: &str, service_name: &str) -> ServerGuard {
+    let config_toml = format!(
+        r#"
+listen = "127.0.0.1:{port}"
+
+[[users]]
+id = "{user_id}"
+email = "test@grpc.test"
+flow = "{flow}"
+
+[grpc]
+service_name = "{service_name}"
+"#
+    );
+    let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
+    let server = wrongsv_server::InboundServer::new(config).unwrap();
+    let handle = server.spawn();
+    thread::sleep(Duration::from_millis(200));
+    ServerGuard { handle }
+}
+
 /// Spawn a wrongsv HTTPUpgrade VLESS server (raw HTTPUpgrade, no TLS).
 #[allow(dead_code)]
 pub fn spawn_httpupgrade_server(port: u16, user_id: &str, flow: &str, path: &str) -> ServerGuard {

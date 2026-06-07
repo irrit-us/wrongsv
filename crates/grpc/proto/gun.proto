@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package gun;
+
+// Hunk is the gRPC message used by V2Ray gRPC transport.
+// Each gRPC frame carries one Hunk with the VLESS data payload.
+message Hunk {
+  bytes data = 1;
+}

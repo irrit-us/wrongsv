@@ -28,6 +28,8 @@ pub(crate) mod websocket;
 pub(crate) use websocket::*;
 pub(crate) mod httpupgrade;
 pub(crate) use httpupgrade::*;
+pub(crate) mod grpc;
+pub(crate) use grpc::*;
 pub(crate) mod anytls;
 pub(crate) use anytls::*;
 pub(crate) mod shadowsocks;
@@ -129,6 +131,7 @@ pub struct InboundServer {
     trojan_config: Option<trojan::TrojanConfig>,
     ws_config: Option<WebSocketConfig>,
     httpupgrade_config: Option<HttpUpgradeConfig>,
+    grpc_config: Option<GrpcConfig>,
 }
 
 impl InboundServer {
@@ -188,6 +191,22 @@ impl InboundServer {
                         " (TLS + HTTPUpgrade)"
                     } else {
                         " (HTTPUpgrade)"
+                    }
+                );
+                Some(cfg)
+            }
+            None => None,
+        };
+        let grpc_config = match &config.grpc {
+            Some(gc) => {
+                let cfg = parse_grpc_config(gc)?;
+                info!(
+                    "gRPC enabled on /{}/Tun{}",
+                    cfg.service_name,
+                    if cfg.tls_config.is_some() {
+                        " (TLS + gRPC)"
+                    } else {
+                        " (gRPC)"
                     }
                 );
                 Some(cfg)
@@ -255,6 +274,7 @@ impl InboundServer {
             trojan_config,
             ws_config,
             httpupgrade_config,
+            grpc_config,
         })
     }
 
@@ -305,6 +325,8 @@ impl InboundServer {
             "Trojan"
         } else if self.httpupgrade_config.is_some() {
             "VLESS HTTPUpgrade"
+        } else if self.grpc_config.is_some() {
+            "VLESS gRPC"
         } else {
             "VLESS"
         };
@@ -323,6 +345,7 @@ impl InboundServer {
         let trojan_config = self.trojan_config.clone();
         let ws_config = self.ws_config.clone();
         let httpupgrade_config = self.httpupgrade_config.clone();
+        let grpc_config = self.grpc_config.clone();
         let shadowsocks_udp_socket =
             match (&self.shadowsocks_config, self.config.shadowsocks.as_ref()) {
                 (Some(_), Some(raw_config)) if raw_config.udp => {
@@ -356,6 +379,7 @@ impl InboundServer {
                     let trc = trojan_config.clone();
                     let wsc = ws_config.clone();
                     let huc = httpupgrade_config.clone();
+                    let gc = grpc_config.clone();
                     thread::spawn(move || {
                         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                             if let Some(ref rc) = rc {
@@ -366,6 +390,8 @@ impl InboundServer {
                                 handle_ws_connection(stream, v, kyber_sk, wc)
                             } else if let Some(ref hc) = huc {
                                 handle_httpupgrade_connection(stream, v, kyber_sk, hc)
+                            } else if let Some(ref gc) = gc {
+                                handle_grpc_connection(stream, v, kyber_sk, gc)
                             } else if let Some(ref tc) = tc {
                                 handle_tls_connection(stream, v, kyber_sk, tc)
                             } else if let Some(ref sc) = sc {

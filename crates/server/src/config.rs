@@ -49,6 +49,10 @@ pub struct Config {
     /// a V2Ray HTTPUpgrade handshake before VLESS.
     #[serde(default)]
     pub httpupgrade: Option<HttpUpgradeServerConfig>,
+    /// gRPC carrier configuration. When set, the listener performs an
+    /// HTTP/2 + gRPC handshake before VLESS (V2Ray-compatible).
+    #[serde(default)]
+    pub grpc: Option<GrpcServerConfig>,
 }
 
 /// REALITY server-side configuration.
@@ -231,6 +235,31 @@ pub struct HttpUpgradeServerConfig {
     pub tls: Option<HttpUpgradeTlsConfig>,
 }
 
+/// gRPC carrier TLS configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GrpcTlsConfig {
+    #[serde(default)]
+    pub certificate: Option<String>,
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub dest: Option<String>,
+}
+
+/// gRPC carrier configuration.
+///
+/// Performs an HTTP/2 + gRPC handshake and carries VLESS data in gRPC
+/// Hunk frames. Compatible with the V2Ray gRPC transport.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GrpcServerConfig {
+    /// gRPC service name (default "GunService").
+    #[serde(default)]
+    pub service_name: Option<String>,
+    /// Optional TLS configuration for HTTPS+gRPC mode.
+    #[serde(default)]
+    pub tls: Option<GrpcTlsConfig>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct UserConfig {
     /// UUID string
@@ -295,6 +324,12 @@ pub enum ConfigError {
     HttpUpgradeWithNonVless,
     #[error("HTTPUpgrade early data requires a non-empty header name")]
     HttpUpgradeInvalidEarlyData,
+    #[error("gRPC inbound cannot be combined with other VLESS transport layers")]
+    GrpcWithVlessTransport,
+    #[error("gRPC inbound cannot be combined with non-VLESS protocols")]
+    GrpcWithNonVless,
+    #[error("gRPC inbound requires VLESS users")]
+    GrpcMissingUsers,
 }
 
 impl Config {
@@ -332,6 +367,7 @@ impl Config {
                 || self.tls.is_some()
                 || self.websocket.is_some()
                 || self.httpupgrade.is_some()
+                || self.grpc.is_some()
             {
                 return Err(ConfigError::ShadowsocksWithVlessTransport);
             }
@@ -359,6 +395,7 @@ impl Config {
                 || self.tls.is_some()
                 || self.websocket.is_some()
                 || self.httpupgrade.is_some()
+                || self.grpc.is_some()
             {
                 return Err(ConfigError::MixedWithVlessTransport);
             }
@@ -385,6 +422,7 @@ impl Config {
                 || self.tls.is_some()
                 || self.websocket.is_some()
                 || self.httpupgrade.is_some()
+                || self.grpc.is_some()
             {
                 return Err(ConfigError::TrojanWithVlessTransport);
             }
@@ -406,10 +444,15 @@ impl Config {
                 || self.mixed.is_some()
                 || self.trojan.is_some()
                 || self.httpupgrade.is_some()
+                || self.grpc.is_some()
             {
                 return Err(ConfigError::WebsocketWithNonVless);
             }
-            if self.reality.is_some() || self.anytls.is_some() || self.tls.is_some() {
+            if self.reality.is_some()
+                || self.anytls.is_some()
+                || self.tls.is_some()
+                || self.grpc.is_some()
+            {
                 return Err(ConfigError::WebsocketWithVlessTransport);
             }
             // Normalize and validate path
@@ -426,10 +469,15 @@ impl Config {
                 || self.mixed.is_some()
                 || self.trojan.is_some()
                 || self.websocket.is_some()
+                || self.grpc.is_some()
             {
                 return Err(ConfigError::HttpUpgradeWithNonVless);
             }
-            if self.reality.is_some() || self.anytls.is_some() || self.tls.is_some() {
+            if self.reality.is_some()
+                || self.anytls.is_some()
+                || self.tls.is_some()
+                || self.grpc.is_some()
+            {
                 return Err(ConfigError::HttpUpgradeWithVlessTransport);
             }
             if httpupgrade.max_early_data > 0
@@ -439,6 +487,22 @@ impl Config {
                     .is_none_or(str::is_empty)
             {
                 return Err(ConfigError::HttpUpgradeInvalidEarlyData);
+            }
+        }
+        if let Some(_grpc) = &self.grpc {
+            if self.shadowsocks.is_some()
+                || self.mixed.is_some()
+                || self.trojan.is_some()
+                || self.websocket.is_some()
+                || self.httpupgrade.is_some()
+            {
+                return Err(ConfigError::GrpcWithNonVless);
+            }
+            if self.reality.is_some() || self.anytls.is_some() || self.tls.is_some() {
+                return Err(ConfigError::GrpcWithVlessTransport);
+            }
+            if self.users.is_empty() {
+                return Err(ConfigError::GrpcMissingUsers);
             }
         }
         Ok(())
@@ -488,6 +552,7 @@ flow = "xtls-rprx-vision"
             trojan: None,
             websocket: None,
             httpupgrade: None,
+            grpc: None,
         };
         assert!(config.validate().is_err());
     }
@@ -514,6 +579,7 @@ flow = "xtls-rprx-vision"
             trojan: None,
             websocket: None,
             httpupgrade: None,
+            grpc: None,
         };
         assert!(config.validate().is_err());
     }
