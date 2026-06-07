@@ -18,7 +18,7 @@ use common::{
     init_logging, lifecycle_test_lock, local_http_url, pick_ports, socks5_get, socks5_tcp_echo,
     socks5_udp_echo, spawn_http_echo_target, spawn_multi_user_server, spawn_server,
     spawn_shadowsocks_server, spawn_tcp_echo_target, spawn_trojan_server_with_pinned_cert,
-    spawn_udp_echo_target,
+    spawn_udp_echo_target, spawn_ws_server,
 };
 
 fn xray_bin() -> Option<String> {
@@ -203,6 +203,60 @@ fn write_xray_trojan_config(
         "tlsSettings": {{
           "serverName": "www.cloudfront.net",
           "pinnedPeerCertSha256": "{cert_hash}"
+        }}
+      }}
+    }}
+  ],
+  "routing": {{
+    "rules": [
+      {{
+        "type": "field",
+        "inboundTag": ["socks-in"],
+        "outboundTag": "proxy"
+      }}
+    ]
+  }}
+}}"#
+    );
+    std::fs::write(path, json).unwrap();
+}
+
+/// Write an xray JSON config for VLESS+WebSocket client.
+fn write_xray_ws_config(path: &str, socks_port: u16, server_port: u16, uuid: &str, ws_path: &str) {
+    let json = format!(
+        r#"{{
+  "log": {{ "loglevel": "warning" }},
+  "inbounds": [
+    {{
+      "port": {socks_port},
+      "protocol": "socks",
+      "listen": "127.0.0.1",
+      "tag": "socks-in"
+    }}
+  ],
+  "outbounds": [
+    {{
+      "protocol": "vless",
+      "tag": "proxy",
+      "settings": {{
+        "vnext": [
+          {{
+            "address": "127.0.0.1",
+            "port": {server_port},
+            "users": [
+              {{
+                "id": "{uuid}",
+                "encryption": "none"
+              }}
+            ]
+          }}
+        ]
+      }},
+      "streamSettings": {{
+        "network": "ws",
+        "security": "none",
+        "wsSettings": {{
+          "path": "{ws_path}"
         }}
       }}
     }}
@@ -739,4 +793,30 @@ fn test_xray_trojan_udp_echo() {
 
     let response = socks5_udp_echo(socks_port, echo_addr, b"xray trojan udp").unwrap();
     assert_eq!(response, b"xray trojan udp");
+}
+
+// ── WebSocket transport tests ──────────────────────────────────────────────
+
+#[test]
+fn test_xray_lifecycle_ws_tcp_http() {
+    if xray_bin().is_none() {
+        eprintln!("SKIP: xray not found");
+        return;
+    }
+    let _guard = lifecycle_test_lock();
+    init_logging();
+
+    let ports = pick_ports(2);
+    let server_port = ports[0];
+    let socks_port = ports[1];
+    let http_addr = spawn_http_echo_target();
+
+    let _server = spawn_ws_server(server_port, TEST_UUID, "", "/ws");
+
+    let cfg = format!("/tmp/xray-ws-{server_port}.json");
+    write_xray_ws_config(&cfg, socks_port, server_port, TEST_UUID, "/ws");
+    let _x = start_xray(&cfg, socks_port);
+
+    let body = socks5_get(socks_port, &local_http_url(http_addr, "/ip")).unwrap();
+    assert!(body.contains("origin"), "unexpected response: {body}");
 }

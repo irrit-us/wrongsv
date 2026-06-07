@@ -41,6 +41,10 @@ pub struct Config {
     /// Trojan over TLS instead of VLESS.
     #[serde(default)]
     pub trojan: Option<TrojanServerConfig>,
+    /// WebSocket carrier configuration. When set, the listener performs
+    /// WebSocket upgrade after any TLS handshake, before VLESS.
+    #[serde(default)]
+    pub websocket: Option<WebSocketServerConfig>,
 }
 
 /// REALITY server-side configuration.
@@ -156,6 +160,39 @@ pub struct TrojanServerConfig {
     pub dest: Option<String>,
 }
 
+/// WebSocket carrier TLS configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebSocketTlsConfig {
+    #[serde(default)]
+    pub certificate: Option<String>,
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub dest: Option<String>,
+}
+
+/// WebSocket carrier configuration.
+///
+/// When WebSocket is enabled, the listener performs the HTTP WebSocket
+/// upgrade handshake before VLESS protocol processing. WebSocket can be
+/// used standalone (raw TCP + WS) or with optional TLS (TLS + WS).
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebSocketServerConfig {
+    /// URL path for the WebSocket endpoint (default "/").
+    #[serde(default = "default_ws_path")]
+    pub path: String,
+    /// Optional Host header to validate on the server side.
+    #[serde(default)]
+    pub host: Option<String>,
+    /// Optional TLS configuration for wss:// mode.
+    #[serde(default)]
+    pub tls: Option<WebSocketTlsConfig>,
+}
+
+fn default_ws_path() -> String {
+    "/".to_string()
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct UserConfig {
     /// UUID string
@@ -210,6 +247,10 @@ pub enum ConfigError {
     TrojanMissingUsers,
     #[error("Trojan passwords must be non-empty")]
     TrojanInvalidPassword,
+    #[error("WebSocket inbound cannot be combined with other VLESS transport layers")]
+    WebsocketWithVlessTransport,
+    #[error("WebSocket inbound cannot be combined with non-VLESS protocols")]
+    WebsocketWithNonVless,
 }
 
 impl Config {
@@ -242,7 +283,11 @@ impl Config {
             if !self.users.is_empty() {
                 return Err(ConfigError::ShadowsocksWithVlessUsers);
             }
-            if self.reality.is_some() || self.anytls.is_some() || self.tls.is_some() {
+            if self.reality.is_some()
+                || self.anytls.is_some()
+                || self.tls.is_some()
+                || self.websocket.is_some()
+            {
                 return Err(ConfigError::ShadowsocksWithVlessTransport);
             }
             wrongsv_shadowsocks::Method::parse(&shadowsocks.method).map_err(|_| {
@@ -264,7 +309,11 @@ impl Config {
             if !self.users.is_empty() {
                 return Err(ConfigError::MixedWithVlessUsers);
             }
-            if self.reality.is_some() || self.anytls.is_some() || self.tls.is_some() {
+            if self.reality.is_some()
+                || self.anytls.is_some()
+                || self.tls.is_some()
+                || self.websocket.is_some()
+            {
                 return Err(ConfigError::MixedWithVlessTransport);
             }
             match (&mixed.username, &mixed.password) {
@@ -285,7 +334,11 @@ impl Config {
             if !self.users.is_empty() {
                 return Err(ConfigError::TrojanWithVlessUsers);
             }
-            if self.reality.is_some() || self.anytls.is_some() || self.tls.is_some() {
+            if self.reality.is_some()
+                || self.anytls.is_some()
+                || self.tls.is_some()
+                || self.websocket.is_some()
+            {
                 return Err(ConfigError::TrojanWithVlessTransport);
             }
             let has_top_level_password = trojan.password.as_deref().is_some_and(|p| !p.is_empty());
@@ -296,6 +349,25 @@ impl Config {
             }
             if !has_top_level_password && trojan.users.is_empty() {
                 return Err(ConfigError::TrojanMissingUsers);
+            }
+        }
+        if let Some(ws) = &self.websocket {
+            // WebSocket is a VLESS transport — must NOT be combined with
+            // non-VLESS protocols or other VLESS transport layers.
+            // VLESS users are expected (same as reality/anytls/tls).
+            if self.shadowsocks.is_some() || self.mixed.is_some() || self.trojan.is_some() {
+                return Err(ConfigError::WebsocketWithNonVless);
+            }
+            if self.reality.is_some() || self.anytls.is_some() || self.tls.is_some() {
+                return Err(ConfigError::WebsocketWithVlessTransport);
+            }
+            // Normalize and validate path
+            if !ws.path.starts_with('/') {
+                // Path will be normalized at parse time in handler
+            }
+            if let Some(ref tls) = ws.tls {
+                // TLS certificate/key will be validated at parse time
+                let _ = tls;
             }
         }
         Ok(())
@@ -343,6 +415,7 @@ flow = "xtls-rprx-vision"
             shadowsocks: None,
             mixed: None,
             trojan: None,
+            websocket: None,
         };
         assert!(config.validate().is_err());
     }
@@ -367,6 +440,7 @@ flow = "xtls-rprx-vision"
             shadowsocks: None,
             mixed: None,
             trojan: None,
+            websocket: None,
         };
         assert!(config.validate().is_err());
     }
@@ -629,6 +703,106 @@ password = "secret"
         assert!(matches!(
             config.validate(),
             Err(ConfigError::MultipleInboundProtocols)
+        ));
+    }
+
+    // ── WebSocket config tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_websocket_config() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[websocket]
+path = "/ws"
+host = "example.com"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        let ws = config.websocket.unwrap();
+        assert_eq!(ws.path, "/ws");
+        assert_eq!(ws.host.as_deref(), Some("example.com"));
+        assert!(ws.tls.is_none());
+    }
+
+    #[test]
+    fn test_parse_websocket_tls_config() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[websocket]
+path = "/"
+
+[websocket.tls]
+certificate = '''-----BEGIN CERTIFICATE-----...'''
+key = '''-----BEGIN PRIVATE KEY-----...'''
+dest = "127.0.0.1:8080"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        let ws = config.websocket.unwrap();
+        assert_eq!(ws.path, "/");
+        let tls = ws.tls.as_ref().unwrap();
+        assert!(tls.certificate.is_some());
+        assert_eq!(tls.dest.as_deref(), Some("127.0.0.1:8080"));
+    }
+
+    #[test]
+    fn test_websocket_accepts_vless_users() {
+        // WebSocket + VLESS users is the normal, expected configuration.
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[websocket]
+path = "/"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn test_websocket_rejects_non_vless() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[websocket]
+path = "/"
+
+[shadowsocks]
+method = "chacha20-ietf-poly1305"
+password = "secret"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        // The non-VLESS inbound validation triggers first
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::ShadowsocksWithVlessTransport)
+        ));
+    }
+
+    #[test]
+    fn test_websocket_rejects_other_vless_transport() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[websocket]
+path = "/"
+
+[tls]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::WebsocketWithVlessTransport)
         ));
     }
 }

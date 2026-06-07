@@ -18,6 +18,7 @@ use common::{
     init_logging, lifecycle_test_lock, local_http_url, pick_ports, socks5_get, socks5_tcp_echo,
     socks5_udp_echo, spawn_http_echo_target, spawn_multi_user_server, spawn_server,
     spawn_shadowsocks_server, spawn_tcp_echo_target, spawn_trojan_server, spawn_udp_echo_target,
+    spawn_ws_server,
 };
 
 /// Path to sing-box binary.
@@ -174,6 +175,60 @@ fn write_singbox_trojan_config(path: &str, socks_port: u16, server_port: u16, pa
 }
 
 /// Start sing-box with the given config.
+/// Write a sing-box config JSON for VLESS+WebSocket client.
+fn write_singbox_ws_config(
+    path: &str,
+    socks_port: u16,
+    server_port: u16,
+    uuid: &str,
+    ws_path: &str,
+) {
+    let json = format!(
+        r#"{{
+  "log": {{ "level": "warn", "timestamp": true }},
+  "inbounds": [
+    {{
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen": "127.0.0.1",
+      "listen_port": {socks_port}
+    }}
+  ],
+  "outbounds": [
+    {{
+      "type": "vless",
+      "tag": "proxy",
+      "server": "127.0.0.1",
+      "server_port": {server_port},
+      "uuid": "{uuid}",
+      "flow": "",
+      "transport": {{
+        "type": "ws",
+        "path": "{ws_path}"
+      }}
+    }},
+    {{
+      "type": "direct",
+      "tag": "direct"
+    }}
+  ],
+  "route": {{
+    "rules": [
+      {{
+        "inbound": ["mixed-in"],
+        "outbound": "direct"
+      }},
+      {{
+        "domain": ["*"],
+        "outbound": "proxy"
+      }}
+    ]
+  }}
+}}"#
+    );
+    std::fs::write(path, json).unwrap();
+}
+
 fn start_singbox(config_path: &str, socks_port: u16) -> SingBoxGuard {
     let bin = singbox_bin().expect("sing-box not found");
     let child = Command::new(&bin)
@@ -670,4 +725,30 @@ fn test_singbox_trojan_udp_echo() {
 
     let response = socks5_udp_echo(socks_port, echo_addr, b"sing-box trojan udp").unwrap();
     assert_eq!(response, b"sing-box trojan udp");
+}
+
+// ── WebSocket transport tests ──────────────────────────────────────────────
+
+#[test]
+fn test_singbox_lifecycle_ws_tcp_http() {
+    if singbox_bin().is_none() {
+        eprintln!("SKIP: sing-box not found");
+        return;
+    }
+    let _guard = lifecycle_test_lock();
+    init_logging();
+
+    let ports = pick_ports(2);
+    let server_port = ports[0];
+    let socks_port = ports[1];
+    let http_addr = spawn_http_echo_target();
+
+    let _server = spawn_ws_server(server_port, TEST_UUID, "", "/ws");
+
+    let cfg = format!("/tmp/singbox-ws-{server_port}.json");
+    write_singbox_ws_config(&cfg, socks_port, server_port, TEST_UUID, "/ws");
+    let _sb = start_singbox(&cfg, socks_port);
+
+    let body = socks5_get(socks_port, &local_http_url(http_addr, "/ip")).unwrap();
+    assert!(body.contains("origin"), "unexpected response: {body}");
 }

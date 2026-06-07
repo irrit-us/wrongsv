@@ -19,6 +19,7 @@ use common::{
     init_logging, lifecycle_test_lock, local_http_url, pick_ports, socks5_get, socks5_tcp_echo,
     socks5_udp_echo, spawn_http_echo_target, spawn_multi_user_server, spawn_server,
     spawn_shadowsocks_server, spawn_tcp_echo_target, spawn_trojan_server, spawn_udp_echo_target,
+    spawn_ws_server,
 };
 
 fn mihomo_bin() -> Option<String> {
@@ -126,6 +127,34 @@ proxies:
     udp: true
     sni: "localhost"
     skip-cert-verify: true
+rules:
+  - MATCH, proxy
+"#
+    );
+    std::fs::write(path, yaml).unwrap();
+}
+
+/// Write a mihomo YAML config for VLESS+WebSocket client.
+fn write_mihomo_ws_config(
+    path: &str,
+    socks_port: u16,
+    server_port: u16,
+    uuid: &str,
+    ws_path: &str,
+) {
+    let yaml = format!(
+        r#"socks-port: {socks_port}
+log-level: error
+proxies:
+  - name: "proxy"
+    type: vless
+    server: "127.0.0.1"
+    port: {server_port}
+    uuid: "{uuid}"
+    udp: true
+    network: "ws"
+    ws-opts:
+      path: "{ws_path}"
 rules:
   - MATCH, proxy
 "#
@@ -638,4 +667,30 @@ fn test_mihomo_trojan_udp_echo() {
 
     let response = socks5_udp_echo(socks_port, echo_addr, b"mihomo trojan udp").unwrap();
     assert_eq!(response, b"mihomo trojan udp");
+}
+
+// ── WebSocket transport tests ──────────────────────────────────────────────
+
+#[test]
+fn test_mihomo_lifecycle_ws_tcp_http() {
+    if mihomo_bin().is_none() {
+        eprintln!("SKIP: mihomo not found");
+        return;
+    }
+    let _guard = lifecycle_test_lock();
+    init_logging();
+
+    let ports = pick_ports(2);
+    let server_port = ports[0];
+    let socks_port = ports[1];
+    let http_addr = spawn_http_echo_target();
+
+    let _server = spawn_ws_server(server_port, TEST_UUID, "", "/ws");
+
+    let cfg = format!("/tmp/mihomo-ws-{server_port}.yaml");
+    write_mihomo_ws_config(&cfg, socks_port, server_port, TEST_UUID, "/ws");
+    let _m = start_mihomo(&cfg, socks_port);
+
+    let body = socks5_get(socks_port, &local_http_url(http_addr, "/ip")).unwrap();
+    assert!(body.contains("origin"), "unexpected response: {body}");
 }

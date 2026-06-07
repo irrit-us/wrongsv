@@ -203,6 +203,29 @@ password = "{password}"
     ServerGuard { handle }
 }
 
+/// Spawn a wrongsv WebSocket VLESS server (raw WS, no TLS).
+#[allow(dead_code)]
+pub fn spawn_ws_server(port: u16, user_id: &str, flow: &str, path: &str) -> ServerGuard {
+    let config_toml = format!(
+        r#"
+listen = "127.0.0.1:{port}"
+
+[[users]]
+id = "{user_id}"
+email = "test@ws.test"
+flow = "{flow}"
+
+[websocket]
+path = "{path}"
+"#
+    );
+    let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
+    let server = wrongsv_server::InboundServer::new(config).unwrap();
+    let handle = server.spawn();
+    thread::sleep(Duration::from_millis(200));
+    ServerGuard { handle }
+}
+
 fn certificate_sha256_hex(cert_pem: &str) -> String {
     let cert = pem::parse(cert_pem).unwrap();
     Sha256::digest(cert.contents())

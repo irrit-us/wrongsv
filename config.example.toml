@@ -18,6 +18,7 @@ listen = "0.0.0.0:443"
 #   [reality]  — X25519 ECDH + HKDF auth, dynamic certs, spider fallback
 #   [anytls]   — Standard TLS with SHA-256 password auth
 #   [tls]      — Plain TLS 1.3, compatible with sing-box/mihomo TLS transport
+#   [websocket] — WebSocket carrier, optional TLS (wss:// mode)
 #   [shadowsocks] — Shadowsocks AEAD/AEAD-2022 TCP/UDP inbound
 #   [mixed]   — SOCKS4/4A + SOCKS5 CONNECT + HTTP forward/CONNECT inbound
 #   [trojan]  — Trojan over TLS TCP/UDP inbound
@@ -38,6 +39,19 @@ listen = "0.0.0.0:443"
 # padding_scheme = """stop=8
 # 0=30-30
 # 1=100-400"""
+
+# ── WebSocket example ─────────────────────────────────────────────────────────
+# Use `[websocket]` instead of other VLESS transports for WebSocket carrier.
+# Path defaults to "/", exact-match only (no regex or prefix).
+# [websocket]
+# path = "/ws"
+# host = "your-domain.com"  # optional Host header validation
+#
+# Optional TLS for wss:// mode:
+# [websocket.tls]
+# certificate = """-----BEGIN CERTIFICATE-----..."""
+# key = """-----BEGIN PRIVATE KEY-----..."""
+# dest = "127.0.0.1:8080"
 
 # ── Plain TLS example ──────────────────────────────────────────────────────────
 [tls]

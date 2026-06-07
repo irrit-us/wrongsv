@@ -17,6 +17,7 @@ members = [
     "crates/reality",
     "crates/anytls",
     "crates/shadowsocks",
+    "crates/websocket",
 ]
 
 [workspace.package]
@@ -36,6 +37,7 @@ wrongsv-kyber = { path = "crates/kyber" }
 wrongsv-reality = { path = "crates/reality" }
 wrongsv-anytls = { path = "crates/anytls" }
 wrongsv-shadowsocks = { path = "crates/shadowsocks" }
+wrongsv-websocket = { path = "crates/websocket" }
 
 bytes = "1"
 thiserror = "2"
@@ -84,6 +86,7 @@ wrongsv-kyber.workspace = true
 wrongsv-reality.workspace = true
 wrongsv-anytls.workspace = true
 wrongsv-shadowsocks.workspace = true
+wrongsv-websocket.workspace = true
 bytes.workspace = true
 rand.workspace = true
 tracing.workspace = true

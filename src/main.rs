@@ -15,6 +15,9 @@ enum Transport {
     Tls,
     /// Raw TCP (no TLS layer)
     Raw,
+    /// WebSocket carrier (optional TLS)
+    #[clap(name = "ws")]
+    WebSocket,
 }
 
 #[derive(ValueEnum, Clone, Copy, PartialEq)]
@@ -145,6 +148,7 @@ fn build_default_config() -> Config {
         shadowsocks: None,
         mixed: None,
         trojan: None,
+        websocket: None,
     }
 }
 
@@ -165,6 +169,7 @@ struct ClientConfigValues {
     x25519_pk: String,
     servername: String,
     transport: Transport,
+    ws_path: String,
 }
 
 /// Resolve values for the generated client config from TOML config or defaults.
@@ -184,6 +189,7 @@ fn resolve_client_values(cli: &Cli) -> ClientConfigValues {
     let transport = cli.transport.unwrap_or_else(|| match &toml_config {
         Some(cfg) if cfg.reality.is_some() => Transport::Reality,
         Some(cfg) if cfg.anytls.is_some() => Transport::AnyTls,
+        Some(cfg) if cfg.websocket.is_some() => Transport::WebSocket,
         Some(cfg) if cfg.tls.is_some() => Transport::Tls,
         _ => Transport::Raw,
     });
@@ -220,6 +226,18 @@ fn resolve_client_values(cli: &Cli) -> ClientConfigValues {
             } else {
                 cli.servername.clone()
             };
+            let ws_path = cfg
+                .websocket
+                .as_ref()
+                .map(|w| {
+                    let p = &w.path;
+                    if p.starts_with('/') {
+                        p.clone()
+                    } else {
+                        format!("/{p}")
+                    }
+                })
+                .unwrap_or_else(|| "/".to_string());
 
             ClientConfigValues {
                 uuid: uuid.to_string(),
@@ -228,6 +246,7 @@ fn resolve_client_values(cli: &Cli) -> ClientConfigValues {
                 x25519_pk: pk,
                 servername,
                 transport,
+                ws_path,
             }
         }
         None => ClientConfigValues {
@@ -236,6 +255,7 @@ fn resolve_client_values(cli: &Cli) -> ClientConfigValues {
             short_id: build_sid().to_string(),
             x25519_pk: build_pk().to_string(),
             servername: cli.servername.clone(),
+            ws_path: "/".to_string(),
             transport,
         },
     }
@@ -259,8 +279,15 @@ fn mihomo_format(cli: &Cli, vals: &ClientConfigValues) -> String {
         ),
         _ => String::new(),
     };
+    let transport = match vals.transport {
+        Transport::WebSocket => format!(
+            ",\n  \"network\": \"ws\",\n  \"ws-opts\": {{\n    \"path\": \"{}\"\n  }}",
+            vals.ws_path
+        ),
+        _ => String::new(),
+    };
     let tls_line = match vals.transport {
-        Transport::Raw => String::new(),
+        Transport::Raw | Transport::WebSocket => String::new(),
         _ => format!(
             ",\n  \"tls\": true,\n  \"client-fingerprint\": \"chrome\",\n  \"servername\": \"{sni}\"",
             sni = vals.servername,
@@ -276,7 +303,7 @@ fn mihomo_format(cli: &Cli, vals: &ClientConfigValues) -> String {
   "uuid": "{uuid}",
   "encryption": "none",
   "flow": "xtls-rprx-vision",
-  "udp": true{tls}{reality}
+  "udp": true{tls}{reality}{transport}
 }}"#,
         name = cli.client_name,
         server = cli.server_host,
@@ -284,6 +311,7 @@ fn mihomo_format(cli: &Cli, vals: &ClientConfigValues) -> String {
         uuid = vals.uuid,
         tls = tls_line,
         reality = reality_opts,
+        transport = transport,
     )
 }
 
@@ -311,12 +339,26 @@ fn singbox_format(cli: &Cli, vals: &ClientConfigValues) -> String {
             r#"        "utls": { "enabled": true, "fingerprint": "chrome" }"#.to_string(),
             r#"      }"#.to_string(),
         ],
-        Transport::Raw => vec![],
+        Transport::Raw | Transport::WebSocket => vec![],
+    };
+
+    let transport_lines = match vals.transport {
+        Transport::WebSocket => vec![
+            r#"      "transport": {"#.to_string(),
+            r#"        "type": "ws","#.to_string(),
+            format!(r#"        "path": "{}""#, vals.ws_path),
+            r#"      }"#.to_string(),
+        ],
+        _ => vec![],
     };
 
     let flow_line = format!(
         r#"      "flow": ""{}"#,
-        if !tls_lines.is_empty() { "," } else { "" }
+        if !tls_lines.is_empty() || !transport_lines.is_empty() {
+            ","
+        } else {
+            ""
+        }
     );
 
     let mut lines = vec![
@@ -332,6 +374,9 @@ fn singbox_format(cli: &Cli, vals: &ClientConfigValues) -> String {
         flow_line,
     ];
     for line in tls_lines {
+        lines.push(line);
+    }
+    for line in transport_lines {
         lines.push(line);
     }
     lines.push(r#"    },"#.to_string());

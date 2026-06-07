@@ -2214,6 +2214,7 @@ dependencies = [
  "wrongsv-uuid",
  "wrongsv-vless",
  "wrongsv-vless-encoding",
+ "wrongsv-websocket",
  "x25519-dalek",
 ]
 
@@ -2308,6 +2309,7 @@ dependencies = [
  "wrongsv-uuid",
  "wrongsv-vless",
  "wrongsv-vless-encoding",
+ "wrongsv-websocket",
 ]
 
 [[package]]
@@ -2357,6 +2359,17 @@ dependencies = [
  "wrongsv-net-types",
  "wrongsv-protocol",
  "wrongsv-uuid",
+]
+
+[[package]]
+name = "wrongsv-websocket"
+version = "0.2.4"
+dependencies = [
+ "base64",
+ "rand",
+ "sha1",
+ "thiserror",
+ "tracing",
 ]
 
 [[package]]

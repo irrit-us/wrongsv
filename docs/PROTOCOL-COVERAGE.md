@@ -10,6 +10,7 @@ documentation and maps it to wrongsv implementation status.
 | VLESS raw TCP | Implemented | xray, sing-box, mihomo |
 | VLESS + TLS | Implemented | xray, sing-box, mihomo |
 | VLESS + REALITY | Implemented | xray, sing-box, mihomo |
+| VLESS + WebSocket | Implemented for raw WS and TLS+WS | xray, sing-box, mihomo |
 | XTLS Vision | Implemented for TCP | xray, sing-box, mihomo |
 | VLESS UDP packet relay | Implemented for non-Vision flows | xray, sing-box, mihomo |
 | AnyTLS | Implemented, including sing-anytls stream mode | sing-box |
@@ -45,7 +46,7 @@ documentation and maps it to wrongsv implementation status.
 
 ## Priority
 
-1. VLESS WebSocket/gRPC/XHTTP carriers.
+1. ~~VLESS WebSocket~~ → **Done**. gRPC/XHTTP carriers still open.
 2. QUIC/KCP/WebTransport carrier modes.
 3. VMess, Hysteria2, TUIC, ShadowTLS.
 4. SoftEther/OpenVPN/SSTP only if the project scope expands from proxy relay to VPN tunneling.
