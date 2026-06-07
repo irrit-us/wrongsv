@@ -2,7 +2,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rand::Rng;
 use wrongsv_net_types::Address;
@@ -312,6 +312,32 @@ flow = "{}"
     server.spawn()
 }
 
+fn reserve_tcp_listen_addr() -> String {
+    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = reserve.local_addr().unwrap().to_string();
+    drop(reserve);
+    addr
+}
+
+fn connect_with_retry(server_addr: &str, timeout: Duration) -> TcpStream {
+    let server = server_addr.parse().unwrap();
+    let deadline = Instant::now() + timeout;
+    loop {
+        match TcpStream::connect_timeout(&server, Duration::from_millis(250)) {
+            Ok(stream) => return stream,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::TimedOut
+                ) && Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => panic!("failed to connect to {server_addr}: {e}"),
+        }
+    }
+}
+
 fn vless_connect(
     server_addr: &str,
     user_uuid: &Uuid,
@@ -353,22 +379,7 @@ fn vless_connect(
     let mut req_buf = bytes::BytesMut::new();
     encoding::encode_request_header(&mut req_buf, &request, &addons).unwrap();
 
-    // Retry loop — server may still be binding in background thread
-    let server: std::net::SocketAddr = server_addr.parse().unwrap();
-    let mut conn = None;
-    for _ in 0..20 {
-        match TcpStream::connect_timeout(&server, Duration::from_millis(250)) {
-            Ok(s) => {
-                conn = Some(s);
-                break;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
-                thread::sleep(Duration::from_millis(50));
-            }
-            Err(e) => panic!("unexpected connect error: {e}"),
-        }
-    }
-    let mut conn = conn.expect("server did not start within 5s");
+    let mut conn = connect_with_retry(server_addr, Duration::from_secs(5));
     conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     conn.write_all(&req_buf).unwrap();
 
@@ -3005,8 +3016,7 @@ fn vless_udp_connect(
     let mut buf = bytes::BytesMut::new();
     encoding::encode_request_header(&mut buf, &request, &addons).unwrap();
 
-    let mut stream =
-        TcpStream::connect_timeout(&server_addr.parse().unwrap(), Duration::from_secs(5)).unwrap();
+    let mut stream = connect_with_retry(server_addr, Duration::from_secs(5));
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
@@ -3062,7 +3072,7 @@ fn test_udp_echo_single_packet() {
     let echo_port: u16 = echo_parts[1].parse().unwrap();
 
     let (_, uuid) = make_test_validator();
-    let listen = format!("127.0.0.1:{}", 40000 + (rand::random::<u16>() % 10000));
+    let listen = reserve_tcp_listen_addr();
     let uuid_str = uuid.to_string();
     let handle = spawn_wrongsv_server(&listen, &uuid_str, "");
     thread::sleep(Duration::from_millis(200));
@@ -3097,7 +3107,7 @@ fn test_udp_echo_multiple_packets() {
     let echo_port: u16 = echo_parts[1].parse().unwrap();
 
     let (_, uuid) = make_test_validator();
-    let listen = format!("127.0.0.1:{}", 40000 + (rand::random::<u16>() % 10000));
+    let listen = reserve_tcp_listen_addr();
     let uuid_str = uuid.to_string();
     let handle = spawn_wrongsv_server(&listen, &uuid_str, "");
     thread::sleep(Duration::from_millis(200));
@@ -3129,7 +3139,7 @@ fn test_udp_echo_large_packet() {
     let echo_port: u16 = echo_parts[1].parse().unwrap();
 
     let (_, uuid) = make_test_validator();
-    let listen = format!("127.0.0.1:{}", 40000 + (rand::random::<u16>() % 10000));
+    let listen = reserve_tcp_listen_addr();
     let uuid_str = uuid.to_string();
     let handle = spawn_wrongsv_server(&listen, &uuid_str, "");
     thread::sleep(Duration::from_millis(200));
@@ -3154,7 +3164,7 @@ fn test_udp_echo_large_packet() {
 
 #[test]
 fn test_udp_disabled_user_rejected() {
-    let listen = format!("127.0.0.1:{}", 40000 + (rand::random::<u16>() % 10000));
+    let listen = reserve_tcp_listen_addr();
     let uuid = Uuid::new_v4();
     let config_toml = format!(
         r#"
@@ -3203,8 +3213,7 @@ udp = false
     let mut buf = bytes::BytesMut::new();
     encoding::encode_request_header(&mut buf, &request, &addons).unwrap();
 
-    let mut stream =
-        TcpStream::connect_timeout(&listen.parse().unwrap(), Duration::from_secs(3)).unwrap();
+    let mut stream = connect_with_retry(&listen, Duration::from_secs(3));
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
@@ -3220,7 +3229,7 @@ udp = false
 
 #[test]
 fn test_udp_vision_rejected() {
-    let listen = format!("127.0.0.1:{}", 40000 + (rand::random::<u16>() % 10000));
+    let listen = reserve_tcp_listen_addr();
     let uuid = Uuid::new_v4();
     let config_toml = format!(
         r#"
@@ -3271,8 +3280,7 @@ flow = "xtls-rprx-vision"
     let mut buf = bytes::BytesMut::new();
     encoding::encode_request_header(&mut buf, &request, &addons).unwrap();
 
-    let mut stream =
-        TcpStream::connect_timeout(&listen.parse().unwrap(), Duration::from_secs(3)).unwrap();
+    let mut stream = connect_with_retry(&listen, Duration::from_secs(3));
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
@@ -3293,7 +3301,7 @@ fn test_udp_stress_many_packets() {
     let echo_port: u16 = echo_parts[1].parse().unwrap();
 
     let (_, uuid) = make_test_validator();
-    let listen = format!("127.0.0.1:{}", 40000 + (rand::random::<u16>() % 10000));
+    let listen = reserve_tcp_listen_addr();
     let uuid_str = uuid.to_string();
     let handle = spawn_wrongsv_server(&listen, &uuid_str, "");
     thread::sleep(Duration::from_millis(200));
@@ -3453,7 +3461,7 @@ fn test_udp_stress_1000_packets() {
     let echo_port: u16 = echo_parts[1].parse().unwrap();
 
     let (_, uuid) = make_test_validator();
-    let listen = format!("127.0.0.1:{}", 41000 + (rand::random::<u16>() % 10000));
+    let listen = reserve_tcp_listen_addr();
     let uuid_str = uuid.to_string();
     let _server = spawn_wrongsv_server(&listen, &uuid_str, "");
     thread::sleep(Duration::from_millis(50));
@@ -3485,7 +3493,7 @@ fn test_udp_concurrent_connections() {
     let echo_parts: Vec<&str> = echo_addr.split(':').collect();
     let echo_port: u16 = echo_parts[1].parse().unwrap();
 
-    let listen = format!("127.0.0.1:{}", 42000 + (rand::random::<u16>() % 10000));
+    let listen = reserve_tcp_listen_addr();
     let user_uuid = Uuid::new_v4();
     let uuid_str = user_uuid.to_string();
     let _server = spawn_wrongsv_server(&listen, &uuid_str, "");
@@ -3538,7 +3546,7 @@ fn test_mixed_tcp_udp_concurrent() {
 
     let (tcp_echo_addr, _tcp_handle) = spawn_echo_target();
 
-    let listen = format!("127.0.0.1:{}", 43000 + (rand::random::<u16>() % 10000));
+    let listen = reserve_tcp_listen_addr();
     let user_uuid = Uuid::new_v4();
     let uuid_str = user_uuid.to_string();
     let _server = spawn_wrongsv_server(&listen, &uuid_str, "");
@@ -3678,7 +3686,7 @@ fn test_udp_zero_and_max_packets() {
     let echo_port: u16 = echo_parts[1].parse().unwrap();
 
     let (_, uuid) = make_test_validator();
-    let listen = format!("127.0.0.1:{}", 44000 + (rand::random::<u16>() % 10000));
+    let listen = reserve_tcp_listen_addr();
     let uuid_str = uuid.to_string();
     let _server = spawn_wrongsv_server(&listen, &uuid_str, "");
     thread::sleep(Duration::from_millis(50));
