@@ -1,7 +1,7 @@
 //! Sing-box lifecycle integration tests.
 //!
 //! These tests verify the full proxy lifecycle using a real sing-box client:
-//! deploy → REALITY/VLESS or Shadowsocks 2022 → relay → response → cleanup.
+//! deploy → REALITY/VLESS, Shadowsocks 2022, or Trojan → relay → response → cleanup.
 //!
 //! Requires sing-box binary. Set `SINGBOX_BIN` env var or place it on PATH.
 //! Tests are skipped if sing-box is not available.
@@ -14,9 +14,10 @@ use std::time::Duration;
 
 use common::{
     TEST_PRIVATE_KEY, TEST_PUBLIC_KEY, TEST_SHORT_ID, TEST_SNI, TEST_SS_2022_AES_128_PASSWORD,
-    TEST_SS_2022_AES_256_PASSWORD, TEST_UUID, init_logging, lifecycle_test_lock, pick_ports,
-    socks5_get, socks5_tcp_echo, socks5_udp_echo, spawn_multi_user_server, spawn_server,
-    spawn_shadowsocks_server, spawn_tcp_echo_target, spawn_udp_echo_target,
+    TEST_SS_2022_AES_256_PASSWORD, TEST_TROJAN_PASSWORD, TEST_UUID, init_logging,
+    lifecycle_test_lock, pick_ports, socks5_get, socks5_tcp_echo, socks5_udp_echo,
+    spawn_multi_user_server, spawn_server, spawn_shadowsocks_server, spawn_tcp_echo_target,
+    spawn_trojan_server, spawn_udp_echo_target,
 };
 
 /// Path to sing-box binary.
@@ -134,6 +135,37 @@ fn write_singbox_shadowsocks_config(
       "server_port": {server_port},
       "method": "{method}",
       "password": "{password}"
+    }}
+  ]
+}}"#
+    );
+    std::fs::write(path, json).unwrap();
+}
+
+fn write_singbox_trojan_config(path: &str, socks_port: u16, server_port: u16, password: &str) {
+    let json = format!(
+        r#"{{
+  "log": {{ "level": "warn", "timestamp": true }},
+  "inbounds": [
+    {{
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen": "127.0.0.1",
+      "listen_port": {socks_port}
+    }}
+  ],
+  "outbounds": [
+    {{
+      "type": "trojan",
+      "tag": "proxy",
+      "server": "127.0.0.1",
+      "server_port": {server_port},
+      "password": "{password}",
+      "tls": {{
+        "enabled": true,
+        "server_name": "localhost",
+        "insecure": true
+      }}
     }}
   ]
 }}"#
@@ -522,4 +554,50 @@ fn test_singbox_shadowsocks_2022_udp_echo() {
 
     let response = socks5_udp_echo(socks_port, echo_addr, b"sing-box ss2022 udp").unwrap();
     assert_eq!(response, b"sing-box ss2022 udp");
+}
+
+#[test]
+fn test_singbox_trojan_tcp_echo() {
+    if singbox_bin().is_none() {
+        eprintln!("SKIP: sing-box not found");
+        return;
+    }
+    let _guard = lifecycle_test_lock();
+    init_logging();
+
+    let ports = pick_ports(2);
+    let server_port = ports[0];
+    let socks_port = ports[1];
+    let echo_addr = spawn_tcp_echo_target();
+    let _server = spawn_trojan_server(server_port, TEST_TROJAN_PASSWORD);
+
+    let cfg = format!("/tmp/singbox-trojan-tcp-{server_port}.json");
+    write_singbox_trojan_config(&cfg, socks_port, server_port, TEST_TROJAN_PASSWORD);
+    let _sb = start_singbox(&cfg, socks_port);
+
+    let response = socks5_tcp_echo(socks_port, echo_addr, b"sing-box trojan tcp").unwrap();
+    assert_eq!(response, b"sing-box trojan tcp");
+}
+
+#[test]
+fn test_singbox_trojan_udp_echo() {
+    if singbox_bin().is_none() {
+        eprintln!("SKIP: sing-box not found");
+        return;
+    }
+    let _guard = lifecycle_test_lock();
+    init_logging();
+
+    let ports = pick_ports(2);
+    let server_port = ports[0];
+    let socks_port = ports[1];
+    let echo_addr = spawn_udp_echo_target();
+    let _server = spawn_trojan_server(server_port, TEST_TROJAN_PASSWORD);
+
+    let cfg = format!("/tmp/singbox-trojan-udp-{server_port}.json");
+    write_singbox_trojan_config(&cfg, socks_port, server_port, TEST_TROJAN_PASSWORD);
+    let _sb = start_singbox(&cfg, socks_port);
+
+    let response = socks5_udp_echo(socks_port, echo_addr, b"sing-box trojan udp").unwrap();
+    assert_eq!(response, b"sing-box trojan udp");
 }

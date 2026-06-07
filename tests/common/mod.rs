@@ -6,6 +6,8 @@ use std::sync::{Mutex, MutexGuard, Once};
 use std::thread;
 use std::time::Duration;
 
+use sha2::{Digest, Sha256};
+
 static INIT_LOGGING: Once = Once::new();
 static LIFECYCLE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -150,6 +152,63 @@ udp = true
     let handle = server.spawn();
     thread::sleep(Duration::from_millis(200));
     ServerGuard { handle }
+}
+
+/// Spawn a wrongsv Trojan-over-TLS server.
+#[allow(dead_code)]
+pub fn spawn_trojan_server(port: u16, password: &str) -> ServerGuard {
+    spawn_trojan_server_with_cert(port, password, None, None)
+}
+
+#[allow(dead_code)]
+pub fn spawn_trojan_server_with_pinned_cert(port: u16, password: &str) -> (ServerGuard, String) {
+    let (cert, key) = wrongsv_anytls::generate_self_signed_cert().unwrap();
+    let cert_hash = certificate_sha256_hex(&cert);
+    (
+        spawn_trojan_server_with_cert(port, password, Some(&cert), Some(&key)),
+        cert_hash,
+    )
+}
+
+fn spawn_trojan_server_with_cert(
+    port: u16,
+    password: &str,
+    certificate: Option<&str>,
+    key: Option<&str>,
+) -> ServerGuard {
+    let cert_toml = match (certificate, key) {
+        (Some(cert), Some(key)) => format!(
+            r#"
+certificate = '''
+{cert}'''
+key = '''
+{key}'''
+"#
+        ),
+        _ => String::new(),
+    };
+    let config_toml = format!(
+        r#"
+listen = "127.0.0.1:{port}"
+
+[trojan]
+password = "{password}"
+{cert_toml}
+"#
+    );
+    let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
+    let server = wrongsv_server::InboundServer::new(config).unwrap();
+    let handle = server.spawn();
+    thread::sleep(Duration::from_millis(200));
+    ServerGuard { handle }
+}
+
+fn certificate_sha256_hex(cert_pem: &str) -> String {
+    let cert = pem::parse(cert_pem).unwrap();
+    Sha256::digest(cert.contents())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 pub fn spawn_tcp_echo_target() -> SocketAddr {
@@ -480,3 +539,4 @@ pub const TEST_UUID: &str = "41309a00-3cbe-43a2-80e7-76c8a4fe65be";
 pub const TEST_SNI: &str = "download-porter.hoyoverse.com";
 pub const TEST_SS_2022_AES_128_PASSWORD: &str = "MDEyMzQ1Njc4OWFiY2RlZg==";
 pub const TEST_SS_2022_AES_256_PASSWORD: &str = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
+pub const TEST_TROJAN_PASSWORD: &str = "secret";

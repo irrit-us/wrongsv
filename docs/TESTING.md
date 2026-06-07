@@ -39,8 +39,8 @@ cargo test --test integration test_reality_echo -- --nocapture
 # Shadowsocks classic AEAD and AEAD-2022 TCP/UDP relay
 cargo test --test shadowsocks_tests
 
-# Real-client Shadowsocks 2022 coverage is part of lifecycle tests when the
-# corresponding sing-box, mihomo, or xray binary is available.
+# Real-client Shadowsocks 2022 and Trojan TCP/UDP coverage is part of lifecycle
+# tests when the corresponding sing-box, mihomo, or xray binary is available.
 
 # Mixed SOCKS4/4A / SOCKS5 / HTTP proxy relay
 cargo test --test mixed_proxy_tests
@@ -89,13 +89,13 @@ Lifecycle tests serialize real-client process startup internally and can be run
 with the default Rust test runner:
 
 ```bash
-# sing-box (6 tests)
+# sing-box (10 tests)
 cargo test --test singbox_lifecycle
 
-# mihomo/ClashMeta (6 tests)
+# mihomo/ClashMeta (10 tests)
 cargo test --test mihomo_lifecycle
 
-# xray-core (6 tests)
+# xray-core (10 tests)
 cargo test --test xray_lifecycle
 ```
 

@@ -1,7 +1,7 @@
 //! Mihomo (ClashMeta) lifecycle integration tests.
 //!
 //! These tests verify the full proxy lifecycle using mihomo:
-//! deploy → REALITY/VLESS or Shadowsocks 2022 → relay → response → cleanup.
+//! deploy → REALITY/VLESS, Shadowsocks 2022, or Trojan → relay → response → cleanup.
 //!
 //! Requires mihomo binary. Set `MIHOMO_BIN` env var or place at
 //! `test-deploy/mihomo`. Tests are skipped if mihomo is not available.
@@ -15,9 +15,10 @@ use std::time::Duration;
 
 use common::{
     TEST_PRIVATE_KEY, TEST_PUBLIC_KEY, TEST_SHORT_ID, TEST_SNI, TEST_SS_2022_AES_128_PASSWORD,
-    TEST_SS_2022_AES_256_PASSWORD, TEST_UUID, init_logging, lifecycle_test_lock, pick_ports,
-    socks5_get, socks5_tcp_echo, socks5_udp_echo, spawn_multi_user_server, spawn_server,
-    spawn_shadowsocks_server, spawn_tcp_echo_target, spawn_udp_echo_target,
+    TEST_SS_2022_AES_256_PASSWORD, TEST_TROJAN_PASSWORD, TEST_UUID, init_logging,
+    lifecycle_test_lock, pick_ports, socks5_get, socks5_tcp_echo, socks5_udp_echo,
+    spawn_multi_user_server, spawn_server, spawn_shadowsocks_server, spawn_tcp_echo_target,
+    spawn_trojan_server, spawn_udp_echo_target,
 };
 
 fn mihomo_bin() -> Option<String> {
@@ -105,6 +106,26 @@ proxies:
     cipher: "{method}"
     password: "{password}"
     udp: true
+rules:
+  - MATCH, proxy
+"#
+    );
+    std::fs::write(path, yaml).unwrap();
+}
+
+fn write_mihomo_trojan_config(path: &str, socks_port: u16, server_port: u16, password: &str) {
+    let yaml = format!(
+        r#"socks-port: {socks_port}
+log-level: error
+proxies:
+  - name: "proxy"
+    type: trojan
+    server: "127.0.0.1"
+    port: {server_port}
+    password: "{password}"
+    udp: true
+    sni: "localhost"
+    skip-cert-verify: true
 rules:
   - MATCH, proxy
 "#
@@ -501,4 +522,50 @@ fn test_mihomo_shadowsocks_2022_udp_echo() {
 
     let response = socks5_udp_echo(socks_port, echo_addr, b"mihomo ss2022 udp").unwrap();
     assert_eq!(response, b"mihomo ss2022 udp");
+}
+
+#[test]
+fn test_mihomo_trojan_tcp_echo() {
+    if mihomo_bin().is_none() {
+        eprintln!("SKIP: mihomo not found");
+        return;
+    }
+    let _guard = lifecycle_test_lock();
+    init_logging();
+
+    let ports = pick_ports(2);
+    let server_port = ports[0];
+    let socks_port = ports[1];
+    let echo_addr = spawn_tcp_echo_target();
+    let _server = spawn_trojan_server(server_port, TEST_TROJAN_PASSWORD);
+
+    let cfg = format!("/tmp/mihomo-trojan-tcp-{server_port}.yaml");
+    write_mihomo_trojan_config(&cfg, socks_port, server_port, TEST_TROJAN_PASSWORD);
+    let _m = start_mihomo(&cfg, socks_port);
+
+    let response = socks5_tcp_echo(socks_port, echo_addr, b"mihomo trojan tcp").unwrap();
+    assert_eq!(response, b"mihomo trojan tcp");
+}
+
+#[test]
+fn test_mihomo_trojan_udp_echo() {
+    if mihomo_bin().is_none() {
+        eprintln!("SKIP: mihomo not found");
+        return;
+    }
+    let _guard = lifecycle_test_lock();
+    init_logging();
+
+    let ports = pick_ports(2);
+    let server_port = ports[0];
+    let socks_port = ports[1];
+    let echo_addr = spawn_udp_echo_target();
+    let _server = spawn_trojan_server(server_port, TEST_TROJAN_PASSWORD);
+
+    let cfg = format!("/tmp/mihomo-trojan-udp-{server_port}.yaml");
+    write_mihomo_trojan_config(&cfg, socks_port, server_port, TEST_TROJAN_PASSWORD);
+    let _m = start_mihomo(&cfg, socks_port);
+
+    let response = socks5_udp_echo(socks_port, echo_addr, b"mihomo trojan udp").unwrap();
+    assert_eq!(response, b"mihomo trojan udp");
 }

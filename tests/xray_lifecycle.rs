@@ -1,7 +1,7 @@
 //! Xray lifecycle integration tests.
 //!
 //! These tests verify the full proxy lifecycle using a real xray client:
-//! deploy → REALITY/VLESS or Shadowsocks 2022 → relay → response → cleanup.
+//! deploy → REALITY/VLESS, Shadowsocks 2022, or Trojan → relay → response → cleanup.
 //!
 //! Requires xray binary. Set `XRAY_BIN` env var or place at
 //! `test-deploy/xray`. Tests are skipped if xray is not available.
@@ -14,9 +14,10 @@ use std::time::Duration;
 
 use common::{
     TEST_PRIVATE_KEY, TEST_PUBLIC_KEY, TEST_SHORT_ID, TEST_SNI, TEST_SS_2022_AES_128_PASSWORD,
-    TEST_SS_2022_AES_256_PASSWORD, TEST_UUID, init_logging, lifecycle_test_lock, pick_ports,
-    socks5_get, socks5_tcp_echo, socks5_udp_echo, spawn_multi_user_server, spawn_server,
-    spawn_shadowsocks_server, spawn_tcp_echo_target, spawn_udp_echo_target,
+    TEST_SS_2022_AES_256_PASSWORD, TEST_TROJAN_PASSWORD, TEST_UUID, init_logging,
+    lifecycle_test_lock, pick_ports, socks5_get, socks5_tcp_echo, socks5_udp_echo,
+    spawn_multi_user_server, spawn_server, spawn_shadowsocks_server, spawn_tcp_echo_target,
+    spawn_trojan_server_with_pinned_cert, spawn_udp_echo_target,
 };
 
 fn xray_bin() -> Option<String> {
@@ -148,6 +149,60 @@ fn write_xray_shadowsocks_config(
         "port": {server_port},
         "method": "{method}",
         "password": "{password}"
+      }}
+    }}
+  ],
+  "routing": {{
+    "rules": [
+      {{
+        "type": "field",
+        "inboundTag": ["socks-in"],
+        "outboundTag": "proxy"
+      }}
+    ]
+  }}
+}}"#
+    );
+    std::fs::write(path, json).unwrap();
+}
+
+fn write_xray_trojan_config(
+    path: &str,
+    socks_port: u16,
+    server_port: u16,
+    password: &str,
+    cert_hash: &str,
+) {
+    let json = format!(
+        r#"{{
+  "log": {{ "loglevel": "warning" }},
+  "inbounds": [
+    {{
+      "port": {socks_port},
+      "protocol": "socks",
+      "listen": "127.0.0.1",
+      "tag": "socks-in",
+      "settings": {{
+        "udp": true
+      }}
+    }}
+  ],
+  "outbounds": [
+    {{
+      "protocol": "trojan",
+      "tag": "proxy",
+      "settings": {{
+        "address": "127.0.0.1",
+        "port": {server_port},
+        "password": "{password}"
+      }},
+      "streamSettings": {{
+        "network": "tcp",
+        "security": "tls",
+        "tlsSettings": {{
+          "serverName": "www.cloudfront.net",
+          "pinnedPeerCertSha256": "{cert_hash}"
+        }}
       }}
     }}
   ],
@@ -553,4 +608,64 @@ fn test_xray_shadowsocks_2022_udp_echo() {
 
     let response = socks5_udp_echo(socks_port, echo_addr, b"xray ss2022 udp").unwrap();
     assert_eq!(response, b"xray ss2022 udp");
+}
+
+#[test]
+fn test_xray_trojan_tcp_echo() {
+    if xray_bin().is_none() {
+        eprintln!("SKIP: xray not found");
+        return;
+    }
+    let _guard = lifecycle_test_lock();
+    init_logging();
+
+    let ports = pick_ports(2);
+    let server_port = ports[0];
+    let socks_port = ports[1];
+    let echo_addr = spawn_tcp_echo_target();
+    let (_server, cert_hash) =
+        spawn_trojan_server_with_pinned_cert(server_port, TEST_TROJAN_PASSWORD);
+
+    let cfg = format!("/tmp/xray-trojan-tcp-{server_port}.json");
+    write_xray_trojan_config(
+        &cfg,
+        socks_port,
+        server_port,
+        TEST_TROJAN_PASSWORD,
+        &cert_hash,
+    );
+    let _x = start_xray(&cfg, socks_port);
+
+    let response = socks5_tcp_echo(socks_port, echo_addr, b"xray trojan tcp").unwrap();
+    assert_eq!(response, b"xray trojan tcp");
+}
+
+#[test]
+fn test_xray_trojan_udp_echo() {
+    if xray_bin().is_none() {
+        eprintln!("SKIP: xray not found");
+        return;
+    }
+    let _guard = lifecycle_test_lock();
+    init_logging();
+
+    let ports = pick_ports(2);
+    let server_port = ports[0];
+    let socks_port = ports[1];
+    let echo_addr = spawn_udp_echo_target();
+    let (_server, cert_hash) =
+        spawn_trojan_server_with_pinned_cert(server_port, TEST_TROJAN_PASSWORD);
+
+    let cfg = format!("/tmp/xray-trojan-udp-{server_port}.json");
+    write_xray_trojan_config(
+        &cfg,
+        socks_port,
+        server_port,
+        TEST_TROJAN_PASSWORD,
+        &cert_hash,
+    );
+    let _x = start_xray(&cfg, socks_port);
+
+    let response = socks5_udp_echo(socks_port, echo_addr, b"xray trojan udp").unwrap();
+    assert_eq!(response, b"xray trojan udp");
 }
