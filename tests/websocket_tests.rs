@@ -14,6 +14,7 @@ use wrongsv_websocket as ws;
 
 const TEST_UUID: &str = "41309a00-3cbe-43a2-80e7-76c8a4fe65be";
 const XRV: &str = "xtls-rprx-vision";
+const PACKETADDR_MAGIC_DOMAIN: &str = "sp.packet-addr.v2fly.arpa";
 
 mod common;
 use common::{
@@ -152,6 +153,45 @@ fn ws_read_length_packet(stream: &mut TcpStream) -> Vec<u8> {
     }
 
     panic!("timed out waiting for length-prefixed WS packet");
+}
+
+fn encode_packetaddr_datagram(target: std::net::SocketAddr, payload: &[u8]) -> Vec<u8> {
+    let mut packet = Vec::with_capacity(1 + 16 + 2 + payload.len());
+    match target.ip() {
+        std::net::IpAddr::V4(ip) => {
+            packet.push(0x01);
+            packet.extend_from_slice(&ip.octets());
+        }
+        std::net::IpAddr::V6(ip) => {
+            packet.push(0x02);
+            packet.extend_from_slice(&ip.octets());
+        }
+    }
+    packet.extend_from_slice(&target.port().to_be_bytes());
+    packet.extend_from_slice(payload);
+    packet
+}
+
+fn decode_packetaddr_datagram(packet: &[u8]) -> (std::net::SocketAddr, Vec<u8>) {
+    let mut pos = 1;
+    let ip = match packet[0] {
+        0x01 => {
+            let mut raw = [0u8; 4];
+            raw.copy_from_slice(&packet[pos..pos + 4]);
+            pos += 4;
+            std::net::IpAddr::V4(raw.into())
+        }
+        0x02 => {
+            let mut raw = [0u8; 16];
+            raw.copy_from_slice(&packet[pos..pos + 16]);
+            pos += 16;
+            std::net::IpAddr::V6(raw.into())
+        }
+        other => panic!("unexpected packetaddr type: {other:#04x}"),
+    };
+    let port = u16::from_be_bytes([packet[pos], packet[pos + 1]]);
+    pos += 2;
+    (std::net::SocketAddr::new(ip, port), packet[pos..].to_vec())
 }
 
 fn encode_mux_udp_frame(
@@ -456,6 +496,48 @@ fn test_ws_udp_echo_raw() {
 
     let response = ws_read_length_packet(&mut stream);
     assert_eq!(response, payload);
+}
+
+#[test]
+fn test_ws_packetaddr_udp_echo() {
+    init_logging();
+    let server_port = pick_port();
+    let echo_addr = spawn_udp_echo_target();
+
+    let _server = spawn_ws_server(server_port, TEST_UUID, "", "/ws");
+    std::thread::sleep(Duration::from_millis(100));
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{server_port}")).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    ws_upgrade(&mut stream, "/ws");
+
+    let vless_req = encode_vless_request(
+        TEST_UUID,
+        PACKETADDR_MAGIC_DOMAIN,
+        0,
+        RequestCommand::Udp,
+        "",
+    );
+    ws_write_binary(&mut stream, &vless_req);
+
+    let resp_frame = ws_read_frame(&mut stream).unwrap();
+    assert_eq!(resp_frame.opcode, ws::Opcode::Binary);
+    assert!(!resp_frame.payload.is_empty());
+
+    let payload = b"packetaddr-over-websocket";
+    let mut packet = Vec::new();
+    let udp_packet = encode_packetaddr_datagram(echo_addr, payload);
+    LengthPacketWriter::new(&mut packet)
+        .write_packet(&udp_packet)
+        .unwrap();
+    ws_write_binary(&mut stream, &packet);
+
+    let response = ws_read_length_packet(&mut stream);
+    let (response_addr, response_payload) = decode_packetaddr_datagram(&response);
+    assert_eq!(response_addr, echo_addr);
+    assert_eq!(response_payload, payload);
 }
 
 #[test]

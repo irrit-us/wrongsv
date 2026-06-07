@@ -110,6 +110,54 @@ fn write_singbox_config(
     std::fs::write(path, json).unwrap();
 }
 
+fn write_singbox_packetaddr_config(
+    path: &str,
+    socks_port: u16,
+    server_port: u16,
+    uuid: &str,
+    server_name: &str,
+    public_key: &str,
+    short_id: &str,
+) {
+    let json = format!(
+        r#"{{
+  "log": {{ "level": "warn", "timestamp": true }},
+  "inbounds": [
+    {{
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen": "127.0.0.1",
+      "listen_port": {socks_port}
+    }}
+  ],
+  "outbounds": [
+    {{
+      "type": "vless",
+      "tag": "proxy",
+      "server": "127.0.0.1",
+      "server_port": {server_port},
+      "uuid": "{uuid}",
+      "tls": {{
+        "enabled": true,
+        "server_name": "{server_name}",
+        "utls": {{
+          "enabled": true,
+          "fingerprint": "chrome"
+        }},
+        "reality": {{
+          "enabled": true,
+          "public_key": "{public_key}",
+          "short_id": "{short_id}"
+        }}
+      }},
+      "packet_encoding": "packetaddr"
+    }}
+  ]
+}}"#
+    );
+    std::fs::write(path, json).unwrap();
+}
+
 fn write_singbox_shadowsocks_config(
     path: &str,
     socks_port: u16,
@@ -321,6 +369,45 @@ fn test_singbox_lifecycle_raw_http() {
 
     let body = socks5_get(socks_port, &local_http_url(http_addr, "/ip")).unwrap();
     assert!(body.contains("origin"), "unexpected: {body}");
+}
+
+#[test]
+fn test_singbox_lifecycle_packetaddr_udp_echo() {
+    if singbox_bin().is_none() {
+        eprintln!("SKIP: sing-box not found");
+        return;
+    }
+    let _guard = lifecycle_test_lock();
+    init_logging();
+
+    let ports = pick_ports(2);
+    let server_port = ports[0];
+    let socks_port = ports[1];
+    let echo_addr = spawn_udp_echo_target();
+
+    let _server = spawn_server(
+        server_port,
+        TEST_UUID,
+        "",
+        TEST_PRIVATE_KEY,
+        &[TEST_SHORT_ID],
+        None,
+    );
+
+    let cfg = format!("/tmp/singbox-packetaddr-udp-{server_port}.json");
+    write_singbox_packetaddr_config(
+        &cfg,
+        socks_port,
+        server_port,
+        TEST_UUID,
+        TEST_SNI,
+        TEST_PUBLIC_KEY,
+        TEST_SHORT_ID,
+    );
+    let _sbox = start_singbox(&cfg, socks_port);
+
+    let response = socks5_udp_echo(socks_port, echo_addr, b"sing-box packetaddr udp").unwrap();
+    assert_eq!(response, b"sing-box packetaddr udp");
 }
 
 #[test]

@@ -2977,6 +2977,8 @@ fn test_reality_rapid_connect_disconnect() {
 // UDP over TCP tests
 // ---------------------------------------------------------------------------
 
+const PACKETADDR_MAGIC_DOMAIN: &str = "sp.packet-addr.v2fly.arpa";
+
 fn vless_udp_connect(
     server_addr: &str,
     user_uuid: &Uuid,
@@ -3030,6 +3032,45 @@ fn vless_udp_connect(
     stream
 }
 
+fn encode_packetaddr_datagram(target: std::net::SocketAddr, payload: &[u8]) -> Vec<u8> {
+    let mut packet = Vec::with_capacity(1 + 16 + 2 + payload.len());
+    match target.ip() {
+        std::net::IpAddr::V4(ip) => {
+            packet.push(0x01);
+            packet.extend_from_slice(&ip.octets());
+        }
+        std::net::IpAddr::V6(ip) => {
+            packet.push(0x02);
+            packet.extend_from_slice(&ip.octets());
+        }
+    }
+    packet.extend_from_slice(&target.port().to_be_bytes());
+    packet.extend_from_slice(payload);
+    packet
+}
+
+fn decode_packetaddr_datagram(packet: &[u8]) -> (std::net::SocketAddr, Vec<u8>) {
+    let mut pos = 1;
+    let ip = match packet[0] {
+        0x01 => {
+            let mut raw = [0u8; 4];
+            raw.copy_from_slice(&packet[pos..pos + 4]);
+            pos += 4;
+            std::net::IpAddr::V4(raw.into())
+        }
+        0x02 => {
+            let mut raw = [0u8; 16];
+            raw.copy_from_slice(&packet[pos..pos + 16]);
+            pos += 16;
+            std::net::IpAddr::V6(raw.into())
+        }
+        other => panic!("unexpected packetaddr type: {other:#04x}"),
+    };
+    let port = u16::from_be_bytes([packet[pos], packet[pos + 1]]);
+    pos += 2;
+    (std::net::SocketAddr::new(ip, port), packet[pos..].to_vec())
+}
+
 fn udp_echo_server() -> (Arc<UdpSocket>, String) {
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     socket
@@ -3063,6 +3104,37 @@ fn udp_echo_server() -> (Arc<UdpSocket>, String) {
 
     std::mem::forget(running);
     (socket, addr)
+}
+
+#[test]
+fn test_udp_packetaddr_echo_ipv4() {
+    let (_echo, echo_addr) = udp_echo_server();
+    let echo_addr: std::net::SocketAddr = echo_addr.parse().unwrap();
+
+    let (_, uuid) = make_test_validator();
+    let listen = reserve_tcp_listen_addr();
+    let uuid_str = uuid.to_string();
+    let handle = spawn_wrongsv_server(&listen, &uuid_str, "");
+    thread::sleep(Duration::from_millis(200));
+
+    let mut stream = vless_udp_connect(&listen, &uuid, PACKETADDR_MAGIC_DOMAIN, 0);
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+
+    let payload = b"hello packetaddr";
+    let packet = encode_packetaddr_datagram(echo_addr, payload);
+    let mut writer = LengthPacketWriter::new(&mut stream);
+    writer.write_packet(&packet).unwrap();
+
+    let mut reader = LengthPacketReader::new(&mut stream);
+    let resp = reader.read_packet().unwrap();
+    let (response_addr, response_payload) = decode_packetaddr_datagram(&resp);
+
+    assert_eq!(response_addr, echo_addr);
+    assert_eq!(response_payload, payload);
+
+    drop(handle);
 }
 
 #[test]

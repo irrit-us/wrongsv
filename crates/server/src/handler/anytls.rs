@@ -714,6 +714,14 @@ pub(crate) fn relay_anytls_udp(
     request: &RequestHeader,
     remaining: Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if is_packetaddr_request(request) {
+        debug!("AnyTLS packetaddr UDP relay");
+        tls.get_mut()
+            .1
+            .set_read_timeout(Some(Duration::from_millis(200)))?;
+        return relay_packetaddr_udp_stream(&mut tls, remaining);
+    }
+
     let target_addr = format!("{}:{}", request.address, request.port);
     debug!("AnyTLS UDP relay to {target_addr}");
 

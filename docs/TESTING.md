@@ -112,6 +112,7 @@ cargo test --test xray_lifecycle
 | multi-user | Two users, two connections, both authenticate correctly |
 | restart | Server restart, client reconnects successfully |
 | wrong credential rejection | Invalid UUID → connection rejected, no data leak |
+| packetaddr UDP relay | VLESS UDP `sp.packet-addr.v2fly.arpa` → local UDP echo |
 | WebSocket TCP relay | VLESS over WS → local HTTP response |
 | WebSocket XUDP relay | VLESS over WS → Mux.Cool/XUDP UDP echo |
 

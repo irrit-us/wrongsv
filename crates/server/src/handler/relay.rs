@@ -1,5 +1,7 @@
 use std::io::{Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
+use std::net::{
+    IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket,
+};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -10,6 +12,244 @@ use wrongsv_vless::vision::{TrafficState, VisionReader, VisionWriter};
 use wrongsv_vless_encoding::{LengthPacketReader, LengthPacketWriter, PacketReadError};
 
 use crate::mixed_proxy::MixedProtocol;
+
+pub(crate) const PACKETADDR_MAGIC_DOMAIN: &str = "sp.packet-addr.v2fly.arpa";
+
+pub(crate) fn is_packetaddr_request(request: &RequestHeader) -> bool {
+    matches!(
+        &request.address,
+        wrongsv_net_types::Address::Domain(domain) if domain == PACKETADDR_MAGIC_DOMAIN
+    )
+}
+
+pub(crate) fn encode_packetaddr_payload(
+    address: &wrongsv_net_types::Address,
+    port: wrongsv_net_types::Port,
+    payload: &[u8],
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut packet = Vec::with_capacity(1 + 16 + 2 + payload.len());
+    match address {
+        wrongsv_net_types::Address::IPv4(raw) => {
+            packet.push(0x01);
+            packet.extend_from_slice(raw);
+        }
+        wrongsv_net_types::Address::IPv6(raw) => {
+            packet.push(0x02);
+            packet.extend_from_slice(raw);
+        }
+        wrongsv_net_types::Address::Domain(_) => {
+            return Err("packetaddr does not support domain addresses".into());
+        }
+    }
+    packet.extend_from_slice(&port.0.to_be_bytes());
+    packet.extend_from_slice(payload);
+    Ok(packet)
+}
+
+pub(crate) fn decode_packetaddr_payload(
+    packet: &[u8],
+) -> Result<
+    (wrongsv_net_types::Address, wrongsv_net_types::Port, Vec<u8>),
+    Box<dyn std::error::Error>,
+> {
+    if packet.is_empty() {
+        return Err("empty packetaddr packet".into());
+    }
+
+    let mut pos = 1;
+    let address = match packet[0] {
+        0x01 => {
+            if packet.len() < pos + 4 + 2 {
+                return Err("short packetaddr IPv4 packet".into());
+            }
+            let mut raw = [0u8; 4];
+            raw.copy_from_slice(&packet[pos..pos + 4]);
+            pos += 4;
+            wrongsv_net_types::Address::IPv4(raw)
+        }
+        0x02 => {
+            if packet.len() < pos + 16 + 2 {
+                return Err("short packetaddr IPv6 packet".into());
+            }
+            let mut raw = [0u8; 16];
+            raw.copy_from_slice(&packet[pos..pos + 16]);
+            pos += 16;
+            wrongsv_net_types::Address::IPv6(raw)
+        }
+        other => return Err(format!("unsupported packetaddr address type: {other:#04x}").into()),
+    };
+
+    let port = wrongsv_net_types::Port(u16::from_be_bytes([packet[pos], packet[pos + 1]]));
+    pos += 2;
+    Ok((address, port, packet[pos..].to_vec()))
+}
+
+pub(crate) fn bind_packetaddr_sockets() -> std::io::Result<(UdpSocket, Option<UdpSocket>)> {
+    let ipv4 = UdpSocket::bind("0.0.0.0:0")?;
+    let ipv6 = UdpSocket::bind("[::]:0").ok();
+    Ok((ipv4, ipv6))
+}
+
+pub(crate) fn send_packetaddr_datagram(
+    ipv4: &UdpSocket,
+    ipv6: Option<&UdpSocket>,
+    address: &wrongsv_net_types::Address,
+    port: wrongsv_net_types::Port,
+    payload: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    match address {
+        wrongsv_net_types::Address::IPv4(raw) => {
+            let target = SocketAddr::new(IpAddr::V4(Ipv4Addr::from(*raw)), port.0);
+            ipv4.send_to(payload, target)?;
+        }
+        wrongsv_net_types::Address::IPv6(raw) => {
+            let socket = ipv6.ok_or("IPv6 packetaddr socket is unavailable")?;
+            let target = SocketAddr::new(IpAddr::V6(Ipv6Addr::from(*raw)), port.0);
+            socket.send_to(payload, target)?;
+        }
+        wrongsv_net_types::Address::Domain(_) => {
+            return Err("packetaddr does not support domain addresses".into());
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn drain_packetaddr_packets(
+    input: &mut Vec<u8>,
+    ipv4: &UdpSocket,
+    ipv6: Option<&UdpSocket>,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let mut pos = 0;
+    let mut sent = false;
+
+    while input.len().saturating_sub(pos) >= 2 {
+        let len = u16::from_be_bytes([input[pos], input[pos + 1]]) as usize;
+        if input.len() - pos < len + 2 {
+            break;
+        }
+
+        let packet_start = pos + 2;
+        let packet_end = packet_start + len;
+        let (address, port, payload) = decode_packetaddr_payload(&input[packet_start..packet_end])?;
+        send_packetaddr_datagram(ipv4, ipv6, &address, port, &payload)?;
+        sent = true;
+        pos = packet_end;
+    }
+
+    if pos > 0 {
+        input.drain(..pos);
+    }
+
+    Ok(sent)
+}
+
+pub(crate) fn flush_packetaddr_responses<W: Write>(
+    writer: &mut W,
+    socket: &UdpSocket,
+    timeout: Duration,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    socket.set_read_timeout(Some(timeout))?;
+    let mut buf = [0u8; 65535];
+    let mut wrote = false;
+
+    loop {
+        match socket.recv_from(&mut buf) {
+            Ok((0, _)) => break,
+            Ok((n, source)) => {
+                let (address, port) = match source {
+                    SocketAddr::V4(addr) => (
+                        wrongsv_net_types::Address::IPv4(addr.ip().octets()),
+                        wrongsv_net_types::Port(addr.port()),
+                    ),
+                    SocketAddr::V6(addr) => (
+                        wrongsv_net_types::Address::IPv6(addr.ip().octets()),
+                        wrongsv_net_types::Port(addr.port()),
+                    ),
+                };
+                let packet = encode_packetaddr_payload(&address, port, &buf[..n])?;
+                let mut framed = Vec::with_capacity(packet.len() + 2);
+                LengthPacketWriter::new(&mut framed).write_packet(&packet)?;
+                writer.write_all(&framed)?;
+                writer.flush()?;
+                wrote = true;
+            }
+            Err(ref e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                break;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    Ok(wrote)
+}
+
+pub(crate) fn flush_packetaddr_socket_pair<W: Write>(
+    writer: &mut W,
+    ipv4: &UdpSocket,
+    ipv6: Option<&UdpSocket>,
+    timeout: Duration,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let mut wrote = flush_packetaddr_responses(writer, ipv4, timeout)?;
+    if let Some(ipv6) = ipv6 {
+        wrote |= flush_packetaddr_responses(writer, ipv6, Duration::from_millis(10))?;
+    }
+    Ok(wrote)
+}
+
+pub(crate) fn relay_packetaddr_udp_stream<S: Read + Write>(
+    stream: &mut S,
+    remaining: Vec<u8>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (ipv4, ipv6) = bind_packetaddr_sockets()?;
+    let mut input = remaining;
+    let mut read_buf = [0u8; 32768];
+
+    loop {
+        let mut did_work = false;
+
+        if drain_packetaddr_packets(&mut input, &ipv4, ipv6.as_ref())? {
+            did_work = true;
+            if flush_packetaddr_socket_pair(
+                stream,
+                &ipv4,
+                ipv6.as_ref(),
+                Duration::from_millis(500),
+            )? {
+                did_work = true;
+            }
+        }
+
+        if flush_packetaddr_socket_pair(stream, &ipv4, ipv6.as_ref(), Duration::from_millis(10))? {
+            did_work = true;
+        }
+
+        match stream.read(&mut read_buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                input.extend_from_slice(&read_buf[..n]);
+                did_work = true;
+            }
+            Err(ref e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(e.into()),
+        }
+
+        if !did_work {
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    Ok(())
+}
 
 pub(crate) fn send_udp_datagram_to_target(
     address: &wrongsv_net_types::Address,
@@ -153,10 +393,16 @@ pub(crate) fn relay_raw_with_initial(
 }
 
 pub(crate) fn relay_udp(
-    client: TcpStream,
+    mut client: TcpStream,
     request: &RequestHeader,
     remaining: Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if is_packetaddr_request(request) {
+        debug!("packetaddr UDP relay, {} remaining bytes", remaining.len());
+        client.set_read_timeout(Some(Duration::from_millis(200)))?;
+        return relay_packetaddr_udp_stream(&mut client, remaining);
+    }
+
     let target_addr = format!("{}:{}", request.address, request.port);
     debug!(
         "UDP relay to {target_addr}, {} remaining bytes",
@@ -437,6 +683,62 @@ mod tests {
         let addons = encoding::decode_response_header(&mut cursor, &request).unwrap();
 
         assert!(addons.flow.is_empty());
+    }
+
+    #[test]
+    fn packetaddr_ipv4_payload_roundtrips() {
+        let payload = b"packetaddr-ipv4";
+        let encoded =
+            encode_packetaddr_payload(&Address::IPv4([127, 0, 0, 1]), Port(5353), payload).unwrap();
+
+        assert_eq!(&encoded[..7], &[0x01, 127, 0, 0, 1, 0x14, 0xe9]);
+
+        let (address, port, decoded_payload) = decode_packetaddr_payload(&encoded).unwrap();
+        assert_eq!(address, Address::IPv4([127, 0, 0, 1]));
+        assert_eq!(port, Port(5353));
+        assert_eq!(decoded_payload, payload);
+    }
+
+    #[test]
+    fn packetaddr_ipv6_payload_roundtrips() {
+        let address = Address::IPv6([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        let payload = b"packetaddr-ipv6";
+        let encoded = encode_packetaddr_payload(&address, Port(443), payload).unwrap();
+
+        assert_eq!(encoded[0], 0x02);
+        assert_eq!(&encoded[17..19], &[0x01, 0xbb]);
+
+        let (decoded_address, port, decoded_payload) = decode_packetaddr_payload(&encoded).unwrap();
+        assert_eq!(decoded_address, address);
+        assert_eq!(port, Port(443));
+        assert_eq!(decoded_payload, payload);
+    }
+
+    #[test]
+    fn packetaddr_rejects_domain_payloads() {
+        let err =
+            encode_packetaddr_payload(&Address::Domain("example.com".into()), Port(53), b"dns")
+                .unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "packetaddr does not support domain addresses"
+        );
+    }
+
+    #[test]
+    fn packetaddr_magic_request_is_detected() {
+        let mut request = test_request(test_user(""), RequestCommand::Udp);
+        request.address = Address::Domain(PACKETADDR_MAGIC_DOMAIN.into());
+        request.port = Port(0);
+
+        assert!(is_packetaddr_request(&request));
+
+        request.port = Port(53);
+        assert!(is_packetaddr_request(&request));
+
+        request.address = Address::Domain("example.com".into());
+        assert!(!is_packetaddr_request(&request));
     }
 
     #[test]

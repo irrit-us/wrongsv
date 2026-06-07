@@ -21,7 +21,7 @@
 
 ---
 
-A minimal, high-performance proxy server with VLESS, XTLS Vision flow, REALITY / AnyTLS / plain TLS / WebSocket transport layers, WebSocket Mux.Cool/XUDP UDP relay, Shadowsocks AEAD/AEAD-2022 TCP/UDP inbound, mixed SOCKS4/4A/SOCKS5/HTTP proxy inbound, Trojan TLS TCP/UDP inbound, and NIST ML-KEM post-quantum key encapsulation.
+A minimal, high-performance proxy server with VLESS, XTLS Vision flow, REALITY / AnyTLS / plain TLS / WebSocket transport layers, VLESS raw UDP / packetaddr UDP / WebSocket Mux.Cool/XUDP UDP relay, Shadowsocks AEAD/AEAD-2022 TCP/UDP inbound, mixed SOCKS4/4A/SOCKS5/HTTP proxy inbound, Trojan TLS TCP/UDP inbound, and NIST ML-KEM post-quantum key encapsulation.
 
 ## Architecture
 
@@ -45,6 +45,7 @@ wrongsv (binary)
 ## Features
 
 - **VLESS** — stateless proxy with UUID authentication and extensible addons
+- **VLESS UDP packetaddr** — V2Ray 5+ `sp.packet-addr.v2fly.arpa` packet-address UDP relay across raw TCP, TLS/REALITY/AnyTLS, and WebSocket carriers
 - **VLESS WebSocket** — raw WS/TLS+WS carrier with pipelined TCP payloads, raw UDP packets, and Mux.Cool/XUDP UDP over WS
 - **Shadowsocks AEAD/AEAD-2022 TCP/UDP** — classic `aes-128-gcm`, `aes-256-gcm`, `chacha20-ietf-poly1305`, plus required `2022-blake3-aes-128-gcm` and `2022-blake3-aes-256-gcm`
 - **Mixed proxy inbound** — SOCKS4/4A, SOCKS5 CONNECT, HTTP absolute-form forwarding, and HTTP CONNECT; optional shared credentials apply to SOCKS5/HTTP and disable SOCKS4/4A
@@ -132,8 +133,8 @@ manual proxy testing procedures.
 ## Interop
 
 - **xray-core 26.5.9+** — REALITY handshake, Ed25519 certs, Chrome fingerprint
-- **sing-box** — REALITY+Vision, WebSocket TCP/XUDP UDP, TLS+uTLS, Shadowsocks AEAD/2022 TCP/UDP, and Trojan TCP/UDP lifecycle tests passing
-- **mihomo / FlClash** — REALITY+Vision, WebSocket TCP/XUDP UDP, TLS+uTLS, Shadowsocks AEAD/2022 TCP/UDP, and Trojan TCP/UDP full proxy cycle verified
+- **sing-box** — REALITY+Vision, packetaddr UDP, WebSocket TCP/XUDP UDP, TLS+uTLS, Shadowsocks AEAD/2022 TCP/UDP, and Trojan TCP/UDP lifecycle tests passing
+- **mihomo / FlClash** — REALITY+Vision, packetaddr UDP, WebSocket TCP/XUDP UDP, TLS+uTLS, Shadowsocks AEAD/2022 TCP/UDP, and Trojan TCP/UDP full proxy cycle verified
 - **xray-core** — WebSocket TCP/XUDP UDP, Shadowsocks AEAD/2022 TCP/UDP, and Trojan TCP/UDP full proxy cycle verified
 - **REALITY spider fallback** — unauthenticated probes forwarded to `dest`
 - **AnyTLS echo, Vision, UDP, fallback** — all verified end-to-end

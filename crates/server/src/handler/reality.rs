@@ -384,6 +384,15 @@ pub(crate) fn relay_reality_udp(
     request: &RequestHeader,
     remaining: Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if is_packetaddr_request(request) {
+        debug!("REALITY packetaddr UDP relay");
+        tls.get_mut()
+            .1
+            .get_mut()
+            .set_read_timeout(Some(Duration::from_millis(200)))?;
+        return relay_packetaddr_udp_stream(&mut tls, remaining);
+    }
+
     let target_addr = format!("{}:{}", request.address, request.port);
     debug!("REALITY UDP relay to {target_addr}");
 

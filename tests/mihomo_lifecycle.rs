@@ -89,6 +89,39 @@ rules:
     std::fs::write(path, yaml).unwrap();
 }
 
+fn write_mihomo_packetaddr_config(
+    path: &str,
+    socks_port: u16,
+    server_port: u16,
+    uuid: &str,
+    server_name: &str,
+    public_key: &str,
+    short_id: &str,
+) {
+    let yaml = format!(
+        r#"socks-port: {socks_port}
+log-level: error
+proxies:
+  - name: "proxy"
+    type: vless
+    server: "127.0.0.1"
+    port: {server_port}
+    uuid: "{uuid}"
+    tls: true
+    udp: true
+    packet-encoding: packetaddr
+    servername: "{server_name}"
+    reality-opts:
+      public-key: "{public_key}"
+      short-id: "{short_id}"
+    client-fingerprint: "chrome"
+rules:
+  - MATCH, proxy
+"#
+    );
+    std::fs::write(path, yaml).unwrap();
+}
+
 fn write_mihomo_shadowsocks_config(
     path: &str,
     socks_port: u16,
@@ -274,6 +307,45 @@ fn test_mihomo_lifecycle_raw_http() {
 
     let body = socks5_get(socks_port, &local_http_url(http_addr, "/ip")).unwrap();
     assert!(body.contains("origin"), "unexpected: {body}");
+}
+
+#[test]
+fn test_mihomo_lifecycle_packetaddr_udp_echo() {
+    if mihomo_bin().is_none() {
+        eprintln!("SKIP: mihomo not found");
+        return;
+    }
+    let _guard = lifecycle_test_lock();
+    init_logging();
+
+    let ports = pick_ports(2);
+    let server_port = ports[0];
+    let socks_port = ports[1];
+    let echo_addr = spawn_udp_echo_target();
+
+    let _server = spawn_server(
+        server_port,
+        TEST_UUID,
+        "",
+        TEST_PRIVATE_KEY,
+        &[TEST_SHORT_ID],
+        None,
+    );
+
+    let cfg = format!("/tmp/mihomo-packetaddr-udp-{server_port}.yaml");
+    write_mihomo_packetaddr_config(
+        &cfg,
+        socks_port,
+        server_port,
+        TEST_UUID,
+        TEST_SNI,
+        TEST_PUBLIC_KEY,
+        TEST_SHORT_ID,
+    );
+    let _m = start_mihomo(&cfg, socks_port);
+
+    let response = socks5_udp_echo(socks_port, echo_addr, b"mihomo packetaddr udp").unwrap();
+    assert_eq!(response, b"mihomo packetaddr udp");
 }
 
 #[test]

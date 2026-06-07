@@ -530,6 +530,14 @@ pub(crate) fn relay_ws_udp<S: Read + Write>(
     request: &RequestHeader,
     remaining: Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if is_packetaddr_request(request) {
+        debug!(
+            "WS packetaddr UDP relay, {} remaining bytes",
+            remaining.len()
+        );
+        return relay_packetaddr_udp_stream(ws, remaining);
+    }
+
     let target_addr = format!("{}:{}", request.address, request.port);
     debug!(
         "WS UDP relay to {target_addr}, {} remaining bytes",
