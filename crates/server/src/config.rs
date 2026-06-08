@@ -57,6 +57,10 @@ pub struct Config {
     /// Hysteria2 QUIC/TCP/UDP traffic instead of VLESS.
     #[serde(default)]
     pub hysteria2: Option<Hysteria2ServerConfig>,
+    /// TUIC inbound configuration. When set, the listener accepts TUIC
+    /// QUIC/TCP/UDP traffic instead of VLESS.
+    #[serde(default)]
+    pub tuic: Option<TuicServerConfig>,
 }
 
 /// REALITY server-side configuration.
@@ -321,6 +325,72 @@ fn default_hysteria2_udp_idle_timeout() -> u64 {
     60
 }
 
+/// TUIC authentication user.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TuicUserConfig {
+    /// Optional display name for logs.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// TUIC user UUID.
+    pub uuid: String,
+    /// TUIC user password.
+    pub password: String,
+}
+
+/// TUIC TLS configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TuicTlsConfig {
+    #[serde(default)]
+    pub certificate: Option<String>,
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub dest: Option<String>,
+}
+
+/// TUIC server-side configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TuicServerConfig {
+    #[serde(default)]
+    pub users: Vec<TuicUserConfig>,
+    #[serde(default = "default_tuic_congestion_control")]
+    pub congestion_control: String,
+    #[serde(default = "default_tuic_auth_timeout")]
+    pub auth_timeout: u64,
+    #[serde(default)]
+    pub zero_rtt_handshake: bool,
+    #[serde(default = "default_tuic_heartbeat")]
+    pub heartbeat: u64,
+    #[serde(default)]
+    pub tls: Option<TuicTlsConfig>,
+}
+
+fn default_tuic_congestion_control() -> String {
+    "cubic".to_string()
+}
+
+fn default_tuic_auth_timeout() -> u64 {
+    3
+}
+
+fn default_tuic_heartbeat() -> u64 {
+    10
+}
+
+pub(crate) fn is_strict_uuid_text(s: &str) -> bool {
+    let mut hex_len = 0usize;
+    for ch in s.chars() {
+        if ch == '-' {
+            continue;
+        }
+        if !ch.is_ascii_hexdigit() {
+            return false;
+        }
+        hex_len += 1;
+    }
+    hex_len == 32
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct UserConfig {
     /// UUID string
@@ -401,6 +471,20 @@ pub enum ConfigError {
     Hysteria2MissingAuth,
     #[error("Hysteria2 user passwords must be non-empty")]
     Hysteria2InvalidPassword,
+    #[error("TUIC inbound cannot be combined with VLESS users")]
+    TuicWithVlessUsers,
+    #[error("TUIC inbound cannot be combined with VLESS transport layers")]
+    TuicWithVlessTransport,
+    #[error("TUIC inbound cannot be combined with non-VLESS protocols")]
+    TuicWithNonVless,
+    #[error("TUIC inbound requires at least one `[[tuic.users]]` entry")]
+    TuicMissingUsers,
+    #[error("TUIC user passwords must be non-empty")]
+    TuicInvalidPassword,
+    #[error("TUIC user UUIDs must be valid UUID strings")]
+    TuicInvalidUuid,
+    #[error("TUIC congestion control must be one of `cubic`, `new_reno`, or `bbr`")]
+    TuicInvalidCongestionControl,
 }
 
 impl Config {
@@ -423,6 +507,7 @@ impl Config {
             self.mixed.is_some(),
             self.trojan.is_some(),
             self.hysteria2.is_some(),
+            self.tuic.is_some(),
         ]
         .into_iter()
         .filter(|enabled| *enabled)
@@ -603,6 +688,46 @@ impl Config {
                 return Err(ConfigError::Hysteria2MissingAuth);
             }
         }
+        if let Some(tuic) = &self.tuic {
+            if !self.users.is_empty() {
+                return Err(ConfigError::TuicWithVlessUsers);
+            }
+            if self.reality.is_some()
+                || self.anytls.is_some()
+                || self.tls.is_some()
+                || self.websocket.is_some()
+                || self.httpupgrade.is_some()
+                || self.grpc.is_some()
+            {
+                return Err(ConfigError::TuicWithVlessTransport);
+            }
+            if self.shadowsocks.is_some()
+                || self.mixed.is_some()
+                || self.trojan.is_some()
+                || self.hysteria2.is_some()
+            {
+                return Err(ConfigError::TuicWithNonVless);
+            }
+            if tuic.users.is_empty() {
+                return Err(ConfigError::TuicMissingUsers);
+            }
+            if !matches!(
+                tuic.congestion_control.as_str(),
+                "cubic" | "new_reno" | "bbr"
+            ) {
+                return Err(ConfigError::TuicInvalidCongestionControl);
+            }
+            if tuic.users.iter().any(|user| user.password.is_empty()) {
+                return Err(ConfigError::TuicInvalidPassword);
+            }
+            if tuic
+                .users
+                .iter()
+                .any(|user| !is_strict_uuid_text(&user.uuid))
+            {
+                return Err(ConfigError::TuicInvalidUuid);
+            }
+        }
         Ok(())
     }
 }
@@ -652,6 +777,7 @@ flow = "xtls-rprx-vision"
             httpupgrade: None,
             grpc: None,
             hysteria2: None,
+            tuic: None,
         };
         assert!(config.validate().is_err());
     }
@@ -680,6 +806,7 @@ flow = "xtls-rprx-vision"
             httpupgrade: None,
             grpc: None,
             hysteria2: None,
+            tuic: None,
         };
         assert!(config.validate().is_err());
     }
@@ -1019,6 +1146,84 @@ id = "12345678-1234-1234-1234-123456789abc"
         assert!(matches!(
             config.validate(),
             Err(ConfigError::Hysteria2WithVlessUsers)
+        ));
+    }
+
+    #[test]
+    fn test_parse_tuic_config() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[tuic]
+congestion_control = "bbr"
+auth_timeout = 5
+zero_rtt_handshake = true
+heartbeat = 12
+
+[[tuic.users]]
+name = "alice"
+uuid = "12345678-1234-1234-1234-123456789abc"
+password = "secret"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        let tuic = config.tuic.unwrap();
+        assert_eq!(tuic.congestion_control, "bbr");
+        assert_eq!(tuic.auth_timeout, 5);
+        assert!(tuic.zero_rtt_handshake);
+        assert_eq!(tuic.heartbeat, 12);
+        assert_eq!(tuic.users.len(), 1);
+        assert_eq!(tuic.users[0].name.as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn test_tuic_rejects_missing_users() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[tuic]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::TuicMissingUsers)
+        ));
+    }
+
+    #[test]
+    fn test_tuic_rejects_invalid_congestion_control() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[tuic]
+congestion_control = "fast"
+
+[[tuic.users]]
+uuid = "12345678-1234-1234-1234-123456789abc"
+password = "secret"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::TuicInvalidCongestionControl)
+        ));
+    }
+
+    #[test]
+    fn test_tuic_rejects_invalid_uuid() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[tuic]
+
+[[tuic.users]]
+uuid = "not-a-uuid"
+password = "secret"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::TuicInvalidUuid)
         ));
     }
 

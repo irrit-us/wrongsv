@@ -155,6 +155,7 @@ fn build_default_config() -> Config {
         httpupgrade: None,
         grpc: None,
         hysteria2: None,
+        tuic: None,
     }
 }
 

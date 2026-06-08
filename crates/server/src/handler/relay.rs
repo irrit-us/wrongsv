@@ -593,6 +593,7 @@ mod tests {
             httpupgrade: None,
             grpc: None,
             hysteria2: None,
+            tuic: None,
         }
     }
 

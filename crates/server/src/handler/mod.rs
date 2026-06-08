@@ -32,6 +32,8 @@ pub(crate) mod grpc;
 pub(crate) use grpc::*;
 pub(crate) mod hysteria2;
 pub(crate) use hysteria2::*;
+pub(crate) mod tuic;
+pub(crate) use tuic::*;
 pub(crate) mod anytls;
 pub(crate) use anytls::*;
 pub(crate) mod shadowsocks;
@@ -135,6 +137,7 @@ pub struct InboundServer {
     httpupgrade_config: Option<HttpUpgradeConfig>,
     grpc_config: Option<GrpcConfig>,
     hysteria2_config: Option<Hysteria2Config>,
+    tuic_config: Option<TuicConfig>,
 }
 
 impl InboundServer {
@@ -231,6 +234,14 @@ impl InboundServer {
             }
             None => None,
         };
+        let tuic_config = match &config.tuic {
+            Some(tc) => {
+                let cfg = parse_tuic_config(tc)?;
+                info!("TUIC enabled (QUIC/TCP/UDP)");
+                Some(cfg)
+            }
+            None => None,
+        };
         if let Some(ref rc) = reality_config {
             let rpk_hex: String = rc
                 .cert_material
@@ -294,6 +305,7 @@ impl InboundServer {
             httpupgrade_config,
             grpc_config,
             hysteria2_config,
+            tuic_config,
         })
     }
 
@@ -338,6 +350,14 @@ impl InboundServer {
                 ))
                 .map_err(|e| std::io::Error::other(e.to_string()).into());
         }
+        if let Some(config) = self.tuic_config.clone() {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            return runtime
+                .block_on(run_tuic_endpoint(&self.config.listen, config, shutdown))
+                .map_err(|e| std::io::Error::other(e.to_string()).into());
+        }
         let listener = TcpListener::bind(&self.config.listen)?;
         self.run_with_listener(listener, shutdown)
     }
@@ -356,6 +376,8 @@ impl InboundServer {
             "Trojan"
         } else if self.hysteria2_config.is_some() {
             "Hysteria2"
+        } else if self.tuic_config.is_some() {
+            "TUIC"
         } else if self.httpupgrade_config.is_some() {
             "VLESS HTTPUpgrade"
         } else if self.grpc_config.is_some() {
@@ -380,6 +402,7 @@ impl InboundServer {
         let httpupgrade_config = self.httpupgrade_config.clone();
         let grpc_config = self.grpc_config.clone();
         let hysteria2_enabled = self.hysteria2_config.is_some();
+        let tuic_enabled = self.tuic_config.is_some();
         let shadowsocks_udp_socket =
             match (&self.shadowsocks_config, self.config.shadowsocks.as_ref()) {
                 (Some(_), Some(raw_config)) if raw_config.udp => {
@@ -431,6 +454,8 @@ impl InboundServer {
                                     "Hysteria2 inbound uses QUIC and does not accept TCP sockets"
                                         .into(),
                                 )
+                            } else if tuic_enabled {
+                                Err("TUIC inbound uses QUIC and does not accept TCP sockets".into())
                             } else if let Some(ref tc) = tc {
                                 handle_tls_connection(stream, v, kyber_sk, tc)
                             } else if let Some(ref sc) = sc {
