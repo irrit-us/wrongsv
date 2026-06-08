@@ -65,6 +65,8 @@ ctrlc = { version = "3", default-features = false }
 wrongsv-server.workspace = true
 wrongsv-reality.workspace = true
 clap.workspace = true
+serde.workspace = true
+serde_json = "1"
 tracing.workspace = true
 tracing-subscriber.workspace = true
 toml.workspace = true

@@ -604,7 +604,58 @@ pub enum ConfigError {
 }
 
 impl Config {
+    // ── validation helpers ───────────────────────────────────────────────
+
+    fn has_vless_users(&self) -> bool {
+        !self.users.is_empty()
+    }
+
+    /// True when any VLESS transport layer (TLS/REALITY/AnyTLS or framing
+    /// transports like WS/HTTPUpgrade/gRPC/XHTTP/QUIC/KCP) is configured.
+    fn has_any_vless_transport(&self) -> bool {
+        self.reality.is_some()
+            || self.anytls.is_some()
+            || self.tls.is_some()
+            || self.websocket.is_some()
+            || self.httpupgrade.is_some()
+            || self.grpc.is_some()
+            || self.xhttp.is_some()
+            || self.quic.is_some()
+            || self.kcp.is_some()
+    }
+
+    /// True when any non-VLESS standalone inbound (Shadowsocks, Mixed,
+    /// Trojan, Hysteria2, or TUIC) is configured. XHTTP is omitted here
+    /// because it serves as both a VLESS framing transport and a standalone
+    /// inbound depending on context — it is handled explicitly in validate().
+    fn has_any_non_vless_inbound(&self) -> bool {
+        self.shadowsocks.is_some()
+            || self.mixed.is_some()
+            || self.trojan.is_some()
+            || self.hysteria2.is_some()
+            || self.tuic.is_some()
+    }
+
+    /// True when any stream-based framing transport (WebSocket,
+    /// HTTPUpgrade, gRPC, XHTTP) is configured — i.e. transports that wrap
+    /// TCP in a higher-level protocol. Does NOT include QUIC/KCP.
+    fn has_any_stream_framing(&self) -> bool {
+        self.websocket.is_some()
+            || self.httpupgrade.is_some()
+            || self.grpc.is_some()
+            || self.xhttp.is_some()
+    }
+
+    /// True when any TLS-layer transport (REALITY, AnyTLS, plain TLS) is
+    /// configured.
+    fn has_any_tls_layer(&self) -> bool {
+        self.reality.is_some() || self.anytls.is_some() || self.tls.is_some()
+    }
+
+    // ── validate ─────────────────────────────────────────────────────────
+
     pub fn validate(&self) -> Result<(), ConfigError> {
+        // -- validate users --
         for user in &self.users {
             wrongsv_uuid::Uuid::parse_string(&user.id).map_err(
                 |e: wrongsv_uuid::ParseUuidError| {
@@ -618,7 +669,9 @@ impl Config {
                 ));
             }
         }
-        let non_vless_inbounds = [
+
+        // -- at most one non-VLESS inbound --
+        let non_vless_count = [
             self.shadowsocks.is_some(),
             self.mixed.is_some(),
             self.trojan.is_some(),
@@ -627,91 +680,43 @@ impl Config {
             self.xhttp.is_some(),
         ]
         .into_iter()
-        .filter(|enabled| *enabled)
+        .filter(|&e| e)
         .count();
-        if non_vless_inbounds > 1 {
+        if non_vless_count > 1 {
             return Err(ConfigError::MultipleInboundProtocols);
         }
+
+        // -- non-VLESS inbounds (Shadowsocks, Mixed, Trojan, Hysteria2, TUIC) --
         if let Some(shadowsocks) = &self.shadowsocks {
-            if !self.users.is_empty() {
-                return Err(ConfigError::ShadowsocksWithVlessUsers);
-            }
-            if self.reality.is_some()
-                || self.anytls.is_some()
-                || self.tls.is_some()
-                || self.websocket.is_some()
-                || self.httpupgrade.is_some()
-                || self.grpc.is_some()
-                || self.xhttp.is_some()
-                || self.quic.is_some()
-                || self.kcp.is_some()
-            {
-                return Err(ConfigError::ShadowsocksWithVlessTransport);
-            }
+            self.check_non_vless_no_users(ConfigError::ShadowsocksWithVlessUsers)?;
+            self.check_non_vless_no_transports(ConfigError::ShadowsocksWithVlessTransport)?;
             wrongsv_shadowsocks::Method::parse(&shadowsocks.method).map_err(|_| {
                 ConfigError::UnsupportedShadowsocksMethod(shadowsocks.method.clone())
             })?;
-            if shadowsocks
-                .tcp_prefix
-                .as_deref()
-                .is_some_and(|prefix| prefix.len() > 16)
-                || shadowsocks
-                    .udp_prefix
-                    .as_deref()
-                    .is_some_and(|prefix| prefix.len() > 16)
+            if shadowsocks.tcp_prefix.as_deref().is_some_and(|p| p.len() > 16)
+                || shadowsocks.udp_prefix.as_deref().is_some_and(|p| p.len() > 16)
             {
                 return Err(ConfigError::ShadowsocksPrefixTooLong);
             }
         }
+
         if let Some(mixed) = &self.mixed {
-            if !self.users.is_empty() {
-                return Err(ConfigError::MixedWithVlessUsers);
-            }
-            if self.reality.is_some()
-                || self.anytls.is_some()
-                || self.tls.is_some()
-                || self.websocket.is_some()
-                || self.httpupgrade.is_some()
-                || self.grpc.is_some()
-                || self.xhttp.is_some()
-                || self.quic.is_some()
-                || self.kcp.is_some()
-            {
-                return Err(ConfigError::MixedWithVlessTransport);
-            }
+            self.check_non_vless_no_users(ConfigError::MixedWithVlessUsers)?;
+            self.check_non_vless_no_transports(ConfigError::MixedWithVlessTransport)?;
             match (&mixed.username, &mixed.password) {
                 (None, None) => {}
-                (Some(username), Some(password)) => {
-                    if username.is_empty()
-                        || username.len() > 255
-                        || password.is_empty()
-                        || password.len() > 255
-                    {
-                        return Err(ConfigError::MixedInvalidCredentials);
-                    }
-                }
+                (Some(u), Some(p)) if !u.is_empty() && u.len() <= 255 && !p.is_empty() && p.len() <= 255 => {}
+                (Some(_), Some(_)) => return Err(ConfigError::MixedInvalidCredentials),
                 _ => return Err(ConfigError::MixedIncompleteCredentials),
             }
         }
+
         if let Some(trojan) = &self.trojan {
-            if !self.users.is_empty() {
-                return Err(ConfigError::TrojanWithVlessUsers);
-            }
-            if self.reality.is_some()
-                || self.anytls.is_some()
-                || self.tls.is_some()
-                || self.websocket.is_some()
-                || self.httpupgrade.is_some()
-                || self.grpc.is_some()
-                || self.xhttp.is_some()
-                || self.quic.is_some()
-                || self.kcp.is_some()
-            {
-                return Err(ConfigError::TrojanWithVlessTransport);
-            }
+            self.check_non_vless_no_users(ConfigError::TrojanWithVlessUsers)?;
+            self.check_non_vless_no_transports(ConfigError::TrojanWithVlessTransport)?;
             let has_top_level_password = trojan.password.as_deref().is_some_and(|p| !p.is_empty());
             if trojan.password.as_deref().is_some_and(str::is_empty)
-                || trojan.users.iter().any(|user| user.password.is_empty())
+                || trojan.users.iter().any(|u| u.password.is_empty())
             {
                 return Err(ConfigError::TrojanInvalidPassword);
             }
@@ -719,140 +724,15 @@ impl Config {
                 return Err(ConfigError::TrojanMissingUsers);
             }
         }
-        if let Some(ws) = &self.websocket {
-            // WebSocket is a VLESS transport — must NOT be combined with
-            // non-VLESS protocols or other VLESS transport layers.
-            // VLESS users are expected (same as reality/anytls/tls).
-            if self.shadowsocks.is_some()
-                || self.mixed.is_some()
-                || self.trojan.is_some()
-                || self.httpupgrade.is_some()
-                || self.grpc.is_some()
-                || self.xhttp.is_some()
-                || self.quic.is_some()
-                || self.kcp.is_some()
-            {
-                return Err(ConfigError::WebsocketWithNonVless);
-            }
-            if self.reality.is_some()
-                || self.anytls.is_some()
-                || self.tls.is_some()
-                || self.grpc.is_some()
-                || self.xhttp.is_some()
-                || self.quic.is_some()
-                || self.kcp.is_some()
-            {
-                return Err(ConfigError::WebsocketWithVlessTransport);
-            }
-            // Normalize and validate path
-            if !ws.path.starts_with('/') {
-                // Path will be normalized at parse time in handler
-            }
-            if let Some(ref tls) = ws.tls {
-                // TLS certificate/key will be validated at parse time
-                let _ = tls;
-            }
-        }
-        if let Some(httpupgrade) = &self.httpupgrade {
-            if self.shadowsocks.is_some()
-                || self.mixed.is_some()
-                || self.trojan.is_some()
-                || self.websocket.is_some()
-                || self.grpc.is_some()
-                || self.xhttp.is_some()
-                || self.quic.is_some()
-                || self.kcp.is_some()
-            {
-                return Err(ConfigError::HttpUpgradeWithNonVless);
-            }
-            if self.reality.is_some()
-                || self.anytls.is_some()
-                || self.tls.is_some()
-                || self.grpc.is_some()
-                || self.xhttp.is_some()
-                || self.quic.is_some()
-                || self.kcp.is_some()
-            {
-                return Err(ConfigError::HttpUpgradeWithVlessTransport);
-            }
-            if httpupgrade.max_early_data > 0
-                && httpupgrade
-                    .early_data_header_name
-                    .as_deref()
-                    .is_none_or(str::is_empty)
-            {
-                return Err(ConfigError::HttpUpgradeInvalidEarlyData);
-            }
-        }
-        if let Some(_grpc) = &self.grpc {
-            if self.shadowsocks.is_some()
-                || self.mixed.is_some()
-                || self.trojan.is_some()
-                || self.websocket.is_some()
-                || self.httpupgrade.is_some()
-                || self.xhttp.is_some()
-                || self.quic.is_some()
-                || self.kcp.is_some()
-            {
-                return Err(ConfigError::GrpcWithNonVless);
-            }
-            if self.reality.is_some()
-                || self.anytls.is_some()
-                || self.tls.is_some()
-                || self.quic.is_some()
-                || self.kcp.is_some()
-            {
-                return Err(ConfigError::GrpcWithVlessTransport);
-            }
-            if self.users.is_empty() {
-                return Err(ConfigError::GrpcMissingUsers);
-            }
-        }
-        if let Some(_xhttp) = &self.xhttp {
-            if self.shadowsocks.is_some()
-                || self.mixed.is_some()
-                || self.trojan.is_some()
-                || self.websocket.is_some()
-                || self.httpupgrade.is_some()
-                || self.grpc.is_some()
-                || self.quic.is_some()
-                || self.kcp.is_some()
-            {
-                return Err(ConfigError::XhttpWithNonVless);
-            }
-            if self.reality.is_some()
-                || self.anytls.is_some()
-                || self.tls.is_some()
-                || self.quic.is_some()
-                || self.kcp.is_some()
-            {
-                return Err(ConfigError::XhttpWithVlessTransport);
-            }
-            if self.users.is_empty() {
-                return Err(ConfigError::XhttpMissingUsers);
-            }
-        }
+
         if let Some(hysteria2) = &self.hysteria2 {
-            if !self.users.is_empty() {
-                return Err(ConfigError::Hysteria2WithVlessUsers);
-            }
-            if self.reality.is_some()
-                || self.anytls.is_some()
-                || self.tls.is_some()
-                || self.websocket.is_some()
-                || self.httpupgrade.is_some()
-                || self.grpc.is_some()
-                || self.xhttp.is_some()
-                || self.quic.is_some()
-                || self.kcp.is_some()
-            {
-                return Err(ConfigError::Hysteria2WithVlessTransport);
-            }
-            if self.shadowsocks.is_some() || self.mixed.is_some() || self.trojan.is_some() {
+            self.check_non_vless_no_users(ConfigError::Hysteria2WithVlessUsers)?;
+            self.check_non_vless_no_transports(ConfigError::Hysteria2WithVlessTransport)?;
+            if self.has_any_non_vless_inbound_except_hysteria2() {
                 return Err(ConfigError::Hysteria2WithNonVless);
             }
             if hysteria2.password.as_deref().is_some_and(str::is_empty)
-                || hysteria2.users.iter().any(|user| user.password.is_empty())
+                || hysteria2.users.iter().any(|u| u.password.is_empty())
             {
                 return Err(ConfigError::Hysteria2InvalidPassword);
             }
@@ -861,105 +741,212 @@ impl Config {
                 return Err(ConfigError::Hysteria2MissingAuth);
             }
         }
+
         if let Some(tuic) = &self.tuic {
-            if !self.users.is_empty() {
-                return Err(ConfigError::TuicWithVlessUsers);
-            }
-            if self.reality.is_some()
-                || self.anytls.is_some()
-                || self.tls.is_some()
-                || self.websocket.is_some()
-                || self.httpupgrade.is_some()
-                || self.grpc.is_some()
-                || self.xhttp.is_some()
-                || self.quic.is_some()
-                || self.kcp.is_some()
-            {
-                return Err(ConfigError::TuicWithVlessTransport);
-            }
-            if self.shadowsocks.is_some()
-                || self.mixed.is_some()
-                || self.trojan.is_some()
-                || self.hysteria2.is_some()
-            {
+            self.check_non_vless_no_users(ConfigError::TuicWithVlessUsers)?;
+            self.check_non_vless_no_transports(ConfigError::TuicWithVlessTransport)?;
+            if self.has_any_non_vless_inbound_except_tuic() {
                 return Err(ConfigError::TuicWithNonVless);
             }
             if tuic.users.is_empty() {
                 return Err(ConfigError::TuicMissingUsers);
             }
-            if !matches!(
-                tuic.congestion_control.as_str(),
-                "cubic" | "new_reno" | "bbr"
-            ) {
+            if !matches!(tuic.congestion_control.as_str(), "cubic" | "new_reno" | "bbr") {
                 return Err(ConfigError::TuicInvalidCongestionControl);
             }
-            if tuic.users.iter().any(|user| user.password.is_empty()) {
+            if tuic.users.iter().any(|u| u.password.is_empty()) {
                 return Err(ConfigError::TuicInvalidPassword);
             }
-            if tuic
-                .users
-                .iter()
-                .any(|user| !is_strict_uuid_text(&user.uuid))
-            {
+            if tuic.users.iter().any(|u| !is_strict_uuid_text(&u.uuid)) {
                 return Err(ConfigError::TuicInvalidUuid);
             }
         }
-        if let Some(_quic) = &self.quic {
-            if self.shadowsocks.is_some()
-                || self.mixed.is_some()
-                || self.trojan.is_some()
-                || self.hysteria2.is_some()
-                || self.tuic.is_some()
-                || self.websocket.is_some()
-                || self.httpupgrade.is_some()
-                || self.grpc.is_some()
-                || self.xhttp.is_some()
+
+        // -- VLESS framing transports --
+        if let Some(_ws) = &self.websocket {
+            self.check_framing_transport(
+                "websocket",
+                ConfigError::WebsocketWithNonVless,
+                ConfigError::WebsocketWithVlessTransport,
+            )?;
+        }
+
+        if let Some(httpupgrade) = &self.httpupgrade {
+            self.check_framing_transport(
+                "httpupgrade",
+                ConfigError::HttpUpgradeWithNonVless,
+                ConfigError::HttpUpgradeWithVlessTransport,
+            )?;
+            if httpupgrade.max_early_data > 0
+                && httpupgrade.early_data_header_name.as_deref().is_none_or(str::is_empty)
             {
-                return Err(ConfigError::QuicWithNonVless);
-            }
-            if self.reality.is_some()
-                || self.anytls.is_some()
-                || self.tls.is_some()
-                || self.websocket.is_some()
-                || self.httpupgrade.is_some()
-                || self.grpc.is_some()
-                || self.xhttp.is_some()
-            {
-                return Err(ConfigError::QuicWithVlessTransport);
-            }
-            if self.users.is_empty() {
-                return Err(ConfigError::QuicMissingUsers);
+                return Err(ConfigError::HttpUpgradeInvalidEarlyData);
             }
         }
+
+        if let Some(_grpc) = &self.grpc {
+            self.check_framing_transport(
+                "grpc",
+                ConfigError::GrpcWithNonVless,
+                ConfigError::GrpcWithVlessTransport,
+            )?;
+            if !self.has_vless_users() {
+                return Err(ConfigError::GrpcMissingUsers);
+            }
+        }
+
+        if let Some(_xhttp) = &self.xhttp {
+            self.check_framing_transport(
+                "xhttp",
+                ConfigError::XhttpWithNonVless,
+                ConfigError::XhttpWithVlessTransport,
+            )?;
+            if !self.has_vless_users() {
+                return Err(ConfigError::XhttpMissingUsers);
+            }
+        }
+
+        // -- VLESS datagram transports --
+        if let Some(_quic) = &self.quic {
+            self.check_datagram_transport(
+                "quic",
+                ConfigError::QuicWithNonVless,
+                ConfigError::QuicWithVlessTransport,
+                ConfigError::QuicMissingUsers,
+            )?;
+        }
+
         if let Some(_kcp) = &self.kcp {
-            if self.shadowsocks.is_some()
-                || self.mixed.is_some()
-                || self.trojan.is_some()
-                || self.hysteria2.is_some()
-                || self.tuic.is_some()
-                || self.websocket.is_some()
-                || self.httpupgrade.is_some()
-                || self.grpc.is_some()
-                || self.xhttp.is_some()
-            {
-                return Err(ConfigError::KcpWithNonVless);
-            }
-            if self.reality.is_some()
-                || self.anytls.is_some()
-                || self.tls.is_some()
-                || self.quic.is_some()
-                || self.websocket.is_some()
-                || self.httpupgrade.is_some()
-                || self.grpc.is_some()
-                || self.xhttp.is_some()
-            {
-                return Err(ConfigError::KcpWithVlessTransport);
-            }
-            if self.users.is_empty() {
-                return Err(ConfigError::KcpMissingUsers);
-            }
+            self.check_datagram_transport(
+                "kcp",
+                ConfigError::KcpWithNonVless,
+                ConfigError::KcpWithVlessTransport,
+                ConfigError::KcpMissingUsers,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    // ── per-category helpers (called from validate) ──────────────────────
+
+    fn check_non_vless_no_users(
+        &self,
+        err: ConfigError,
+    ) -> Result<(), ConfigError> {
+        if self.has_vless_users() {
+            return Err(err);
         }
         Ok(())
+    }
+
+    fn check_non_vless_no_transports(
+        &self,
+        err: ConfigError,
+    ) -> Result<(), ConfigError> {
+        if self.has_any_vless_transport() {
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    /// Validate a VLESS framing transport (WebSocket, HTTPUpgrade, gRPC,
+    /// XHTTP). Ensures the transport is not combined with non-VLESS inbounds
+    /// or conflicting VLESS transport layers.
+    fn check_framing_transport(
+        &self,
+        name: &str,
+        non_vless_err: ConfigError,
+        transport_err: ConfigError,
+    ) -> Result<(), ConfigError> {
+        // Must not be combined with non-VLESS inbounds or other framing
+        // transports (the current transport itself is already Some by the
+        // time this is called, so other same-category Some values mean
+        // conflict).
+        let framing_conflicts = match name {
+            "websocket" => {
+                self.has_any_non_vless_inbound()
+                    || self.httpupgrade.is_some()
+                    || self.grpc.is_some()
+                    || self.xhttp.is_some()
+                    || self.quic.is_some()
+                    || self.kcp.is_some()
+            }
+            "httpupgrade" => {
+                self.has_any_non_vless_inbound()
+                    || self.websocket.is_some()
+                    || self.grpc.is_some()
+                    || self.xhttp.is_some()
+                    || self.quic.is_some()
+                    || self.kcp.is_some()
+            }
+            "grpc" => {
+                self.has_any_non_vless_inbound()
+                    || self.websocket.is_some()
+                    || self.httpupgrade.is_some()
+                    || self.xhttp.is_some()
+                    || self.quic.is_some()
+                    || self.kcp.is_some()
+            }
+            "xhttp" => {
+                self.has_any_non_vless_inbound()
+                    || self.websocket.is_some()
+                    || self.httpupgrade.is_some()
+                    || self.grpc.is_some()
+                    || self.quic.is_some()
+                    || self.kcp.is_some()
+            }
+            _ => unreachable!("unknown framing transport: {name}"),
+        };
+        if framing_conflicts {
+            return Err(non_vless_err);
+        }
+
+        // Must not be combined with TLS-layer transports
+        if self.has_any_tls_layer() {
+            return Err(transport_err);
+        }
+
+        Ok(())
+    }
+
+    /// Validate a VLESS datagram transport (QUIC, KCP). These cannot be
+    /// combined with non-VLESS inbounds, TLS-layer transports, stream
+    /// framing transports, or the *other* datagram transport.
+    fn check_datagram_transport(
+        &self,
+        name: &str,
+        non_vless_err: ConfigError,
+        transport_err: ConfigError,
+        missing_users_err: ConfigError,
+    ) -> Result<(), ConfigError> {
+        if self.has_any_non_vless_inbound() || self.has_any_stream_framing() {
+            return Err(non_vless_err);
+        }
+        // Also reject the other datagram transport
+        let datagram_conflict = match name {
+            "quic" => self.kcp.is_some(),
+            "kcp" => self.quic.is_some(),
+            _ => unreachable!("unknown datagram transport: {name}"),
+        };
+        if self.has_any_tls_layer() || datagram_conflict {
+            return Err(transport_err);
+        }
+        if !self.has_vless_users() {
+            return Err(missing_users_err);
+        }
+        Ok(())
+    }
+
+    fn has_any_non_vless_inbound_except_hysteria2(&self) -> bool {
+        self.shadowsocks.is_some() || self.mixed.is_some() || self.trojan.is_some()
+    }
+
+    fn has_any_non_vless_inbound_except_tuic(&self) -> bool {
+        self.shadowsocks.is_some()
+            || self.mixed.is_some()
+            || self.trojan.is_some()
+            || self.hysteria2.is_some()
     }
 }
 

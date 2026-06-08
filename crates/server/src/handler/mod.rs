@@ -13,6 +13,16 @@ use crate::config::Config;
 use crate::mixed_proxy::{self};
 use crate::trojan::{self};
 
+/// Parse an optional config section: `Some(cfg) => Some(parse(cfg)?)`, `None => None`.
+macro_rules! parse_opt {
+    ($config:expr, $parse:expr) => {{
+        match $config {
+            Some(cfg) => Some($parse(cfg)?),
+            None => None,
+        }
+    }};
+}
+
 // ── Sub-module declarations ──
 pub(crate) mod ctrlc_handler;
 pub(crate) use ctrlc_handler::*;
@@ -156,30 +166,12 @@ impl InboundServer {
             Some(hex) => Some(decode_hex::<64>(hex).map_err(|e| format!("kyber_secret_key: {e}"))?),
             None => None,
         };
-        let reality_config = match &config.reality {
-            Some(rc) => Some(parse_reality_config(rc)?),
-            None => None,
-        };
-        let anytls_config = match &config.anytls {
-            Some(ac) => Some(parse_anytls_config(ac)?),
-            None => None,
-        };
-        let tls_config = match &config.tls {
-            Some(tc) => Some(parse_tls_config(tc)?),
-            None => None,
-        };
-        let shadowsocks_config = match &config.shadowsocks {
-            Some(sc) => Some(parse_shadowsocks_config(sc)?),
-            None => None,
-        };
-        let mixed_config = match &config.mixed {
-            Some(mc) => Some(parse_mixed_config(mc)?),
-            None => None,
-        };
-        let trojan_config = match &config.trojan {
-            Some(tc) => Some(parse_trojan_config(tc)?),
-            None => None,
-        };
+        let reality_config = parse_opt!(&config.reality, parse_reality_config);
+        let anytls_config = parse_opt!(&config.anytls, parse_anytls_config);
+        let tls_config = parse_opt!(&config.tls, parse_tls_config);
+        let shadowsocks_config = parse_opt!(&config.shadowsocks, parse_shadowsocks_config);
+        let mixed_config = parse_opt!(&config.mixed, parse_mixed_config);
+        let trojan_config = parse_opt!(&config.trojan, parse_trojan_config);
         let ws_config = match &config.websocket {
             Some(wc) => {
                 let cfg = parse_ws_config(wc)?;

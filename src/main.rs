@@ -4,7 +4,9 @@ use clap::{Parser, ValueEnum};
 use tracing::{error, info};
 use wrongsv_server::Config;
 
-#[derive(ValueEnum, Clone, Copy, PartialEq)]
+mod client_config;
+
+#[derive(Debug, ValueEnum, Clone, Copy, PartialEq)]
 enum Transport {
     /// REALITY TLS (X25519 ECDH + HKDF auth)
     Reality,
@@ -80,11 +82,33 @@ fn main() {
 
     // -- client config generation (doesn't need a running server) --
     if cli.print_client_config {
-        print_client_config(&cli);
+        let vals = client_config::resolve_client_values(
+            cli.config.as_deref(),
+            cli.transport,
+            &cli.servername,
+        );
+        let json = client_config::generate_client_config(
+            cli.format,
+            &cli.server_host,
+            &cli.client_name,
+            &vals,
+        );
+        println!("{json}");
         return;
     }
     if let Some(ref path) = cli.write_client_config {
-        write_client_config(path, &cli);
+        let vals = client_config::resolve_client_values(
+            cli.config.as_deref(),
+            cli.transport,
+            &cli.servername,
+        );
+        let json = client_config::generate_client_config(
+            cli.format,
+            &cli.server_host,
+            &cli.client_name,
+            &vals,
+        );
+        std::fs::write(path, json).expect("failed to write client config");
         info!("client config written to {path}");
         return;
     }
@@ -166,273 +190,4 @@ fn load_config(path: &str) -> Result<wrongsv_server::Config, Box<dyn std::error:
     let content = std::fs::read_to_string(path)?;
     let config: wrongsv_server::Config = toml::from_str(&content)?;
     Ok(config)
-}
-
-// ---------------------------------------------------------------------------
-// client config generation
-// ---------------------------------------------------------------------------
-
-struct ClientConfigValues {
-    uuid: String,
-    flow: String,
-    port: String,
-    short_id: String,
-    x25519_pk: String,
-    servername: String,
-    transport: Transport,
-    ws_path: String,
-}
-
-/// Resolve values for the generated client config from TOML config or defaults.
-fn resolve_client_values(cli: &Cli) -> ClientConfigValues {
-    let build_uuid = || option_env!("BUILD_UUID").unwrap_or("00000000-0000-4000-8000-000000000000");
-    let build_port = || option_env!("BUILD_PORT").unwrap_or("443");
-    let build_sid = || option_env!("BUILD_SHORT_ID").unwrap_or("00000000");
-    let build_pk =
-        || option_env!("BUILD_X25519_PK").unwrap_or("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
-
-    let toml_config = cli.config.as_ref().and_then(|path| {
-        let content = std::fs::read_to_string(path).ok()?;
-        toml::from_str::<wrongsv_server::Config>(&content).ok()
-    });
-
-    // Determine transport: explicit --transport flag, or detect from config
-    let transport = cli.transport.unwrap_or_else(|| match &toml_config {
-        Some(cfg) if cfg.reality.is_some() => Transport::Reality,
-        Some(cfg) if cfg.anytls.is_some() => Transport::AnyTls,
-        Some(cfg) if cfg.websocket.is_some() => Transport::WebSocket,
-        Some(cfg) if cfg.httpupgrade.is_some() => Transport::HttpUpgrade,
-        Some(cfg) if cfg.tls.is_some() => Transport::Tls,
-        _ => Transport::Raw,
-    });
-
-    match toml_config {
-        Some(ref cfg) => {
-            let uuid = cfg
-                .users
-                .first()
-                .map(|u| u.id.as_str())
-                .unwrap_or(build_uuid());
-            let flow = cfg
-                .users
-                .first()
-                .and_then(|u| (!u.flow.is_empty()).then_some(u.flow.as_str()))
-                .or(cfg.flow.as_deref())
-                .unwrap_or("");
-            let port = cfg.listen.rsplit(':').next().unwrap_or(build_port());
-            let (pk, sid) = match &cfg.reality {
-                Some(rc) => {
-                    let pk = wrongsv_reality::private_key_hex_to_public_b64(&rc.private_key)
-                        .unwrap_or_else(|_| build_pk().to_string());
-                    let sid = rc
-                        .short_ids
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| build_sid().to_string());
-                    (pk, sid)
-                }
-                None => (build_pk().to_string(), build_sid().to_string()),
-            };
-            // Default servername from reality.dest or tls servername
-            let servername = if cli.servername == "YOUR_SNI" {
-                cfg.reality
-                    .as_ref()
-                    .and_then(|rc| rc.dest.as_ref())
-                    .and_then(|d| d.split(':').next())
-                    .unwrap_or(&cli.servername)
-                    .to_string()
-            } else {
-                cli.servername.clone()
-            };
-            let ws_path = cfg
-                .websocket
-                .as_ref()
-                .map(|w| {
-                    let p = &w.path;
-                    if p.starts_with('/') {
-                        p.clone()
-                    } else {
-                        format!("/{p}")
-                    }
-                })
-                .or_else(|| {
-                    cfg.httpupgrade.as_ref().map(|h| {
-                        let p = &h.path;
-                        if p.starts_with('/') {
-                            p.clone()
-                        } else {
-                            format!("/{p}")
-                        }
-                    })
-                })
-                .unwrap_or_else(|| "/".to_string());
-
-            ClientConfigValues {
-                uuid: uuid.to_string(),
-                flow: flow.to_string(),
-                port: port.to_string(),
-                short_id: sid,
-                x25519_pk: pk,
-                servername,
-                transport,
-                ws_path,
-            }
-        }
-        None => ClientConfigValues {
-            uuid: build_uuid().to_string(),
-            flow: "xtls-rprx-vision".to_string(),
-            port: build_port().to_string(),
-            short_id: build_sid().to_string(),
-            x25519_pk: build_pk().to_string(),
-            servername: cli.servername.clone(),
-            ws_path: "/".to_string(),
-            transport,
-        },
-    }
-}
-
-fn client_config_json(cli: &Cli) -> String {
-    let vals = resolve_client_values(cli);
-    match cli.format {
-        ClientFormat::Mihomo => mihomo_format(cli, &vals),
-        ClientFormat::SingBox => singbox_format(cli, &vals),
-    }
-}
-
-// -- mihomo / FlClash / v2rayN format (flat keys) --
-
-fn mihomo_format(cli: &Cli, vals: &ClientConfigValues) -> String {
-    let reality_opts = match vals.transport {
-        Transport::Reality => format!(
-            ",\n  \"reality-opts\": {{\n    \"public-key\": \"{}\",\n    \"short-id\": \"{}\"\n  }}",
-            vals.x25519_pk, vals.short_id
-        ),
-        _ => String::new(),
-    };
-    let transport = match vals.transport {
-        Transport::WebSocket => format!(
-            ",\n  \"network\": \"ws\",\n  \"ws-opts\": {{\n    \"path\": \"{}\"\n  }}",
-            vals.ws_path
-        ),
-        Transport::HttpUpgrade => format!(
-            ",\n  \"network\": \"ws\",\n  \"ws-opts\": {{\n    \"path\": \"{}\",\n    \"v2ray-http-upgrade\": true\n  }}",
-            vals.ws_path
-        ),
-        _ => String::new(),
-    };
-    let tls_line = match vals.transport {
-        Transport::Raw | Transport::WebSocket | Transport::HttpUpgrade => String::new(),
-        _ => format!(
-            ",\n  \"tls\": true,\n  \"client-fingerprint\": \"chrome\",\n  \"servername\": \"{sni}\"",
-            sni = vals.servername,
-        ),
-    };
-
-    format!(
-        r#"{{
-  "name": "{name}",
-  "type": "vless",
-  "server": "{server}",
-  "port": {port},
-  "uuid": "{uuid}",
-  "encryption": "none",
-  "flow": "{flow}",
-  "udp": true{tls}{reality}{transport}
-}}"#,
-        name = cli.client_name,
-        server = cli.server_host,
-        port = vals.port,
-        uuid = vals.uuid,
-        flow = vals.flow,
-        tls = tls_line,
-        reality = reality_opts,
-        transport = transport,
-    )
-}
-
-// -- sing-box format (nested tls object) --
-
-fn singbox_format(cli: &Cli, vals: &ClientConfigValues) -> String {
-    let tls_lines = match vals.transport {
-        Transport::Reality => vec![
-            r#"      "tls": {"#.to_string(),
-            r#"        "enabled": true,"#.to_string(),
-            format!(r#"        "server_name": "{}","#, vals.servername),
-            r#"        "utls": { "enabled": true, "fingerprint": "chrome" },"#.to_string(),
-            r#"        "reality": {"#.to_string(),
-            r#"          "enabled": true,"#.to_string(),
-            format!(r#"          "public_key": "{}","#, vals.x25519_pk),
-            format!(r#"          "short_id": "{}""#, vals.short_id),
-            r#"        }"#.to_string(),
-            r#"      }"#.to_string(),
-        ],
-        Transport::Tls | Transport::AnyTls => vec![
-            r#"      "tls": {"#.to_string(),
-            r#"        "enabled": true,"#.to_string(),
-            format!(r#"        "server_name": "{}","#, vals.servername),
-            r#"        "insecure": true,"#.to_string(),
-            r#"        "utls": { "enabled": true, "fingerprint": "chrome" }"#.to_string(),
-            r#"      }"#.to_string(),
-        ],
-        Transport::Raw | Transport::WebSocket | Transport::HttpUpgrade => vec![],
-    };
-
-    let transport_lines = match vals.transport {
-        Transport::WebSocket => vec![
-            r#"      "transport": {"#.to_string(),
-            r#"        "type": "ws","#.to_string(),
-            format!(r#"        "path": "{}""#, vals.ws_path),
-            r#"      }"#.to_string(),
-        ],
-        Transport::HttpUpgrade => vec![
-            r#"      "transport": {"#.to_string(),
-            r#"        "type": "httpupgrade","#.to_string(),
-            format!(r#"        "path": "{}""#, vals.ws_path),
-            r#"      }"#.to_string(),
-        ],
-        _ => vec![],
-    };
-
-    let flow_line = format!(
-        r#"      "flow": "{}"{}"#,
-        vals.flow,
-        if !tls_lines.is_empty() || !transport_lines.is_empty() {
-            ","
-        } else {
-            ""
-        }
-    );
-
-    let mut lines = vec![
-        r#"{"#.to_string(),
-        r#"  "inbounds": [{ "type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": 10809 }],"#.to_string(),
-        r#"  "outbounds": ["#.to_string(),
-        r#"    {"#.to_string(),
-        format!(r#"      "type": "vless","#),
-        format!(r#"      "tag": "proxy","#),
-        format!(r#"      "server": "{}","#, cli.server_host),
-        format!(r#"      "server_port": {},"#, vals.port),
-        format!(r#"      "uuid": "{}","#, vals.uuid),
-        flow_line,
-    ];
-    for line in tls_lines {
-        lines.push(line);
-    }
-    for line in transport_lines {
-        lines.push(line);
-    }
-    lines.push(r#"    },"#.to_string());
-    lines.push(r#"    {"type": "direct", "tag": "direct"}"#.to_string());
-    lines.push(r#"  ]"#.to_string());
-    lines.push(r#"}"#.to_string());
-
-    lines.join("\n")
-}
-
-fn print_client_config(cli: &Cli) {
-    println!("{}", client_config_json(cli));
-}
-
-fn write_client_config(path: &str, cli: &Cli) {
-    std::fs::write(path, client_config_json(cli)).expect("failed to write client config");
 }
