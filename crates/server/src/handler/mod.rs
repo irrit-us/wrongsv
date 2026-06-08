@@ -44,6 +44,8 @@ pub(crate) mod mixed;
 pub(crate) use mixed::*;
 pub(crate) mod trojan_handler;
 pub(crate) use trojan_handler::*;
+pub(crate) mod quic;
+pub(crate) use quic::*;
 
 #[derive(Clone, Debug)]
 pub struct ShutdownSignal {
@@ -141,6 +143,7 @@ pub struct InboundServer {
     xhttp_config: Option<XhttpConfig>,
     hysteria2_config: Option<Hysteria2Config>,
     tuic_config: Option<TuicConfig>,
+    quic_config: Option<QuicConfig>,
 }
 
 impl InboundServer {
@@ -266,6 +269,17 @@ impl InboundServer {
             }
             None => None,
         };
+        let quic_config = match &config.quic {
+            Some(qc) => {
+                let cfg = parse_quic_config(qc)?;
+                info!(
+                    "QUIC carrier enabled (VLESS over QUIC{})",
+                    if cfg.udp_relay { " + UDP" } else { "" }
+                );
+                Some(cfg)
+            }
+            None => None,
+        };
         if let Some(ref rc) = reality_config {
             let rpk_hex: String = rc
                 .cert_material
@@ -331,6 +345,7 @@ impl InboundServer {
             xhttp_config,
             hysteria2_config,
             tuic_config,
+            quic_config,
         })
     }
 
@@ -381,6 +396,22 @@ impl InboundServer {
                 .build()?;
             return runtime
                 .block_on(run_tuic_endpoint(&self.config.listen, config, shutdown))
+                .map_err(|e| std::io::Error::other(e.to_string()).into());
+        }
+        if let Some(config) = self.quic_config.clone() {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            let validator = Arc::clone(&self.validator);
+            let kyber_sk = self.kyber_sk;
+            return runtime
+                .block_on(run_quic_endpoint(
+                    &self.config.listen,
+                    config,
+                    validator,
+                    kyber_sk,
+                    shutdown,
+                ))
                 .map_err(|e| std::io::Error::other(e.to_string()).into());
         }
         let listener = TcpListener::bind(&self.config.listen)?;

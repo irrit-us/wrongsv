@@ -595,6 +595,7 @@ mod tests {
             xhttp: None,
             hysteria2: None,
             tuic: None,
+            quic: None,
         }
     }
 

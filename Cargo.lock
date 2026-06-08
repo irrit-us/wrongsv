@@ -2792,6 +2792,7 @@ dependencies = [
  "http",
  "ml-kem",
  "pem",
+ "quinn",
  "rand 0.8.6",
  "rustls",
  "serde",

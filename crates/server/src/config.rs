@@ -66,6 +66,12 @@ pub struct Config {
     /// QUIC/TCP/UDP traffic instead of VLESS.
     #[serde(default)]
     pub tuic: Option<TuicServerConfig>,
+    /// QUIC carrier configuration. When set, the listener uses QUIC as
+    /// the transport layer for VLESS (VLESS over QUIC). This is a VLESS
+    /// transport, not a separate protocol — it replaces TCP with QUIC
+    /// streams.
+    #[serde(default)]
+    pub quic: Option<QuicServerConfig>,
 }
 
 /// REALITY server-side configuration.
@@ -400,6 +406,32 @@ fn default_tuic_heartbeat() -> u64 {
     10
 }
 
+/// QUIC carrier TLS configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct QuicTlsConfig {
+    #[serde(default)]
+    pub certificate: Option<String>,
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub dest: Option<String>,
+}
+
+/// QUIC carrier server-side configuration.
+///
+/// When the QUIC carrier is enabled, the listener creates a QUIC endpoint
+/// and carries VLESS over bidirectional QUIC streams. This is a VLESS
+/// transport layer, compatible with xray's QUIC transport.
+#[derive(Debug, Clone, Deserialize)]
+pub struct QuicServerConfig {
+    /// TLS configuration for the QUIC listener.
+    #[serde(default)]
+    pub tls: Option<QuicTlsConfig>,
+    /// Whether to allow UDP relay over QUIC (default true).
+    #[serde(default = "default_udp")]
+    pub udp_relay: bool,
+}
+
 pub(crate) fn is_strict_uuid_text(s: &str) -> bool {
     let mut hex_len = 0usize;
     for ch in s.chars() {
@@ -516,6 +548,14 @@ pub enum ConfigError {
     TuicInvalidUuid,
     #[error("TUIC congestion control must be one of `cubic`, `new_reno`, or `bbr`")]
     TuicInvalidCongestionControl,
+    #[error("QUIC carrier uses TLS — provide TLS cert/key under [quic.tls]")]
+    QuicMissingTls,
+    #[error("QUIC carrier is a VLESS transport and cannot be combined with non-VLESS protocols")]
+    QuicWithNonVless,
+    #[error("QUIC carrier is a VLESS transport and cannot be combined with other VLESS transports")]
+    QuicWithVlessTransport,
+    #[error("QUIC carrier requires VLESS users")]
+    QuicMissingUsers,
 }
 
 impl Config {
@@ -558,6 +598,7 @@ impl Config {
                 || self.httpupgrade.is_some()
                 || self.grpc.is_some()
                 || self.xhttp.is_some()
+                || self.quic.is_some()
             {
                 return Err(ConfigError::ShadowsocksWithVlessTransport);
             }
@@ -587,6 +628,7 @@ impl Config {
                 || self.httpupgrade.is_some()
                 || self.grpc.is_some()
                 || self.xhttp.is_some()
+                || self.quic.is_some()
             {
                 return Err(ConfigError::MixedWithVlessTransport);
             }
@@ -615,6 +657,7 @@ impl Config {
                 || self.httpupgrade.is_some()
                 || self.grpc.is_some()
                 || self.xhttp.is_some()
+                || self.quic.is_some()
             {
                 return Err(ConfigError::TrojanWithVlessTransport);
             }
@@ -638,6 +681,7 @@ impl Config {
                 || self.httpupgrade.is_some()
                 || self.grpc.is_some()
                 || self.xhttp.is_some()
+                || self.quic.is_some()
             {
                 return Err(ConfigError::WebsocketWithNonVless);
             }
@@ -646,6 +690,7 @@ impl Config {
                 || self.tls.is_some()
                 || self.grpc.is_some()
                 || self.xhttp.is_some()
+                || self.quic.is_some()
             {
                 return Err(ConfigError::WebsocketWithVlessTransport);
             }
@@ -665,6 +710,7 @@ impl Config {
                 || self.websocket.is_some()
                 || self.grpc.is_some()
                 || self.xhttp.is_some()
+                || self.quic.is_some()
             {
                 return Err(ConfigError::HttpUpgradeWithNonVless);
             }
@@ -673,6 +719,7 @@ impl Config {
                 || self.tls.is_some()
                 || self.grpc.is_some()
                 || self.xhttp.is_some()
+                || self.quic.is_some()
             {
                 return Err(ConfigError::HttpUpgradeWithVlessTransport);
             }
@@ -692,10 +739,15 @@ impl Config {
                 || self.websocket.is_some()
                 || self.httpupgrade.is_some()
                 || self.xhttp.is_some()
+                || self.quic.is_some()
             {
                 return Err(ConfigError::GrpcWithNonVless);
             }
-            if self.reality.is_some() || self.anytls.is_some() || self.tls.is_some() {
+            if self.reality.is_some()
+                || self.anytls.is_some()
+                || self.tls.is_some()
+                || self.quic.is_some()
+            {
                 return Err(ConfigError::GrpcWithVlessTransport);
             }
             if self.users.is_empty() {
@@ -709,10 +761,15 @@ impl Config {
                 || self.websocket.is_some()
                 || self.httpupgrade.is_some()
                 || self.grpc.is_some()
+                || self.quic.is_some()
             {
                 return Err(ConfigError::XhttpWithNonVless);
             }
-            if self.reality.is_some() || self.anytls.is_some() || self.tls.is_some() {
+            if self.reality.is_some()
+                || self.anytls.is_some()
+                || self.tls.is_some()
+                || self.quic.is_some()
+            {
                 return Err(ConfigError::XhttpWithVlessTransport);
             }
             if self.users.is_empty() {
@@ -730,6 +787,7 @@ impl Config {
                 || self.httpupgrade.is_some()
                 || self.grpc.is_some()
                 || self.xhttp.is_some()
+                || self.quic.is_some()
             {
                 return Err(ConfigError::Hysteria2WithVlessTransport);
             }
@@ -757,6 +815,7 @@ impl Config {
                 || self.httpupgrade.is_some()
                 || self.grpc.is_some()
                 || self.xhttp.is_some()
+                || self.quic.is_some()
             {
                 return Err(ConfigError::TuicWithVlessTransport);
             }
@@ -785,6 +844,33 @@ impl Config {
                 .any(|user| !is_strict_uuid_text(&user.uuid))
             {
                 return Err(ConfigError::TuicInvalidUuid);
+            }
+        }
+        if let Some(_quic) = &self.quic {
+            if self.shadowsocks.is_some()
+                || self.mixed.is_some()
+                || self.trojan.is_some()
+                || self.hysteria2.is_some()
+                || self.tuic.is_some()
+                || self.websocket.is_some()
+                || self.httpupgrade.is_some()
+                || self.grpc.is_some()
+                || self.xhttp.is_some()
+            {
+                return Err(ConfigError::QuicWithNonVless);
+            }
+            if self.reality.is_some()
+                || self.anytls.is_some()
+                || self.tls.is_some()
+                || self.websocket.is_some()
+                || self.httpupgrade.is_some()
+                || self.grpc.is_some()
+                || self.xhttp.is_some()
+            {
+                return Err(ConfigError::QuicWithVlessTransport);
+            }
+            if self.users.is_empty() {
+                return Err(ConfigError::QuicMissingUsers);
             }
         }
         Ok(())
@@ -838,6 +924,7 @@ flow = "xtls-rprx-vision"
             xhttp: None,
             hysteria2: None,
             tuic: None,
+            quic: None,
         };
         assert!(config.validate().is_err());
     }
@@ -868,6 +955,7 @@ flow = "xtls-rprx-vision"
             xhttp: None,
             hysteria2: None,
             tuic: None,
+            quic: None,
         };
         assert!(config.validate().is_err());
     }
@@ -1508,6 +1596,95 @@ path = "/ws"
         assert!(matches!(
             config.validate(),
             Err(ConfigError::WebsocketWithNonVless)
+        ));
+    }
+
+    // ── QUIC carrier config tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_parse_quic_config() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[quic]
+udp_relay = false
+
+[quic.tls]
+certificate = '''-----BEGIN CERTIFICATE-----...'''
+key = '''-----BEGIN PRIVATE KEY-----...'''
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        let quic = config.quic.unwrap();
+        assert!(!quic.udp_relay);
+        assert!(quic.tls.is_some());
+    }
+
+    #[test]
+    fn test_quic_accepts_vless_users() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[quic]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn test_quic_rejects_missing_users() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[quic]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::QuicMissingUsers)
+        ));
+    }
+
+    #[test]
+    fn test_quic_rejects_non_vless() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[quic]
+
+[shadowsocks]
+method = "chacha20-ietf-poly1305"
+password = "secret"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::ShadowsocksWithVlessTransport)
+        ));
+    }
+
+    #[test]
+    fn test_quic_rejects_other_vless_transport() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[quic]
+
+[tls]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::QuicWithVlessTransport)
         ));
     }
 }

@@ -157,6 +157,7 @@ fn build_default_config() -> Config {
         xhttp: None,
         hysteria2: None,
         tuic: None,
+        quic: None,
     }
 }
 
