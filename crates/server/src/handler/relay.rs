@@ -596,6 +596,7 @@ mod tests {
             hysteria2: None,
             tuic: None,
             quic: None,
+            kcp: None,
         }
     }
 

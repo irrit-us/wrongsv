@@ -15,6 +15,7 @@ documentation and maps it to wrongsv implementation status.
 | VLESS + gRPC | Implemented for HTTP/2 gRPC transport with protobuf Hunk framing, configurable service name, optional TLS, TCP/Vision/UDP relay (V2Ray-compatible) | xray, sing-box, mihomo |
 | VLESS + XHTTP (SplitHTTP) | Implemented for HTTP/2 raw byte streaming (stream-one mode), configurable path prefix, optional host validation, optional TLS, TCP/Vision/UDP relay (xray-compatible) | xray, sing-box |
 | VLESS + QUIC | Implemented for QUIC transport with bidirectional stream VLESS relay, TLS (self-signed or custom), TCP/Vision/UDP relay (xray-compatible) | xray, sing-box |
+| VLESS + KCP (mKCP) | Implemented for UDP-based mKCP transport with FNV1a authentication, KCP session multiplexing, TCP/Vision/UDP relay (xray-compatible) | xray |
 | XTLS Vision | Implemented for TCP | xray, sing-box, mihomo |
 | VLESS UDP packet relay | Implemented for non-Vision flows, including raw length-prefixed UDP and V2Ray 5+ packetaddr UDP | xray, sing-box, mihomo |
 | AnyTLS | Implemented, including sing-anytls stream mode | sing-box |
@@ -57,7 +58,7 @@ documentation and maps it to wrongsv implementation status.
 
 ## Priority
 
-1. ~~VLESS WebSocket TCP/raw UDP/Mux.Cool XUDP, packetaddr UDP, HTTPUpgrade TCP/UDP, gRPC, XHTTP, and QUIC carrier coverage~~ → **Done**.
-2. KCP/WebTransport carrier modes.
+1. ~~VLESS WebSocket TCP/raw UDP/Mux.Cool XUDP, packetaddr UDP, HTTPUpgrade TCP/UDP, gRPC, XHTTP, QUIC, and KCP carrier coverage~~ → **Done**.
+2. WebTransport carrier mode.
 3. VMess, ShadowTLS.
 4. SoftEther/OpenVPN/SSTP only if the project scope expands from proxy relay to VPN tunneling.

@@ -158,6 +158,7 @@ fn build_default_config() -> Config {
         hysteria2: None,
         tuic: None,
         quic: None,
+        kcp: None,
     }
 }
 

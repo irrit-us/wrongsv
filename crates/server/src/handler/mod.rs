@@ -46,6 +46,8 @@ pub(crate) mod trojan_handler;
 pub(crate) use trojan_handler::*;
 pub(crate) mod quic;
 pub(crate) use quic::*;
+pub(crate) mod kcp;
+pub(crate) use kcp::*;
 
 #[derive(Clone, Debug)]
 pub struct ShutdownSignal {
@@ -144,6 +146,7 @@ pub struct InboundServer {
     hysteria2_config: Option<Hysteria2Config>,
     tuic_config: Option<TuicConfig>,
     quic_config: Option<QuicConfig>,
+    kcp_config: Option<KcpConfig>,
 }
 
 impl InboundServer {
@@ -280,6 +283,17 @@ impl InboundServer {
             }
             None => None,
         };
+        let kcp_config = match &config.kcp {
+            Some(kc) => {
+                let cfg = parse_kcp_config(kc)?;
+                info!(
+                    "KCP enabled on {} (seed={:?}, tti={}ms, mtu={})",
+                    config.listen, cfg.seed, cfg.tti, cfg.mtu
+                );
+                Some(cfg)
+            }
+            None => None,
+        };
         if let Some(ref rc) = reality_config {
             let rpk_hex: String = rc
                 .cert_material
@@ -346,6 +360,7 @@ impl InboundServer {
             hysteria2_config,
             tuic_config,
             quic_config,
+            kcp_config,
         })
     }
 
@@ -406,6 +421,22 @@ impl InboundServer {
             let kyber_sk = self.kyber_sk;
             return runtime
                 .block_on(run_quic_endpoint(
+                    &self.config.listen,
+                    config,
+                    validator,
+                    kyber_sk,
+                    shutdown,
+                ))
+                .map_err(|e| std::io::Error::other(e.to_string()).into());
+        }
+        if let Some(config) = self.kcp_config.clone() {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            let validator = Arc::clone(&self.validator);
+            let kyber_sk = self.kyber_sk;
+            return runtime
+                .block_on(run_kcp_endpoint(
                     &self.config.listen,
                     config,
                     validator,

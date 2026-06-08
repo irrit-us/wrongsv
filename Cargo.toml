@@ -109,6 +109,7 @@ h2 = "0.4"
 tokio = { version = "1", features = ["rt", "net", "macros"] }
 http = "1"
 quinn = "0.11"
+kcp = "0.6"
 
 [[bench]]
 name = "throughput"

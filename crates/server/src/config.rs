@@ -72,6 +72,11 @@ pub struct Config {
     /// streams.
     #[serde(default)]
     pub quic: Option<QuicServerConfig>,
+    /// KCP (mKCP) carrier configuration. When set, the listener creates a
+    /// UDP-based KCP endpoint sending VLESS over mKCP sessions. This is a
+    /// VLESS transport layer, not a separate protocol.
+    #[serde(default)]
+    pub kcp: Option<KcpServerConfig>,
 }
 
 /// REALITY server-side configuration.
@@ -432,6 +437,40 @@ pub struct QuicServerConfig {
     pub udp_relay: bool,
 }
 
+/// KCP (mKCP) carrier server-side configuration.
+///
+/// When the KCP carrier is enabled, the listener creates a UDP socket and
+/// carries VLESS over KCP reliable transport sessions multiplexed over the
+/// single UDP port. This is a VLESS transport layer, compatible with xray's
+/// mKCP transport.
+#[derive(Debug, Clone, Deserialize)]
+pub struct KcpServerConfig {
+    /// mKCP authentication seed (empty string = no auth).
+    #[serde(default)]
+    pub seed: Option<String>,
+    /// KCP MTU (576..1460, default 1350).
+    #[serde(default)]
+    pub mtu: Option<usize>,
+    /// Transmission interval in ms (10..100, default 50).
+    #[serde(default)]
+    pub tti: Option<u32>,
+    /// mKCP segment wrapper header size (default 19: auth + DataSegment overhead).
+    #[serde(default)]
+    pub header_size: Option<usize>,
+    /// Uplink capacity hint (bytes).
+    #[serde(default)]
+    pub uplink_capacity: Option<usize>,
+    /// Downlink capacity hint (bytes).
+    #[serde(default)]
+    pub downlink_capacity: Option<usize>,
+    /// KCP read buffer size (default is auto).
+    #[serde(default)]
+    pub read_buffer_size: Option<usize>,
+    /// KCP write buffer size (default is auto).
+    #[serde(default)]
+    pub write_buffer_size: Option<usize>,
+}
+
 pub(crate) fn is_strict_uuid_text(s: &str) -> bool {
     let mut hex_len = 0usize;
     for ch in s.chars() {
@@ -556,6 +595,12 @@ pub enum ConfigError {
     QuicWithVlessTransport,
     #[error("QUIC carrier requires VLESS users")]
     QuicMissingUsers,
+    #[error("KCP carrier is a VLESS transport and cannot be combined with non-VLESS protocols")]
+    KcpWithNonVless,
+    #[error("KCP carrier is a VLESS transport and cannot be combined with other VLESS transports")]
+    KcpWithVlessTransport,
+    #[error("KCP carrier requires VLESS users")]
+    KcpMissingUsers,
 }
 
 impl Config {
@@ -599,6 +644,7 @@ impl Config {
                 || self.grpc.is_some()
                 || self.xhttp.is_some()
                 || self.quic.is_some()
+                || self.kcp.is_some()
             {
                 return Err(ConfigError::ShadowsocksWithVlessTransport);
             }
@@ -629,6 +675,7 @@ impl Config {
                 || self.grpc.is_some()
                 || self.xhttp.is_some()
                 || self.quic.is_some()
+                || self.kcp.is_some()
             {
                 return Err(ConfigError::MixedWithVlessTransport);
             }
@@ -658,6 +705,7 @@ impl Config {
                 || self.grpc.is_some()
                 || self.xhttp.is_some()
                 || self.quic.is_some()
+                || self.kcp.is_some()
             {
                 return Err(ConfigError::TrojanWithVlessTransport);
             }
@@ -682,6 +730,7 @@ impl Config {
                 || self.grpc.is_some()
                 || self.xhttp.is_some()
                 || self.quic.is_some()
+                || self.kcp.is_some()
             {
                 return Err(ConfigError::WebsocketWithNonVless);
             }
@@ -691,6 +740,7 @@ impl Config {
                 || self.grpc.is_some()
                 || self.xhttp.is_some()
                 || self.quic.is_some()
+                || self.kcp.is_some()
             {
                 return Err(ConfigError::WebsocketWithVlessTransport);
             }
@@ -711,6 +761,7 @@ impl Config {
                 || self.grpc.is_some()
                 || self.xhttp.is_some()
                 || self.quic.is_some()
+                || self.kcp.is_some()
             {
                 return Err(ConfigError::HttpUpgradeWithNonVless);
             }
@@ -720,6 +771,7 @@ impl Config {
                 || self.grpc.is_some()
                 || self.xhttp.is_some()
                 || self.quic.is_some()
+                || self.kcp.is_some()
             {
                 return Err(ConfigError::HttpUpgradeWithVlessTransport);
             }
@@ -740,6 +792,7 @@ impl Config {
                 || self.httpupgrade.is_some()
                 || self.xhttp.is_some()
                 || self.quic.is_some()
+                || self.kcp.is_some()
             {
                 return Err(ConfigError::GrpcWithNonVless);
             }
@@ -747,6 +800,7 @@ impl Config {
                 || self.anytls.is_some()
                 || self.tls.is_some()
                 || self.quic.is_some()
+                || self.kcp.is_some()
             {
                 return Err(ConfigError::GrpcWithVlessTransport);
             }
@@ -762,6 +816,7 @@ impl Config {
                 || self.httpupgrade.is_some()
                 || self.grpc.is_some()
                 || self.quic.is_some()
+                || self.kcp.is_some()
             {
                 return Err(ConfigError::XhttpWithNonVless);
             }
@@ -769,6 +824,7 @@ impl Config {
                 || self.anytls.is_some()
                 || self.tls.is_some()
                 || self.quic.is_some()
+                || self.kcp.is_some()
             {
                 return Err(ConfigError::XhttpWithVlessTransport);
             }
@@ -788,6 +844,7 @@ impl Config {
                 || self.grpc.is_some()
                 || self.xhttp.is_some()
                 || self.quic.is_some()
+                || self.kcp.is_some()
             {
                 return Err(ConfigError::Hysteria2WithVlessTransport);
             }
@@ -816,6 +873,7 @@ impl Config {
                 || self.grpc.is_some()
                 || self.xhttp.is_some()
                 || self.quic.is_some()
+                || self.kcp.is_some()
             {
                 return Err(ConfigError::TuicWithVlessTransport);
             }
@@ -873,6 +931,34 @@ impl Config {
                 return Err(ConfigError::QuicMissingUsers);
             }
         }
+        if let Some(_kcp) = &self.kcp {
+            if self.shadowsocks.is_some()
+                || self.mixed.is_some()
+                || self.trojan.is_some()
+                || self.hysteria2.is_some()
+                || self.tuic.is_some()
+                || self.websocket.is_some()
+                || self.httpupgrade.is_some()
+                || self.grpc.is_some()
+                || self.xhttp.is_some()
+            {
+                return Err(ConfigError::KcpWithNonVless);
+            }
+            if self.reality.is_some()
+                || self.anytls.is_some()
+                || self.tls.is_some()
+                || self.quic.is_some()
+                || self.websocket.is_some()
+                || self.httpupgrade.is_some()
+                || self.grpc.is_some()
+                || self.xhttp.is_some()
+            {
+                return Err(ConfigError::KcpWithVlessTransport);
+            }
+            if self.users.is_empty() {
+                return Err(ConfigError::KcpMissingUsers);
+            }
+        }
         Ok(())
     }
 }
@@ -925,6 +1011,7 @@ flow = "xtls-rprx-vision"
             hysteria2: None,
             tuic: None,
             quic: None,
+            kcp: None,
         };
         assert!(config.validate().is_err());
     }
@@ -956,6 +1043,7 @@ flow = "xtls-rprx-vision"
             hysteria2: None,
             tuic: None,
             quic: None,
+            kcp: None,
         };
         assert!(config.validate().is_err());
     }
@@ -1685,6 +1773,94 @@ id = "12345678-1234-1234-1234-123456789abc"
         assert!(matches!(
             config.validate(),
             Err(ConfigError::QuicWithVlessTransport)
+        ));
+    }
+
+    // ── KCP carrier config tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_parse_kcp_config() {
+        let toml = r#"
+listen = "0.0.0.0:8388"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[kcp]
+seed = "my-secret"
+mtu = 1400
+tti = 20
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        let kcp = config.kcp.unwrap();
+        assert_eq!(kcp.seed.as_deref(), Some("my-secret"));
+        assert_eq!(kcp.mtu, Some(1400));
+        assert_eq!(kcp.tti, Some(20));
+    }
+
+    #[test]
+    fn test_kcp_accepts_vless_users() {
+        let toml = r#"
+listen = "0.0.0.0:8388"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[kcp]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn test_kcp_rejects_missing_users() {
+        let toml = r#"
+listen = "0.0.0.0:8388"
+
+[kcp]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::KcpMissingUsers)
+        ));
+    }
+
+    #[test]
+    fn test_kcp_rejects_non_vless() {
+        let toml = r#"
+listen = "0.0.0.0:8388"
+
+[kcp]
+
+[shadowsocks]
+method = "chacha20-ietf-poly1305"
+password = "secret"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::ShadowsocksWithVlessTransport)
+        ));
+    }
+
+    #[test]
+    fn test_kcp_rejects_other_vless_transport() {
+        let toml = r#"
+listen = "0.0.0.0:8388"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[kcp]
+
+[tls]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::KcpWithVlessTransport)
         ));
     }
 }
