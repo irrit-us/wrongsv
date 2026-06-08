@@ -416,3 +416,128 @@ fn test_xhttp_tcp_echo() {
         send_stream.send_data(Bytes::new(), true).unwrap();
     });
 }
+
+/// Verify host validation rejects mismatched hosts.
+#[test]
+fn test_xhttp_rejects_wrong_host() {
+    init_logging();
+    let port = pick_port();
+    // Spawn server with host validation enabled
+    let config_toml = format!(
+        r#"
+listen = "127.0.0.1:{port}"
+
+[[users]]
+id = "{TEST_UUID}"
+email = "test@xhttp.test"
+flow = "{XRV}"
+
+[xhttp]
+path = "/xhttp"
+host = "allowed.example.com"
+"#
+    );
+    let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
+    let server = wrongsv_server::InboundServer::new(config).unwrap();
+    let handle = server.spawn();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let _guard = common::ServerGuard { handle };
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    rt.block_on(async {
+        let tcp = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}"))
+            .await
+            .unwrap();
+        tcp.set_nodelay(true).unwrap();
+
+        let (client, conn) = h2::client::handshake(tcp).await.unwrap();
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let mut client = client.ready().await.unwrap();
+
+        // Send with wrong host — should be rejected.
+        let request = http::Request::builder()
+            .method(http::Method::POST)
+            .uri("https://evil.example.com/xhttp")
+            .header("host", "evil.example.com")
+            .body(())
+            .unwrap();
+
+        let (response, _send_stream) = client.send_request(request, false).unwrap();
+        let response = response.await.unwrap();
+
+        assert_eq!(
+            response.status(),
+            http::StatusCode::NOT_FOUND,
+            "expected 404 for wrong host"
+        );
+    });
+}
+
+/// Verify XHTTP with Vision flow completes a VLESS response round-trip.
+#[test]
+fn test_xhttp_vision_vless_response() {
+    init_logging();
+    let port = pick_port();
+    let _guard = spawn_xhttp_server(port, TEST_UUID, "xtls-rprx-vision", "/xhttp");
+    let echo_addr = spawn_tcp_echo_target();
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    rt.block_on(async {
+        let tcp = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}"))
+            .await
+            .unwrap();
+        tcp.set_nodelay(true).unwrap();
+
+        let (client, conn) = h2::client::handshake(tcp).await.unwrap();
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let mut client = client.ready().await.unwrap();
+
+        let request = http::Request::builder()
+            .method(http::Method::POST)
+            .uri("https://xhttp.local/xhttp")
+            .body(())
+            .unwrap();
+
+        let (response, mut send_stream) = client.send_request(request, false).unwrap();
+        let response = response.await.unwrap();
+        assert_eq!(response.status(), http::StatusCode::OK);
+
+        let mut body = response.into_body();
+
+        // Send VLESS TCP request with xtls-rprx-vision flow.
+        let vless_header = encode_vless_request(
+            TEST_UUID,
+            "127.0.0.1",
+            echo_addr.port(),
+            RequestCommand::Tcp,
+            "xtls-rprx-vision",
+        );
+        send_stream.send_data(vless_header.into(), true).unwrap();
+        drop(send_stream);
+
+        tokio::task::yield_now().await;
+
+        // Read Vision-encoded VLESS response.
+        let vless_resp = read_xhttp_data(&mut body)
+            .await
+            .unwrap()
+            .expect("expected VLESS response");
+        assert!(
+            !vless_resp.is_empty(),
+            "Vision VLESS response should not be empty"
+        );
+    });
+}
