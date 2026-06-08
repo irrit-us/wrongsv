@@ -53,6 +53,11 @@ pub struct Config {
     /// HTTP/2 + gRPC handshake before VLESS (V2Ray-compatible).
     #[serde(default)]
     pub grpc: Option<GrpcServerConfig>,
+    /// XHTTP (SplitHTTP) carrier configuration. When set, the listener
+    /// performs an HTTP/2 upgrade before VLESS, carrying raw bytes over
+    /// HTTP/2 streams (V2Ray xray-compatible, stream-one mode).
+    #[serde(default)]
+    pub xhttp: Option<XhttpServerConfig>,
     /// Hysteria2 inbound configuration. When set, the listener accepts
     /// Hysteria2 QUIC/TCP/UDP traffic instead of VLESS.
     #[serde(default)]
@@ -268,6 +273,24 @@ pub struct GrpcServerConfig {
     pub tls: Option<GrpcTlsConfig>,
 }
 
+/// XHTTP (SplitHTTP) carrier server-side configuration.
+///
+/// This implements the V2Ray "SplitHTTP" transport (also called XHTTP).
+/// In stream-one mode, a single HTTP/2 POST request carries bidirectional
+/// raw bytes — no protobuf framing.
+#[derive(Debug, Clone, Deserialize)]
+pub struct XhttpServerConfig {
+    /// HTTP path prefix (default "/xhttp").
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Optional host header to validate.
+    #[serde(default)]
+    pub host: Option<String>,
+    /// Optional TLS configuration for HTTPS+XHTTP mode.
+    #[serde(default)]
+    pub tls: Option<GrpcTlsConfig>,
+}
+
 /// Hysteria2 authentication user.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Hysteria2UserConfig {
@@ -461,6 +484,14 @@ pub enum ConfigError {
     GrpcWithNonVless,
     #[error("gRPC inbound requires VLESS users")]
     GrpcMissingUsers,
+    #[error("XHTTP inbound cannot be combined with other VLESS transport layers")]
+    XhttpWithVlessTransport,
+    #[error("XHTTP inbound cannot be combined with non-VLESS protocols")]
+    XhttpWithNonVless,
+    #[error("XHTTP inbound requires VLESS users")]
+    XhttpMissingUsers,
+    #[error("XHTTP inbound cannot be combined with gRPC")]
+    XhttpWithGrpc,
     #[error("Hysteria2 inbound cannot be combined with VLESS users")]
     Hysteria2WithVlessUsers,
     #[error("Hysteria2 inbound cannot be combined with VLESS transport layers")]
@@ -508,6 +539,7 @@ impl Config {
             self.trojan.is_some(),
             self.hysteria2.is_some(),
             self.tuic.is_some(),
+            self.xhttp.is_some(),
         ]
         .into_iter()
         .filter(|enabled| *enabled)
@@ -525,6 +557,7 @@ impl Config {
                 || self.websocket.is_some()
                 || self.httpupgrade.is_some()
                 || self.grpc.is_some()
+                || self.xhttp.is_some()
             {
                 return Err(ConfigError::ShadowsocksWithVlessTransport);
             }
@@ -553,6 +586,7 @@ impl Config {
                 || self.websocket.is_some()
                 || self.httpupgrade.is_some()
                 || self.grpc.is_some()
+                || self.xhttp.is_some()
             {
                 return Err(ConfigError::MixedWithVlessTransport);
             }
@@ -580,6 +614,7 @@ impl Config {
                 || self.websocket.is_some()
                 || self.httpupgrade.is_some()
                 || self.grpc.is_some()
+                || self.xhttp.is_some()
             {
                 return Err(ConfigError::TrojanWithVlessTransport);
             }
@@ -602,6 +637,7 @@ impl Config {
                 || self.trojan.is_some()
                 || self.httpupgrade.is_some()
                 || self.grpc.is_some()
+                || self.xhttp.is_some()
             {
                 return Err(ConfigError::WebsocketWithNonVless);
             }
@@ -609,6 +645,7 @@ impl Config {
                 || self.anytls.is_some()
                 || self.tls.is_some()
                 || self.grpc.is_some()
+                || self.xhttp.is_some()
             {
                 return Err(ConfigError::WebsocketWithVlessTransport);
             }
@@ -627,6 +664,7 @@ impl Config {
                 || self.trojan.is_some()
                 || self.websocket.is_some()
                 || self.grpc.is_some()
+                || self.xhttp.is_some()
             {
                 return Err(ConfigError::HttpUpgradeWithNonVless);
             }
@@ -634,6 +672,7 @@ impl Config {
                 || self.anytls.is_some()
                 || self.tls.is_some()
                 || self.grpc.is_some()
+                || self.xhttp.is_some()
             {
                 return Err(ConfigError::HttpUpgradeWithVlessTransport);
             }
@@ -652,6 +691,7 @@ impl Config {
                 || self.trojan.is_some()
                 || self.websocket.is_some()
                 || self.httpupgrade.is_some()
+                || self.xhttp.is_some()
             {
                 return Err(ConfigError::GrpcWithNonVless);
             }
@@ -660,6 +700,23 @@ impl Config {
             }
             if self.users.is_empty() {
                 return Err(ConfigError::GrpcMissingUsers);
+            }
+        }
+        if let Some(_xhttp) = &self.xhttp {
+            if self.shadowsocks.is_some()
+                || self.mixed.is_some()
+                || self.trojan.is_some()
+                || self.websocket.is_some()
+                || self.httpupgrade.is_some()
+                || self.grpc.is_some()
+            {
+                return Err(ConfigError::XhttpWithNonVless);
+            }
+            if self.reality.is_some() || self.anytls.is_some() || self.tls.is_some() {
+                return Err(ConfigError::XhttpWithVlessTransport);
+            }
+            if self.users.is_empty() {
+                return Err(ConfigError::XhttpMissingUsers);
             }
         }
         if let Some(hysteria2) = &self.hysteria2 {
@@ -672,6 +729,7 @@ impl Config {
                 || self.websocket.is_some()
                 || self.httpupgrade.is_some()
                 || self.grpc.is_some()
+                || self.xhttp.is_some()
             {
                 return Err(ConfigError::Hysteria2WithVlessTransport);
             }
@@ -698,6 +756,7 @@ impl Config {
                 || self.websocket.is_some()
                 || self.httpupgrade.is_some()
                 || self.grpc.is_some()
+                || self.xhttp.is_some()
             {
                 return Err(ConfigError::TuicWithVlessTransport);
             }
@@ -776,6 +835,7 @@ flow = "xtls-rprx-vision"
             websocket: None,
             httpupgrade: None,
             grpc: None,
+            xhttp: None,
             hysteria2: None,
             tuic: None,
         };
@@ -805,6 +865,7 @@ flow = "xtls-rprx-vision"
             websocket: None,
             httpupgrade: None,
             grpc: None,
+            xhttp: None,
             hysteria2: None,
             tuic: None,
         };

@@ -30,6 +30,8 @@ pub(crate) mod httpupgrade;
 pub(crate) use httpupgrade::*;
 pub(crate) mod grpc;
 pub(crate) use grpc::*;
+pub(crate) mod xhttp;
+pub(crate) use xhttp::*;
 pub(crate) mod hysteria2;
 pub(crate) use hysteria2::*;
 pub(crate) mod tuic;
@@ -136,6 +138,7 @@ pub struct InboundServer {
     ws_config: Option<WebSocketConfig>,
     httpupgrade_config: Option<HttpUpgradeConfig>,
     grpc_config: Option<GrpcConfig>,
+    xhttp_config: Option<XhttpConfig>,
     hysteria2_config: Option<Hysteria2Config>,
     tuic_config: Option<TuicConfig>,
 }
@@ -213,6 +216,27 @@ impl InboundServer {
                         " (TLS + gRPC)"
                     } else {
                         " (gRPC)"
+                    }
+                );
+                Some(cfg)
+            }
+            None => None,
+        };
+        let xhttp_config = match &config.xhttp {
+            Some(xc) => {
+                let cfg = parse_xhttp_config(xc)?;
+                info!(
+                    "XHTTP enabled on {}prefix={}{}",
+                    if let Some(ref h) = cfg.host {
+                        format!("host={h}, ")
+                    } else {
+                        String::new()
+                    },
+                    cfg.path,
+                    if cfg.tls_config.is_some() {
+                        " (TLS + XHTTP)"
+                    } else {
+                        " (XHTTP)"
                     }
                 );
                 Some(cfg)
@@ -304,6 +328,7 @@ impl InboundServer {
             ws_config,
             httpupgrade_config,
             grpc_config,
+            xhttp_config,
             hysteria2_config,
             tuic_config,
         })
@@ -382,6 +407,8 @@ impl InboundServer {
             "VLESS HTTPUpgrade"
         } else if self.grpc_config.is_some() {
             "VLESS gRPC"
+        } else if self.xhttp_config.is_some() {
+            "VLESS XHTTP"
         } else {
             "VLESS"
         };
@@ -401,6 +428,7 @@ impl InboundServer {
         let ws_config = self.ws_config.clone();
         let httpupgrade_config = self.httpupgrade_config.clone();
         let grpc_config = self.grpc_config.clone();
+        let xhttp_config = self.xhttp_config.clone();
         let hysteria2_enabled = self.hysteria2_config.is_some();
         let tuic_enabled = self.tuic_config.is_some();
         let shadowsocks_udp_socket =
@@ -437,6 +465,7 @@ impl InboundServer {
                     let wsc = ws_config.clone();
                     let huc = httpupgrade_config.clone();
                     let gc = grpc_config.clone();
+                    let xc = xhttp_config.clone();
                     thread::spawn(move || {
                         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                             if let Some(ref rc) = rc {
@@ -449,6 +478,8 @@ impl InboundServer {
                                 handle_httpupgrade_connection(stream, v, kyber_sk, hc)
                             } else if let Some(ref gc) = gc {
                                 handle_grpc_connection(stream, v, kyber_sk, gc)
+                            } else if let Some(ref xc) = xc {
+                                handle_xhttp_connection(stream, v, kyber_sk, xc)
                             } else if hysteria2_enabled {
                                 Err(
                                     "Hysteria2 inbound uses QUIC and does not accept TCP sockets"

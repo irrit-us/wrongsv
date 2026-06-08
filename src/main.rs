@@ -154,6 +154,7 @@ fn build_default_config() -> Config {
         websocket: None,
         httpupgrade: None,
         grpc: None,
+        xhttp: None,
         hysteria2: None,
         tuic: None,
     }
