@@ -287,8 +287,8 @@ impl InboundServer {
             Some(kc) => {
                 let cfg = parse_kcp_config(kc)?;
                 info!(
-                    "KCP enabled on {} (seed={:?}, tti={}ms, mtu={})",
-                    config.listen, cfg.seed, cfg.tti, cfg.mtu
+                    "KCP enabled on {} (tti={}ms, mtu={})",
+                    config.listen, cfg.tti, cfg.mtu
                 );
                 Some(cfg)
             }

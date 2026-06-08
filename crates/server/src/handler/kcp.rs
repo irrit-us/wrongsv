@@ -11,7 +11,7 @@ use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream, UdpSocket};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ::kcp::Kcp;
 use tokio::sync::mpsc as tokio_mpsc;
@@ -137,7 +137,7 @@ struct KcpSession {
     incoming_tx: mpsc::SyncSender<Vec<u8>>,
     /// Pending VLESS output — fed to kcp.send() in the update loop.
     vless_outgoing_rx: mpsc::Receiver<Vec<u8>>,
-    last_update: u32,
+    last_update: Instant,
 }
 
 impl KcpSession {
@@ -146,10 +146,10 @@ impl KcpSession {
         output: ChanWriter,
         incoming_tx: mpsc::SyncSender<Vec<u8>>,
         vless_outgoing_rx: mpsc::Receiver<Vec<u8>>,
-        now_ms: u32,
+        mtu: usize,
     ) -> Self {
         let mut kcp = Kcp::new(conv, output);
-        let _ = kcp.set_mtu(1350);
+        let _ = kcp.set_mtu(mtu);
         // nodelay(nodelay, interval, resend, nc)
         kcp.set_nodelay(true, 10, 2, true);
         kcp.set_wndsize(128, 256);
@@ -157,7 +157,7 @@ impl KcpSession {
             kcp,
             incoming_tx,
             vless_outgoing_rx,
-            last_update: now_ms,
+            last_update: Instant::now(),
         }
     }
 }
@@ -165,8 +165,9 @@ impl KcpSession {
 // ── Shared KCP state ───────────────────────────────────────────────────
 
 struct KcpShared {
-    sessions: HashMap<(SocketAddr, u16), Arc<Mutex<KcpSession>>>,
+    sessions: HashMap<(SocketAddr, u32), Arc<Mutex<KcpSession>>>,
     seed: String,
+    mtu: usize,
     socket: UdpSocket,
 }
 
@@ -258,11 +259,12 @@ pub(crate) async fn run_kcp_endpoint(
     let addr: SocketAddr = listen.parse()?;
     let socket = UdpSocket::bind(addr)?;
     socket.set_nonblocking(true)?;
-    info!("KCP endpoint listening on {addr} seed={:?}", config.seed);
+    info!("KCP endpoint listening on {addr}");
 
     let shared = Arc::new(Mutex::new(KcpShared {
         sessions: HashMap::new(),
         seed: config.seed.clone(),
+        mtu: config.mtu,
         socket: socket.try_clone()?,
     }));
 
@@ -292,16 +294,16 @@ pub(crate) async fn run_kcp_endpoint(
                         // Extract KCP conversation ID from the raw KCP header
                         // (first 4 bytes of KCP segment = conv, little-endian)
                         let kcp_conv = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-                        let conv = (kcp_conv & 0xFFFF) as u16; // lower 16 bits for session key
                         let kcp_data = &data; // entire data is the KCP segment
 
-                        let key = (src, conv);
+                        let key = (src, kcp_conv);
                         if let Some(session) = sh.sessions.get(&key) {
                             let mut s = session.lock().unwrap();
+                            s.last_update = Instant::now();
                             let _ = s.kcp.input(kcp_data);
                         } else {
                             // New KCP session — create one with VLESS relay
-                            let kcp_conv = conv as u32;
+                            let session_mtu = sh.mtu;
                             let (incoming_tx, incoming_rx) =
                                 mpsc::sync_channel::<Vec<u8>>(64);
                             // Channel: VLESS handler → KCP send
@@ -312,13 +314,12 @@ pub(crate) async fn run_kcp_endpoint(
                                 tokio_mpsc::unbounded_channel::<Vec<u8>>();
 
                             let chan_writer = ChanWriter { tx: udp_tx };
-                            let now_ms = 0u32; // will be updated in update loop
                             let session = Arc::new(Mutex::new(KcpSession::new(
                                 kcp_conv,
                                 chan_writer,
                                 incoming_tx,
                                 vless_rx,
-                                now_ms,
+                                session_mtu,
                             )));
                             let _ = session.lock().unwrap().kcp.input(kcp_data);
 
@@ -358,8 +359,7 @@ pub(crate) async fn run_kcp_endpoint(
                         // Remove session
                         if data.len() >= 4 {
                             let kcp_conv = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-                            let conv = (kcp_conv & 0xFFFF) as u16;
-                            let key = (src, conv);
+                            let key = (src, kcp_conv);
                             sh.sessions.remove(&key);
                         }
                     }
@@ -398,14 +398,13 @@ async fn run_kcp_update_loop(
         tick += tti_ms as u32;
 
         let mut sh = shared.lock().unwrap();
-        let mut to_remove: Vec<(SocketAddr, u16)> = Vec::new();
+        let mut to_remove: Vec<(SocketAddr, u32)> = Vec::new();
 
         for (&key, session) in &sh.sessions {
             let mut s = session.lock().unwrap();
             let _ = s.kcp.update(tick);
-            s.last_update = tick;
             // Check if KCP session is dead (no activity for 30 seconds)
-            if tick.wrapping_sub(s.last_update) > 30000 {
+            if s.last_update.elapsed() > Duration::from_secs(30) {
                 to_remove.push(key);
             }
         }
@@ -418,8 +417,10 @@ async fn run_kcp_update_loop(
         for (&_key, session) in &sh.sessions {
             let mut s = session.lock().unwrap();
             // Feed pending VLESS output into KCP
+            let mut had_output = false;
             while let Ok(data) = s.vless_outgoing_rx.try_recv() {
                 let _ = s.kcp.send(&data);
+                had_output = true;
             }
             // Deliver received KCP data to VLESS handler
             let mut rbuf = [0u8; 65536];
@@ -429,8 +430,12 @@ async fn run_kcp_update_loop(
                     Ok(n) => {
                         let data = rbuf[..n].to_vec();
                         let _ = s.incoming_tx.send(data);
+                        had_output = true;
                     }
                 }
+            }
+            if had_output {
+                s.last_update = Instant::now();
             }
         }
     }
