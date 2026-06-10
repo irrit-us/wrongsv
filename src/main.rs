@@ -1,6 +1,6 @@
 use std::process;
 
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use tracing::{error, info};
 use wrongsv_server::Config;
 
@@ -52,9 +52,46 @@ enum ClientFormat {
     Hiddify,
 }
 
+#[derive(Subcommand)]
+enum Commands {
+    /// Start the multi-protocol evaluator orchestrator (server side)
+    EvalServer {
+        /// Listen address for the control channel
+        #[arg(long, default_value = "127.0.0.1:19999")]
+        listen: String,
+        /// Shared authentication token
+        #[arg(long)]
+        token: String,
+        /// Comma-separated protocol list (default: all 14 combinations)
+        #[arg(long)]
+        protocols: Option<String>,
+        /// Test duration per protocol in seconds
+        #[arg(long, default_value = "10")]
+        duration: u64,
+    },
+    /// Run a multi-protocol evaluation against an evaluator server
+    EvalClient {
+        /// Evaluator server address
+        #[arg(long, default_value = "127.0.0.1:19999")]
+        server: String,
+        /// Shared authentication token
+        #[arg(long)]
+        token: String,
+        /// Test duration per protocol in seconds
+        #[arg(long, default_value = "10")]
+        duration: u64,
+        /// Output file base name (extensions .json/.csv are appended)
+        #[arg(long, default_value = "eval-result")]
+        output: String,
+    },
+}
+
 #[derive(Parser)]
 #[command(name = "wrongsv", about = "VLESS proxy server")]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
     /// Path to TOML config file (optional — uses compile-time defaults if omitted)
     #[arg(short, long)]
     config: Option<String>,
@@ -83,7 +120,7 @@ struct Cli {
     #[arg(long)]
     transport: Option<Transport>,
 
-    /// Client config format: mihomo (default) or sing-box
+    /// Client config format: mihomo (default), sing-box, xray, hiddify
     #[arg(long, default_value = "mihomo")]
     format: ClientFormat,
 }
@@ -97,6 +134,59 @@ fn main() {
         .init();
 
     let cli = Cli::parse();
+
+    // -- subcommand dispatch --
+    if let Some(cmd) = cli.command {
+        match cmd {
+            Commands::EvalServer {
+                listen,
+                token,
+                protocols,
+                duration,
+            } => {
+                let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+                if let Err(e) = rt.block_on(wrongsv_evaluator_server::run_orchestrator(
+                    &listen,
+                    &token,
+                    protocols.as_deref(),
+                    duration,
+                )) {
+                    error!("evaluator server error: {e}");
+                    process::exit(1);
+                }
+                return;
+            }
+            Commands::EvalClient {
+                server,
+                token,
+                duration,
+                output,
+            } => {
+                match wrongsv_evaluator_client::runner::run_evaluation(&server, &token, duration) {
+                    Ok(results) => {
+                        // Export JSON
+                        let json_path = format!("{output}.json");
+                        let json = wrongsv_evaluator_client::export::export_json(&results);
+                        std::fs::write(&json_path, &json)
+                            .unwrap_or_else(|e| error!("failed to write {json_path}: {e}"));
+                        println!("JSON results written to {json_path}");
+
+                        // Export CSV
+                        let csv_path = format!("{output}.csv");
+                        let csv = wrongsv_evaluator_client::export::export_csv(&results);
+                        std::fs::write(&csv_path, &csv)
+                            .unwrap_or_else(|e| error!("failed to write {csv_path}: {e}"));
+                        println!("CSV results written to {csv_path}");
+                    }
+                    Err(e) => {
+                        error!("evaluation failed: {e}");
+                        process::exit(1);
+                    }
+                }
+                return;
+            }
+        }
+    }
 
     // -- client config generation (doesn't need a running server) --
     if cli.print_client_config {

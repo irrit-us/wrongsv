@@ -1,0 +1,16 @@
+[package]
+name = "wrongsv-evaluator-client"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+wrongsv-protocol.workspace = true
+wrongsv-vless-encoding.workspace = true
+wrongsv-uuid.workspace = true
+wrongsv-net-types.workspace = true
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "sync", "macros", "time", "io-util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing.workspace = true
+rand.workspace = true
+bytes.workspace = true

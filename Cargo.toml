@@ -19,6 +19,8 @@ members = [
     "crates/shadowsocks",
     "crates/websocket",
     "crates/grpc",
+    "crates/evaluator-server",
+    "crates/evaluator-client",
 ]
 
 [workspace.package]
@@ -40,6 +42,8 @@ wrongsv-anytls = { path = "crates/anytls" }
 wrongsv-shadowsocks = { path = "crates/shadowsocks" }
 wrongsv-websocket = { path = "crates/websocket" }
 wrongsv-grpc = { path = "crates/grpc" }
+wrongsv-evaluator-server = { path = "crates/evaluator-server" }
+wrongsv-evaluator-client = { path = "crates/evaluator-client" }
 
 bytes = "1"
 thiserror = "2"
@@ -64,9 +68,12 @@ ctrlc = { version = "3", default-features = false }
 [dependencies]
 wrongsv-server.workspace = true
 wrongsv-reality.workspace = true
+wrongsv-evaluator-server.workspace = true
+wrongsv-evaluator-client.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json = "1"
+tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 toml.workspace = true

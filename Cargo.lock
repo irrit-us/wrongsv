@@ -2816,6 +2816,8 @@ dependencies = [
  "tracing-subscriber",
  "webpki-roots",
  "wrongsv-anytls",
+ "wrongsv-evaluator-client",
+ "wrongsv-evaluator-server",
  "wrongsv-grpc",
  "wrongsv-kyber",
  "wrongsv-net-types",
@@ -2855,6 +2857,41 @@ dependencies = [
  "generic-array",
  "thiserror 2.0.18",
  "typenum",
+]
+
+[[package]]
+name = "wrongsv-evaluator-client"
+version = "0.2.5"
+dependencies = [
+ "bytes",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "wrongsv-net-types",
+ "wrongsv-protocol",
+ "wrongsv-uuid",
+ "wrongsv-vless-encoding",
+]
+
+[[package]]
+name = "wrongsv-evaluator-server"
+version = "0.2.5"
+dependencies = [
+ "base64",
+ "bytes",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "tracing",
+ "wrongsv-protocol",
+ "wrongsv-reality",
+ "wrongsv-server",
+ "wrongsv-uuid",
+ "x25519-dalek",
 ]
 
 [[package]]
