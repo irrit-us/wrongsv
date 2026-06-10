@@ -23,6 +23,18 @@ enum Transport {
     /// HTTPUpgrade carrier
     #[clap(name = "httpupgrade")]
     HttpUpgrade,
+    /// gRPC carrier (HTTP/2 + gRPC frames)
+    #[clap(name = "grpc")]
+    Grpc,
+    /// XHTTP (SplitHTTP) carrier
+    #[clap(name = "xhttp")]
+    Xhttp,
+    /// QUIC carrier
+    #[clap(name = "quic")]
+    Quic,
+    /// KCP (mKCP) carrier
+    #[clap(name = "kcp")]
+    Kcp,
 }
 
 #[derive(ValueEnum, Clone, Copy, PartialEq)]
@@ -32,6 +44,12 @@ enum ClientFormat {
     /// sing-box format (nested tls object)
     #[clap(name = "sing-box")]
     SingBox,
+    /// Xray JSON format (settings/streamSettings structure)
+    #[clap(name = "xray")]
+    Xray,
+    /// Hiddify format (sing-box-compatible with subscription wrapper)
+    #[clap(name = "hiddify")]
+    Hiddify,
 }
 
 #[derive(Parser)]
@@ -61,7 +79,7 @@ struct Cli {
     #[arg(long, default_value = "wrongsv")]
     client_name: String,
 
-    /// Override transport type detection (reality, anytls, tls, raw, ws, httpupgrade)
+    /// Override transport type detection (reality, anytls, tls, raw, ws, httpupgrade, grpc, xhttp, quic, kcp)
     #[arg(long)]
     transport: Option<Transport>,
 

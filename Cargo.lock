@@ -2789,7 +2789,7 @@ dependencies = [
 
 [[package]]
 name = "wrongsv"
-version = "0.3.0"
+version = "0.2.5"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -2832,7 +2832,7 @@ dependencies = [
 
 [[package]]
 name = "wrongsv-anytls"
-version = "0.3.0"
+version = "0.2.5"
 dependencies = [
  "md-5",
  "rand 0.8.6",
@@ -2847,7 +2847,7 @@ dependencies = [
 
 [[package]]
 name = "wrongsv-encryption"
-version = "0.3.0"
+version = "0.2.5"
 dependencies = [
  "aes-gcm",
  "blake3",
@@ -2859,7 +2859,7 @@ dependencies = [
 
 [[package]]
 name = "wrongsv-grpc"
-version = "0.3.0"
+version = "0.2.5"
 dependencies = [
  "bytes",
  "prost",
@@ -2870,7 +2870,7 @@ dependencies = [
 
 [[package]]
 name = "wrongsv-kyber"
-version = "0.3.0"
+version = "0.2.5"
 dependencies = [
  "ml-kem",
  "thiserror 2.0.18",
@@ -2878,11 +2878,11 @@ dependencies = [
 
 [[package]]
 name = "wrongsv-net-types"
-version = "0.3.0"
+version = "0.2.5"
 
 [[package]]
 name = "wrongsv-protocol"
-version = "0.3.0"
+version = "0.2.5"
 dependencies = [
  "bytes",
  "md-5",
@@ -2893,7 +2893,7 @@ dependencies = [
 
 [[package]]
 name = "wrongsv-reality"
-version = "0.3.0"
+version = "0.2.5"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -2911,7 +2911,7 @@ dependencies = [
 
 [[package]]
 name = "wrongsv-server"
-version = "0.3.0"
+version = "0.2.5"
 dependencies = [
  "base64",
  "bytes",
@@ -2946,7 +2946,7 @@ dependencies = [
 
 [[package]]
 name = "wrongsv-shadowsocks"
-version = "0.3.0"
+version = "0.2.5"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -2963,7 +2963,7 @@ dependencies = [
 
 [[package]]
 name = "wrongsv-uuid"
-version = "0.3.0"
+version = "0.2.5"
 dependencies = [
  "hex",
  "rand 0.8.6",
@@ -2972,7 +2972,7 @@ dependencies = [
 
 [[package]]
 name = "wrongsv-vless"
-version = "0.3.0"
+version = "0.2.5"
 dependencies = [
  "rand 0.8.6",
  "thiserror 2.0.18",
@@ -2982,7 +2982,7 @@ dependencies = [
 
 [[package]]
 name = "wrongsv-vless-encoding"
-version = "0.3.0"
+version = "0.2.5"
 dependencies = [
  "bytes",
  "prost",
@@ -2995,7 +2995,7 @@ dependencies = [
 
 [[package]]
 name = "wrongsv-websocket"
-version = "0.3.0"
+version = "0.2.5"
 dependencies = [
  "base64",
  "rand 0.8.6",
