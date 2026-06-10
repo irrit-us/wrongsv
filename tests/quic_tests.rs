@@ -288,8 +288,8 @@ fn test_quic_rejects_invalid_uuid() {
         let result = recv.read(&mut buf).await;
         // Either Ok(None) (clean close) or Err (connection closed) is acceptable.
         match result {
-            Ok(None) | Err(_) => {}     // expected — invalid user rejected
-            Ok(Some(0)) => {} // empty read = closed
+            Ok(None) | Err(_) => {} // expected — invalid user rejected
+            Ok(Some(0)) => {}       // empty read = closed
             Ok(Some(_)) => {
                 // The server might send a response header before closing.
                 // Either way, the connection should be dropped soon.

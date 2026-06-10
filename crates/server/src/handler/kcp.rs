@@ -39,18 +39,18 @@ const CMD_TERMINATE: u8 = 2;
 pub(crate) struct KcpConfig {
     pub seed: String,
     pub mtu: usize,
-    pub tti: u32,   // transmission interval in ms
+    pub tti: u32, // transmission interval in ms
     #[allow(dead_code)]
     pub header_size: usize, // mKCP segment wrapper overhead
 }
 
 pub(crate) fn parse_kcp_config(kc: &KcpServerConfig) -> Result<KcpConfig, String> {
     let mtu = kc.mtu.unwrap_or(1350);
-    if mtu < 576 || mtu > 1460 {
+    if !(576..=1460).contains(&mtu) {
         return Err(format!("kcp mtu must be in 576..=1460, got {mtu}"));
     }
     let tti = kc.tti.unwrap_or(50);
-    if tti < 10 || tti > 100 {
+    if !(10..=100).contains(&tti) {
         return Err(format!("kcp tti must be in 10..=100, got {tti}"));
     }
     let header_size = kc.header_size.unwrap_or(MKCP_AUTH_OVERHEAD + 16); // auth + DataSegment overhead
@@ -182,10 +182,7 @@ pub(crate) struct KcpRelayStream {
 }
 
 impl KcpRelayStream {
-    fn new(
-        incoming_rx: Receiver<Vec<u8>>,
-        vless_tx: mpsc::SyncSender<Vec<u8>>,
-    ) -> Self {
+    fn new(incoming_rx: Receiver<Vec<u8>>, vless_tx: mpsc::SyncSender<Vec<u8>>) -> Self {
         KcpRelayStream {
             incoming_rx,
             pending: Vec::new(),
@@ -275,8 +272,14 @@ pub(crate) async fn run_kcp_endpoint(
     let update_tti = config.tti as u64;
     let update_shutdown = shutdown.clone();
     let update_handle = tokio::spawn(async move {
-        run_kcp_update_loop(update_shared, update_v, update_ks, update_tti, update_shutdown)
-            .await;
+        run_kcp_update_loop(
+            update_shared,
+            update_v,
+            update_ks,
+            update_tti,
+            update_shutdown,
+        )
+        .await;
     });
 
     // UDP recv loop
@@ -304,14 +307,11 @@ pub(crate) async fn run_kcp_endpoint(
                         } else {
                             // New KCP session — create one with VLESS relay
                             let session_mtu = sh.mtu;
-                            let (incoming_tx, incoming_rx) =
-                                mpsc::sync_channel::<Vec<u8>>(64);
+                            let (incoming_tx, incoming_rx) = mpsc::sync_channel::<Vec<u8>>(64);
                             // Channel: VLESS handler → KCP send
-                            let (vless_tx, vless_rx) =
-                                mpsc::sync_channel::<Vec<u8>>(64);
+                            let (vless_tx, vless_rx) = mpsc::sync_channel::<Vec<u8>>(64);
                             // Channel: KCP output → UDP sender
-                            let (udp_tx, mut udp_rx) =
-                                tokio_mpsc::unbounded_channel::<Vec<u8>>();
+                            let (udp_tx, mut udp_rx) = tokio_mpsc::unbounded_channel::<Vec<u8>>();
 
                             let chan_writer = ChanWriter { tx: udp_tx };
                             let session = Arc::new(Mutex::new(KcpSession::new(
@@ -329,11 +329,8 @@ pub(crate) async fn run_kcp_endpoint(
                             let v = Arc::clone(&validator);
                             let ks = kyber_sk;
                             std::thread::spawn(move || {
-                                let mut stream =
-                                    KcpRelayStream::new(incoming_rx, vless_tx);
-                                if let Err(e) =
-                                    handle_vless_over_kcp(&mut stream, v, ks, src)
-                                {
+                                let mut stream = KcpRelayStream::new(incoming_rx, vless_tx);
+                                if let Err(e) = handle_vless_over_kcp(&mut stream, v, ks, src) {
                                     warn!("{src} KCP stream error: {e}");
                                 }
                                 // Dropping stream drops vless_tx → signals update loop
@@ -343,16 +340,11 @@ pub(crate) async fn run_kcp_endpoint(
                             let sock = sh.socket.try_clone().unwrap();
                             let send_seed = sh.seed.clone();
                             tokio::spawn(async move {
-                                loop {
-                                    match udp_rx.recv().await {
-                                        Some(raw_kcp_data) => {
-                                            let packet =
-                                                mkcp_seal(&send_seed, CMD_DATA, &raw_kcp_data);
-                                            let _ = sock.send_to(&packet, src);
-                                        }
-                                        None => break, // KCP session removed
-                                    }
+                                while let Some(raw_kcp_data) = udp_rx.recv().await {
+                                    let packet = mkcp_seal(&send_seed, CMD_DATA, &raw_kcp_data);
+                                    let _ = sock.send_to(&packet, src);
                                 }
+                                // KCP session removed
                             });
                         }
                     } else if cmd == CMD_TERMINATE {
@@ -530,8 +522,7 @@ fn relay_kcp_raw(
                 continue;
             }
             Err(ref e)
-                if e.kind() == io::ErrorKind::WouldBlock
-                    || e.kind() == io::ErrorKind::TimedOut =>
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
             {
                 target.set_read_timeout(Some(Duration::from_secs(2)))?;
             }
@@ -692,7 +683,7 @@ fn relay_kcp_udp(
                             Err(PacketReadError::Io(ref e))
                                 if e.kind() == ErrorKind::UnexpectedEof =>
                             {
-                                break
+                                break;
                             }
                             Err(_) => break,
                         }

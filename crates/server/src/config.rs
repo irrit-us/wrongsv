@@ -693,8 +693,14 @@ impl Config {
             wrongsv_shadowsocks::Method::parse(&shadowsocks.method).map_err(|_| {
                 ConfigError::UnsupportedShadowsocksMethod(shadowsocks.method.clone())
             })?;
-            if shadowsocks.tcp_prefix.as_deref().is_some_and(|p| p.len() > 16)
-                || shadowsocks.udp_prefix.as_deref().is_some_and(|p| p.len() > 16)
+            if shadowsocks
+                .tcp_prefix
+                .as_deref()
+                .is_some_and(|p| p.len() > 16)
+                || shadowsocks
+                    .udp_prefix
+                    .as_deref()
+                    .is_some_and(|p| p.len() > 16)
             {
                 return Err(ConfigError::ShadowsocksPrefixTooLong);
             }
@@ -705,7 +711,8 @@ impl Config {
             self.check_non_vless_no_transports(ConfigError::MixedWithVlessTransport)?;
             match (&mixed.username, &mixed.password) {
                 (None, None) => {}
-                (Some(u), Some(p)) if !u.is_empty() && u.len() <= 255 && !p.is_empty() && p.len() <= 255 => {}
+                (Some(u), Some(p))
+                    if !u.is_empty() && u.len() <= 255 && !p.is_empty() && p.len() <= 255 => {}
                 (Some(_), Some(_)) => return Err(ConfigError::MixedInvalidCredentials),
                 _ => return Err(ConfigError::MixedIncompleteCredentials),
             }
@@ -751,7 +758,10 @@ impl Config {
             if tuic.users.is_empty() {
                 return Err(ConfigError::TuicMissingUsers);
             }
-            if !matches!(tuic.congestion_control.as_str(), "cubic" | "new_reno" | "bbr") {
+            if !matches!(
+                tuic.congestion_control.as_str(),
+                "cubic" | "new_reno" | "bbr"
+            ) {
                 return Err(ConfigError::TuicInvalidCongestionControl);
             }
             if tuic.users.iter().any(|u| u.password.is_empty()) {
@@ -778,7 +788,10 @@ impl Config {
                 ConfigError::HttpUpgradeWithVlessTransport,
             )?;
             if httpupgrade.max_early_data > 0
-                && httpupgrade.early_data_header_name.as_deref().is_none_or(str::is_empty)
+                && httpupgrade
+                    .early_data_header_name
+                    .as_deref()
+                    .is_none_or(str::is_empty)
             {
                 return Err(ConfigError::HttpUpgradeInvalidEarlyData);
             }
@@ -830,20 +843,14 @@ impl Config {
 
     // ── per-category helpers (called from validate) ──────────────────────
 
-    fn check_non_vless_no_users(
-        &self,
-        err: ConfigError,
-    ) -> Result<(), ConfigError> {
+    fn check_non_vless_no_users(&self, err: ConfigError) -> Result<(), ConfigError> {
         if self.has_vless_users() {
             return Err(err);
         }
         Ok(())
     }
 
-    fn check_non_vless_no_transports(
-        &self,
-        err: ConfigError,
-    ) -> Result<(), ConfigError> {
+    fn check_non_vless_no_transports(&self, err: ConfigError) -> Result<(), ConfigError> {
         if self.has_any_vless_transport() {
             return Err(err);
         }

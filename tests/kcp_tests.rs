@@ -197,7 +197,9 @@ impl TestKcpClient {
         let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
 
         while std::time::Instant::now() < deadline {
-            self.socket.set_read_timeout(Some(Duration::from_millis(10))).ok();
+            self.socket
+                .set_read_timeout(Some(Duration::from_millis(10)))
+                .ok();
 
             let mut recv_buf = [0u8; 2048];
             match self.socket.recv_from(&mut recv_buf) {
@@ -264,14 +266,11 @@ fn test_kcp_handshake() {
 
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     socket.connect(server_addr).unwrap();
-    socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
 
-    let mut client = TestKcpClient::new(
-        socket.try_clone().unwrap(),
-        server_addr,
-        TEST_SEED,
-        1,
-    );
+    let mut client = TestKcpClient::new(socket.try_clone().unwrap(), server_addr, TEST_SEED, 1);
 
     let vless_header = encode_vless_request(
         TEST_UUID,
@@ -299,7 +298,10 @@ fn test_kcp_handshake() {
 
         attempts += 1;
         if attempts > 30 {
-            panic!("timed out waiting for VLESS response after {} attempts", attempts);
+            panic!(
+                "timed out waiting for VLESS response after {} attempts",
+                attempts
+            );
         }
     }
 }
@@ -314,14 +316,11 @@ fn test_kcp_tcp_echo() {
 
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     socket.connect(server_addr).unwrap();
-    socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
 
-    let mut client = TestKcpClient::new(
-        socket.try_clone().unwrap(),
-        server_addr,
-        TEST_SEED,
-        1,
-    );
+    let mut client = TestKcpClient::new(socket.try_clone().unwrap(), server_addr, TEST_SEED, 1);
 
     let vless_header = encode_vless_request(
         TEST_UUID,
@@ -357,14 +356,18 @@ fn test_kcp_tcp_echo() {
         let _ = client.kcp.update((500 + tick * 20) as u32);
         client.pump(100);
 
-        if let Some(data) = client.recv() {
-            if data == payload {
-                echo_received = true;
-                break;
-            }
+        if let Some(data) = client.recv()
+            && data == payload
+        {
+            echo_received = true;
+            break;
         }
     }
-    assert!(echo_received, "should receive echo of '{}'", std::str::from_utf8(payload).unwrap());
+    assert!(
+        echo_received,
+        "should receive echo of '{}'",
+        std::str::from_utf8(payload).unwrap()
+    );
 }
 
 #[test]
@@ -376,14 +379,11 @@ fn test_kcp_rejects_invalid_uuid() {
 
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     socket.connect(server_addr).unwrap();
-    socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
 
-    let mut client = TestKcpClient::new(
-        socket.try_clone().unwrap(),
-        server_addr,
-        TEST_SEED,
-        1,
-    );
+    let mut client = TestKcpClient::new(socket.try_clone().unwrap(), server_addr, TEST_SEED, 1);
 
     let bad_uuid = "00000000-0000-0000-0000-000000000000";
     let vless_header = encode_vless_request(
@@ -415,14 +415,11 @@ fn test_kcp_vision_response() {
 
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     socket.connect(server_addr).unwrap();
-    socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
 
-    let mut client = TestKcpClient::new(
-        socket.try_clone().unwrap(),
-        server_addr,
-        TEST_SEED,
-        1,
-    );
+    let mut client = TestKcpClient::new(socket.try_clone().unwrap(), server_addr, TEST_SEED, 1);
 
     let vless_header = encode_vless_request(
         TEST_UUID,

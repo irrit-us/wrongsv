@@ -26,14 +26,11 @@ pub(crate) fn resolve_client_values(
     transport_override: Option<Transport>,
     servername_override: &str,
 ) -> ClientConfigValues {
-    let build_uuid =
-        || option_env!("BUILD_UUID").unwrap_or("00000000-0000-4000-8000-000000000000");
+    let build_uuid = || option_env!("BUILD_UUID").unwrap_or("00000000-0000-4000-8000-000000000000");
     let build_port = || option_env!("BUILD_PORT").unwrap_or("443");
     let build_sid = || option_env!("BUILD_SHORT_ID").unwrap_or("00000000");
-    let build_pk = || {
-        option_env!("BUILD_X25519_PK")
-            .unwrap_or("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
-    };
+    let build_pk =
+        || option_env!("BUILD_X25519_PK").unwrap_or("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
 
     let toml_config = cli_config.and_then(|path| {
         let content = std::fs::read_to_string(path).ok()?;
@@ -91,11 +88,7 @@ pub(crate) fn resolve_client_values(
                 .websocket
                 .as_ref()
                 .map(|w| normalize_path(&w.path))
-                .or_else(|| {
-                    cfg.httpupgrade
-                        .as_ref()
-                        .map(|h| normalize_path(&h.path))
-                })
+                .or_else(|| cfg.httpupgrade.as_ref().map(|h| normalize_path(&h.path)))
                 .unwrap_or_else(|| "/".to_string());
 
             ClientConfigValues {

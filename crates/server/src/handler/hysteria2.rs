@@ -18,6 +18,7 @@ use crate::config::Hysteria2ServerConfig;
 use super::*;
 
 type H2Error = Box<dyn std::error::Error + Send + Sync>;
+type H2UdpMessage = (u32, u16, u8, u8, String, Vec<u8>);
 
 #[derive(Clone)]
 pub(crate) struct Hysteria2Config {
@@ -490,9 +491,7 @@ impl Hysteria2UdpAssembly {
     }
 }
 
-fn parse_hysteria2_udp_message(
-    packet: &[u8],
-) -> Result<(u32, u16, u8, u8, String, Vec<u8>), H2Error> {
+fn parse_hysteria2_udp_message(packet: &[u8]) -> Result<H2UdpMessage, H2Error> {
     if packet.len() < 8 {
         return Err("Hysteria2 UDP packet too short".into());
     }

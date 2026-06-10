@@ -24,47 +24,80 @@
 - **Project structure**: Traffic benchmark tools merged from `bench/` into
   `benches/traffic/`, alongside existing `benches/throughput.rs`.
 
-## [Unreleased]
+## [0.2.5] — 2026-06-10
 
 ### Added
 
-- **Plain TLS transport** (`[tls]` config section): Standard TLS 1.3 + VLESS,
-  compatible with sing-box, mihomo, and xray-core `tls` transport. Auto-generated
-  ECDSA P-256 self-signed certificates with uTLS Chrome fingerprint support.
-- Config examples: `tls-vision.toml`, `tls-tcp.toml`.
-- **Client config generation** now supports all transport types: REALITY, AnyTLS,
-  TLS, and raw. Auto-detection from TOML config file + `--transport` override.
-- **sing-box format** (`--format sing-box`): Generates nested `tls` object with
-  `utls`, `reality` sub-blocks. Default is mihomo/FlClash flat-key format.
+- **VLESS gRPC carrier** (`[grpc]` config section): HTTP/2 gRPC transport
+  with configurable service name/path and Cookie-based auth. Compatible with
+  sing-box, mihomo, and xray-core gRPC transport.
+- **VLESS HTTPUpgrade transport** (`[httpupgrade]`): HTTP 101 upgrade
+  semantics with configurable path and early data support.
+- **VLESS WebSocket carrier** (`[websocket]`): Full WS frame handling with
+  early data, masked frames, configurable path, and XUDP MUX relay over
+  `v1.mux.cool`.
+- **VLESS XHTTP (SplitHTTP) carrier** (`[xhttp]`): HTTP streaming transport
+  with GET/POST long-polling, host validation, custom prefix paths, and
+  Vision flow support.
+- **VLESS QUIC carrier** (`[quic]`): QUIC/UDP transport with H3
+  compatibility.
+- **VLESS KCP (mKCP) carrier** (`[kcp]`): UDP-based mKCP with configurable
+  seed, MTU (576–1460), TTI (10–100ms), and header size.
+- **VLESS PacketAddr UDP relay**: `sp.packet-addr.v2fly.arpa` packet
+  address encoding for destination-aware UDP tunneling.
+- **Plain TLS transport** (`[tls]`): Standard TLS 1.3 + VLESS with
+  auto-generated ECDSA P-256 self-signed certificates and uTLS Chrome
+  fingerprint support.
+- **Shadowsocks AEAD** (`[shadowsocks]`): TCP and UDP relay with
+  `chacha20-ietf-poly1305` and `aes-256-gcm` methods, configurable salt
+  prefixes (1–16 bytes).
+- **Shadowsocks 2022** (`[shadowsocks]`): TCP and UDP relay with
+  `2022-blake3-aes-128-gcm` and `2022-blake3-aes-256-gcm` methods.
+- **Trojan TLS inbound** (`[trojan]`): TLS 1.3 + SHA-224 password hash
+  authentication, TCP forwarding and UDP associate.
+- **Mixed proxy inbound** (`[mixed]`): SOCKS5 with optional
+  username/password auth, plus HTTP CONNECT forwarding.
+- **HTTP Forward proxy** (`[http]`): Standard HTTP CONNECT proxy support.
+- **SOCKS4 proxy**: Native SOCKS4 protocol support in the mixed inbound.
+- **TUIC server inbound** (`[tuic]`): QUIC-based TUIC protocol v5 with
+  configurable congestion control (cubic/new_reno/bbr).
+- **Hysteria2 server inbound** (`[hysteria2]`): QUIC-based Hysteria2
+  protocol with password-based auth and bandwidth negotiation.
+- **sing-box config format**: `--format sing-box` generates nested `tls`
+  object with `utls`/`reality` sub-blocks.
+- **Client config generation** for all transport types: REALITY, AnyTLS,
+  TLS, and raw. Auto-detection from TOML + `--transport` override.
+- **Graceful server shutdown**: SIGTERM/SIGINT handling with drain timeout.
+- Config examples: `tls-vision.toml`, `tls-tcp.toml`, `ws-tcp.toml`,
+  `ws-udp.toml`, `httpupgrade.toml`, `grpc.toml`, `kcp.toml`, `quic.toml`,
+  `xhttp.toml`, `shadowsocks.toml`, `trojan.toml`, `mixed.toml`,
+  `tuic.toml`, `hysteria2.toml`.
 - Plain TLS deployment guide in `docs/simple-deploy.md`.
 
 ### Fixed
 
-- **TLS+Vision deadlock**: Replaced `Arc<Mutex<AnyTlsStream>>` threaded relay
-  with sequential relay using `get_mut()`. Uplink (TLS → Vision decode → target)
-  and downlink (target → Vision encode → TLS) alternate in a single thread,
-  eliminating the mutex deadlock that blocked HTTPS traffic.
-- **Vision user_uuid corruption**: UUID is now consumed (`take()`) on first
-  downlink write only. Previously, cloning `TrafficState` per iteration
-  re-injected the UUID prefix, corrupting inner TLS data.
-- **ECDSA P-256 certificates**: Cert generation uses `PKCS_ECDSA_P256_SHA256`
-  instead of Ed25519, matching the signature algorithms advertised by Chrome
-  uTLS fingerprint (ECDSA/RSA, not Ed25519).
-- **ring crypto provider**: Switched from `aws-lc-rs` to `ring` for broader
-  signature scheme support in rustls.
-- **Relay timeout for high-RTT links**: Raised TLS stream read timeout from
-  100ms to 5s and reordered relay loops to drain the target side first with
-  aggressive 10ms retry. Eliminates WouldBlock spin cycles on links with
-  600ms+ RTT. Added TCP_NODELAY on all target connections.
+- **KCP security**: Credential leak via error timing, 16-bit session ID
+  collision, and idle session GC reaper.
+- **TLS+Vision deadlock**: Replaced `Arc<Mutex<AnyTlsStream>>` with
+  sequential relay using `get_mut()`, eliminating mutex deadlock on HTTPS.
+- **Vision user_uuid corruption**: UUID now consumed (`take()`) on first
+  downlink write only.
+- **ECDSA P-256 certificates**: Cert generation uses
+  `PKCS_ECDSA_P256_SHA256` instead of Ed25519.
+- **Relay timeout for high-RTT links**: TLS read timeout raised to 5s,
+  target-drain-first ordering with 10ms retry. TCP_NODELAY on all target
+  connections.
+- **sing-anytls stream cleanup**: Closed streams now properly removed from
+  session state.
 
 ### Changed
 
-- `VisionWriter.state` and `VisionWriter.user_uuid` fields are now `pub` for
-  external state management in sequential relay.
-- `config.example.toml` updated with all three transport sections (REALITY,
-  AnyTLS, TLS) documented.
-- README and SETUP docs updated with TLS transport, config reference, and
-  client config generation for all formats.
+- **Handler refactored**: `handler.rs` (3.2K lines) split into 10 modules.
+  TLS backend unified across all protocols.
+- `VisionWriter.state` and `VisionWriter.user_uuid` fields are now `pub`.
+- `config.example.toml` updated with all transport/protocol sections.
+- README and SETUP docs updated with full feature matrix.
+- Clippy clean on all crates; `rustfmt` applied workspace-wide.
 
 ## [0.2.3] — 2026-05-27
 
