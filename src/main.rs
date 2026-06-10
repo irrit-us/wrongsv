@@ -68,6 +68,9 @@ enum Commands {
         /// Test duration per protocol in seconds
         #[arg(long, default_value = "10")]
         duration: u64,
+        /// Bind address for spawned proxy servers (use 0.0.0.0 for remote clients)
+        #[arg(long, default_value = "127.0.0.1")]
+        proxy_bind: String,
     },
     /// Run a multi-protocol evaluation against an evaluator server
     EvalClient {
@@ -143,6 +146,7 @@ fn main() {
                 token,
                 protocols,
                 duration,
+                proxy_bind,
             } => {
                 let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
                 if let Err(e) = rt.block_on(wrongsv_evaluator_server::run_orchestrator(
@@ -150,6 +154,7 @@ fn main() {
                     &token,
                     protocols.as_deref(),
                     duration,
+                    &proxy_bind,
                 )) {
                     error!("evaluator server error: {e}");
                     process::exit(1);

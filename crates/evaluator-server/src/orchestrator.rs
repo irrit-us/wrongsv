@@ -35,6 +35,7 @@ fn build_proxy_config(
     protocol: &str,
     proxy_port: u16,
     _target_addr: SocketAddr,
+    proxy_bind: &str,
 ) -> (String, String) {
     let uuid = format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
@@ -61,10 +62,16 @@ fn build_proxy_config(
         "reality" => {
             let sk = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
             let sk_hex: String = sk.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
-            let short_id = format!("{:02x}{:02x}", rand::random::<u8>(), rand::random::<u8>());
+            let short_id = format!(
+                "{:02x}{:02x}{:02x}{:02x}",
+                rand::random::<u8>(),
+                rand::random::<u8>(),
+                rand::random::<u8>(),
+                rand::random::<u8>(),
+            );
             format!(
                 r#"
-listen = "127.0.0.1:{proxy_port}"
+listen = "{proxy_bind}:{proxy_port}"
 
 [[users]]
 id = "{uid}"
@@ -78,7 +85,7 @@ short_ids = ["{short_id}"]
         }
         "anytls" => format!(
             r#"
-listen = "127.0.0.1:{proxy_port}"
+listen = "{proxy_bind}:{proxy_port}"
 
 [[users]]
 id = "{uid}"
@@ -89,7 +96,7 @@ password = "eval-anytls-pass"
         ),
         "tls" => format!(
             r#"
-listen = "127.0.0.1:{proxy_port}"
+listen = "{proxy_bind}:{proxy_port}"
 
 [[users]]
 id = "{uid}"
@@ -99,7 +106,7 @@ id = "{uid}"
         ),
         "raw" => format!(
             r#"
-listen = "127.0.0.1:{proxy_port}"
+listen = "{proxy_bind}:{proxy_port}"
 
 [[users]]
 id = "{uid}"
@@ -107,7 +114,7 @@ id = "{uid}"
         ),
         "ws" => format!(
             r#"
-listen = "127.0.0.1:{proxy_port}"
+listen = "{proxy_bind}:{proxy_port}"
 
 [[users]]
 id = "{uid}"
@@ -118,7 +125,7 @@ path = "/eval"
         ),
         "ws+tls" => format!(
             r#"
-listen = "127.0.0.1:{proxy_port}"
+listen = "{proxy_bind}:{proxy_port}"
 
 [[users]]
 id = "{uid}"
@@ -131,7 +138,7 @@ path = "/eval"
         ),
         "httpupgrade" => format!(
             r#"
-listen = "127.0.0.1:{proxy_port}"
+listen = "{proxy_bind}:{proxy_port}"
 
 [[users]]
 id = "{uid}"
@@ -142,7 +149,7 @@ path = "/eval"
         ),
         "httpupgrade+tls" => format!(
             r#"
-listen = "127.0.0.1:{proxy_port}"
+listen = "{proxy_bind}:{proxy_port}"
 
 [[users]]
 id = "{uid}"
@@ -155,7 +162,7 @@ path = "/eval"
         ),
         "grpc" => format!(
             r#"
-listen = "127.0.0.1:{proxy_port}"
+listen = "{proxy_bind}:{proxy_port}"
 
 [[users]]
 id = "{uid}"
@@ -166,7 +173,7 @@ service_name = "EvalService"
         ),
         "grpc+tls" => format!(
             r#"
-listen = "127.0.0.1:{proxy_port}"
+listen = "{proxy_bind}:{proxy_port}"
 
 [[users]]
 id = "{uid}"
@@ -179,7 +186,7 @@ service_name = "EvalService"
         ),
         "xhttp" => format!(
             r#"
-listen = "127.0.0.1:{proxy_port}"
+listen = "{proxy_bind}:{proxy_port}"
 
 [[users]]
 id = "{uid}"
@@ -190,7 +197,7 @@ path = "/eval"
         ),
         "xhttp+tls" => format!(
             r#"
-listen = "127.0.0.1:{proxy_port}"
+listen = "{proxy_bind}:{proxy_port}"
 
 [[users]]
 id = "{uid}"
@@ -203,7 +210,7 @@ path = "/eval"
         ),
         "quic" => format!(
             r#"
-listen = "127.0.0.1:{proxy_port}"
+listen = "{proxy_bind}:{proxy_port}"
 
 [[users]]
 id = "{uid}"
@@ -215,7 +222,7 @@ id = "{uid}"
         ),
         "kcp" => format!(
             r#"
-listen = "127.0.0.1:{proxy_port}"
+listen = "{proxy_bind}:{proxy_port}"
 
 [[users]]
 id = "{uid}"
@@ -241,7 +248,13 @@ pub fn resolve_protocols(requested: Option<&str>) -> Vec<String> {
 }
 
 /// Serve a single client connection through the full protocol evaluation cycle.
-async fn serve_client(stream: TcpStream, token: &str, protocols: &[String], duration_secs: u64) {
+async fn serve_client(
+    stream: TcpStream,
+    token: &str,
+    protocols: &[String],
+    duration_secs: u64,
+    proxy_bind: &str,
+) {
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
 
@@ -287,14 +300,14 @@ async fn serve_client(stream: TcpStream, token: &str, protocols: &[String], dura
                 continue;
             }
         };
-        let _bw_target = match target::spawn_bandwidth_target().await {
+        let bw_addr = match target::spawn_bandwidth_target().await {
             Ok(a) => a,
             Err(e) => {
                 error!("failed to spawn bandwidth target: {e}");
                 continue;
             }
         };
-        let _pl_target = match target::spawn_packet_loss_target().await {
+        let pl_addr = match target::spawn_packet_loss_target().await {
             Ok(a) => a,
             Err(e) => {
                 error!("failed to spawn packet-loss target: {e}");
@@ -308,7 +321,7 @@ async fn serve_client(stream: TcpStream, token: &str, protocols: &[String], dura
             l.local_addr().unwrap().port()
         };
 
-        let (config_toml, uuid) = build_proxy_config(protocol, proxy_port, echo_addr);
+        let (config_toml, uuid) = build_proxy_config(protocol, proxy_port, echo_addr, proxy_bind);
         let server_config: wrongsv_server::Config =
             toml::from_str(&config_toml).expect("eval config should parse");
         let server = wrongsv_server::InboundServer::new(server_config)
@@ -322,7 +335,9 @@ async fn serve_client(stream: TcpStream, token: &str, protocols: &[String], dura
         let test_msg = ServerMessage::TestConfig {
             protocol: protocol.clone(),
             proxy_port,
-            target_port: echo_addr.port(),
+            echo_port: echo_addr.port(),
+            bw_port: bw_addr.port(),
+            pl_port: pl_addr.port(),
             uuid: uuid.clone(),
         };
         if send_msg(&mut writer, &test_msg).await.is_err() {
@@ -403,6 +418,7 @@ pub async fn run_orchestrator(
     token: &str,
     requested_protocols: Option<&str>,
     duration_secs: u64,
+    proxy_bind: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let protocols = resolve_protocols(requested_protocols);
     info!(
@@ -415,7 +431,7 @@ pub async fn run_orchestrator(
     let (stream, peer) = listener.accept().await?;
     info!("evaluator client connected from {peer}");
 
-    serve_client(stream, token, &protocols, duration_secs).await;
+    serve_client(stream, token, &protocols, duration_secs, proxy_bind).await;
 
     info!("evaluator orchestrator done");
     Ok(())

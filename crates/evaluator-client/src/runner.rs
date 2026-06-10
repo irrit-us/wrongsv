@@ -2,7 +2,7 @@
 //! protocol, and runs latency/bandwidth/packet-loss tests through each
 //! protocol's proxy endpoint.
 
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream, UdpSocket};
 use std::time::{Duration, Instant};
 
@@ -23,7 +23,9 @@ enum ServerMessage {
     TestConfig {
         protocol: String,
         proxy_port: u16,
-        target_port: u16,
+        echo_port: u16,
+        bw_port: u16,
+        pl_port: u16,
         uuid: String,
     },
     #[serde(rename = "start")]
@@ -322,9 +324,12 @@ pub fn run_evaluation(
     let mut stream = TcpStream::connect_timeout(&server_addr.parse()?, Duration::from_secs(10))?;
     stream.set_read_timeout(Some(Duration::from_secs(60)))?;
 
+    // Use BufReader to avoid losing data between recv calls
+    let mut reader = BufReader::new(&mut stream);
+
     // --- auth ---
-    send_msg(&mut stream, &ClientMessage::Auth { token })?;
-    match recv_msg::<ServerMessage>(&mut stream)? {
+    send_msg(reader.get_mut(), &ClientMessage::Auth { token })?;
+    match recv_msg(&mut reader)? {
         ServerMessage::AuthOk => {
             println!("authenticated");
         }
@@ -338,25 +343,29 @@ pub fn run_evaluation(
     let duration = Duration::from_secs(duration_secs);
 
     loop {
-        match recv_msg::<ServerMessage>(&mut stream)? {
+        match recv_msg(&mut reader)? {
             ServerMessage::TestConfig {
                 protocol,
                 proxy_port,
-                target_port,
+                echo_port,
+                bw_port,
+                pl_port,
                 uuid,
             } => {
-                println!("testing protocol: {protocol} (proxy={proxy_port}, target={target_port})");
+                println!(
+                    "testing protocol: {protocol} (proxy={proxy_port}, echo={echo_port}, bw={bw_port}, pl={pl_port})"
+                );
 
                 // Send ready
                 send_msg(
-                    &mut stream,
+                    reader.get_mut(),
                     &ClientMessage::Ready {
                         protocol: &protocol,
                     },
                 )?;
 
                 // Wait for start
-                match recv_msg::<ServerMessage>(&mut stream)? {
+                match recv_msg(&mut reader)? {
                     ServerMessage::Start { .. } => {}
                     _ => return Err("expected start".into()),
                 }
@@ -368,10 +377,10 @@ pub fn run_evaluation(
                     ""
                 };
 
-                // Run tests
-                let lat = run_latency_test(proxy_port, target_port, &uuid, flow, duration);
-                let bw = run_bandwidth_test(proxy_port, target_port, &uuid, flow, duration);
-                let pl = run_packet_loss_test(proxy_port, target_port, &uuid, flow, duration);
+                // Run tests with the correct target for each
+                let lat = run_latency_test(proxy_port, echo_port, &uuid, flow, duration);
+                let bw = run_bandwidth_test(proxy_port, bw_port, &uuid, flow, duration);
+                let pl = run_packet_loss_test(proxy_port, pl_port, &uuid, flow, duration);
 
                 let pl_val = pl;
 
@@ -393,7 +402,7 @@ pub fn run_evaluation(
 
                 // Send result
                 send_msg(
-                    &mut stream,
+                    reader.get_mut(),
                     &ClientMessage::Result {
                         protocol: &protocol,
                         metrics,
@@ -436,23 +445,19 @@ fn send_msg(stream: &mut TcpStream, msg: &impl Serialize) -> Result<(), std::io:
     Ok(())
 }
 
-fn recv_msg<T: for<'de> Deserialize<'de>>(stream: &mut TcpStream) -> Result<T, std::io::Error> {
-    let mut buf = [0u8; 4096];
+fn recv_msg<T: for<'de> Deserialize<'de>>(
+    reader: &mut BufReader<&mut TcpStream>,
+) -> Result<T, std::io::Error> {
     let mut line = String::new();
-    loop {
-        let n = stream.read(&mut buf)?;
-        if n == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "connection closed",
-            ));
-        }
-        line.push_str(&String::from_utf8_lossy(&buf[..n]));
-        if line.contains('\n') {
-            // Take up to the first newline
-            let split: Vec<&str> = line.splitn(2, '\n').collect();
-            return serde_json::from_str(split[0])
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()));
-        }
+    reader.read_line(&mut line)?;
+    if line.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "connection closed",
+        ));
     }
+    // Trim trailing newline
+    let trimmed = line.trim_end();
+    serde_json::from_str(trimmed)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
 }

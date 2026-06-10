@@ -36,7 +36,9 @@ pub enum ServerMessage {
     TestConfig {
         protocol: String,
         proxy_port: u16,
-        target_port: u16,
+        echo_port: u16,
+        bw_port: u16,
+        pl_port: u16,
         uuid: String,
     },
     /// Start the test.
@@ -56,7 +58,6 @@ pub enum ServerMessage {
 /// Collected metrics for a single protocol evaluation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProtocolMetrics {
-    pub protocol: String,
     pub latency_ms: LatencyStats,
     pub bandwidth_mbps: BandwidthStats,
     pub packet_loss_pct: f64,
@@ -80,20 +81,31 @@ pub struct BandwidthStats {
 
 impl ProtocolMetrics {
     /// Export all results as a JSON string.
-    pub fn export_json(results: &[Self]) -> String {
-        serde_json::to_string_pretty(results).expect("ProtocolMetrics should serialize")
+    pub fn export_json(results: &[(String, Self)]) -> String {
+        let wrapped: Vec<serde_json::Value> = results
+            .iter()
+            .map(|(protocol, metrics)| {
+                serde_json::json!({
+                    "protocol": protocol,
+                    "latency_ms": metrics.latency_ms,
+                    "bandwidth_mbps": metrics.bandwidth_mbps,
+                    "packet_loss_pct": metrics.packet_loss_pct,
+                })
+            })
+            .collect();
+        serde_json::to_string_pretty(&wrapped).expect("metrics should serialize")
     }
 
     /// Export all results as CSV.
-    pub fn export_csv(results: &[Self]) -> String {
+    pub fn export_csv(results: &[(String, Self)]) -> String {
         let mut csv = String::from(
             "protocol,lat_min_ms,lat_max_ms,lat_avg_ms,lat_p50_ms,lat_p95_ms,lat_p99_ms,\
              bw_upload_mbps,bw_download_mbps,packet_loss_pct\n",
         );
-        for r in results {
+        for (protocol, r) in results {
             csv.push_str(&format!(
                 "{},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2}\n",
-                r.protocol,
+                protocol,
                 r.latency_ms.min,
                 r.latency_ms.max,
                 r.latency_ms.avg,
