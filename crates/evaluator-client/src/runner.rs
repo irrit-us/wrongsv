@@ -7,6 +7,7 @@ use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use super::export::{BandwidthStats, LatencyStats, ProtocolResult};
 use crate::transport;
@@ -87,7 +88,10 @@ struct ClientBandwidthStats {
 /// `read_tls_inner` doesn't cause spurious failures in latency/packet-loss
 /// tests.  Each retry sleeps 5 ms and the total wait is capped at ~2.5 s
 /// (500 retries) to avoid hanging forever.
-fn read_exact_retry(stream: &mut dyn transport::ReadWrite, mut buf: &mut [u8]) -> std::io::Result<()> {
+fn read_exact_retry(
+    stream: &mut dyn transport::ReadWrite,
+    mut buf: &mut [u8],
+) -> std::io::Result<()> {
     let mut retries: u32 = 0;
     const MAX_RETRIES: u32 = 500;
     while !buf.is_empty() {
@@ -125,10 +129,7 @@ fn read_exact_retry(stream: &mut dyn transport::ReadWrite, mut buf: &mut [u8]) -
 
 /// Run a latency test: send N timestamped pings through the proxy and
 /// measure round-trip time.
-fn run_latency_test(
-    stream: &mut dyn transport::ReadWrite,
-    _duration: Duration,
-) -> LatencyStats {
+fn run_latency_test(stream: &mut dyn transport::ReadWrite, _duration: Duration) -> LatencyStats {
     const PING_COUNT: usize = 20;
     const PING_SIZE: usize = 64;
     let mut rtts = Vec::with_capacity(PING_COUNT);
@@ -271,10 +272,7 @@ fn run_bandwidth_test(
 /// Sends numbered packets through the proxy to the echo target and counts
 /// responses. Does NOT use raw UDP — packets flow through the VLESS tunnel
 /// like real traffic would.
-fn run_packet_loss_test(
-    stream: &mut dyn transport::ReadWrite,
-    _duration: Duration,
-) -> f64 {
+fn run_packet_loss_test(stream: &mut dyn transport::ReadWrite, _duration: Duration) -> f64 {
     const PACKET_COUNT: usize = 20;
     const PACKET_SIZE: usize = 64;
     let mut sent = 0usize;
@@ -323,8 +321,7 @@ pub fn run_evaluation(
     token: &str,
     duration_secs: u64,
 ) -> Result<Vec<ProtocolResult>, Box<dyn std::error::Error>> {
-    let mut stream =
-        TcpStream::connect_timeout(&server_addr.parse()?, Duration::from_secs(10))?;
+    let mut stream = TcpStream::connect_timeout(&server_addr.parse()?, Duration::from_secs(10))?;
     stream.set_read_timeout(Some(Duration::from_secs(60)))?;
 
     // Derive proxy host from orchestrator address.  Strip the port portion
@@ -401,12 +398,17 @@ pub fn run_evaluation(
                     reality_short_id.as_deref(),
                     reality_raw_pubkey.as_deref(),
                 ) {
-                    Ok(mut transport_stream) => {
-                        run_latency_test(&mut *transport_stream, duration)
-                    }
+                    Ok(mut transport_stream) => run_latency_test(&mut *transport_stream, duration),
                     Err(e) => {
-                        eprintln!("  [WARN] {protocol} connect failed: {e}");
-                        LatencyStats { min: 0.0, max: 0.0, avg: 0.0, p50: 0.0, p95: 0.0, p99: 0.0 }
+                        warn!("{protocol} connect failed: {e}");
+                        LatencyStats {
+                            min: 0.0,
+                            max: 0.0,
+                            avg: 0.0,
+                            p50: 0.0,
+                            p95: 0.0,
+                            p99: 0.0,
+                        }
                     }
                 };
 
@@ -434,8 +436,11 @@ pub fn run_evaluation(
                         result
                     }
                     (Err(e), _) | (_, Err(e)) => {
-                        eprintln!("  [WARN] {protocol} bw connect failed: {e}");
-                        BandwidthStats { upload: 0.0, download: 0.0 }
+                        warn!("{protocol} bw connect failed: {e}");
+                        BandwidthStats {
+                            upload: 0.0,
+                            download: 0.0,
+                        }
                     }
                 };
 
@@ -454,7 +459,7 @@ pub fn run_evaluation(
                         run_packet_loss_test(&mut *transport_stream, duration)
                     }
                     Err(e) => {
-                        eprintln!("  [WARN] {protocol} pl connect failed: {e}");
+                        warn!("{protocol} pl connect failed: {e}");
                         100.0
                     }
                 };
@@ -575,7 +580,7 @@ mod tests {
     fn percentile_100_elements() {
         let data: Vec<f64> = (1..=100).map(|i| i as f64).collect();
         let p50 = percentile(&data, 0.50);
-        assert!(p50 >= 50.0 && p50 <= 51.0, "p50={p50}");
+        assert!((50.0..=51.0).contains(&p50), "p50={p50}");
         let p99 = percentile(&data, 0.99);
         assert!(p99 >= 99.0, "p99={p99}");
     }
@@ -734,7 +739,9 @@ mod tests {
 
     #[test]
     fn client_message_auth_serialize() {
-        let msg = ClientMessage::Auth { token: "test-token" };
+        let msg = ClientMessage::Auth {
+            token: "test-token",
+        };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("auth"));
         assert!(json.contains("test-token"));
@@ -756,10 +763,16 @@ mod tests {
             protocol: "tls",
             metrics: ClientMetrics {
                 latency_ms: ClientLatencyStats {
-                    min: 0.0, max: 0.0, avg: 0.0, p50: 0.0, p95: 0.0, p99: 0.0,
+                    min: 0.0,
+                    max: 0.0,
+                    avg: 0.0,
+                    p50: 0.0,
+                    p95: 0.0,
+                    p99: 0.0,
                 },
                 bandwidth_mbps: ClientBandwidthStats {
-                    upload: 0.0, download: 0.0,
+                    upload: 0.0,
+                    download: 0.0,
                 },
                 packet_loss_pct: 0.0,
             },
@@ -776,8 +789,18 @@ mod tests {
     fn protocol_result_has_all_fields() {
         let result = ProtocolResult {
             protocol: "raw".into(),
-            latency_ms: LatencyStats { min: 1.0, max: 2.0, avg: 1.5, p50: 1.5, p95: 1.9, p99: 2.0 },
-            bandwidth_mbps: BandwidthStats { upload: 10.0, download: 20.0 },
+            latency_ms: LatencyStats {
+                min: 1.0,
+                max: 2.0,
+                avg: 1.5,
+                p50: 1.5,
+                p95: 1.9,
+                p99: 2.0,
+            },
+            bandwidth_mbps: BandwidthStats {
+                upload: 10.0,
+                download: 20.0,
+            },
             packet_loss_pct: 0.0,
         };
         assert_eq!(result.protocol, "raw");

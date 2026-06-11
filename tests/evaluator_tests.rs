@@ -12,8 +12,7 @@ fn evaluator_end_to_end_small_subset() {
     let duration_secs = 3; // short duration for fast test
 
     // Pick an ephemeral port
-    let listener =
-        std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
     let addr = listener.local_addr().expect("local addr");
     let port = addr.port();
     drop(listener); // release so server can bind
@@ -31,15 +30,13 @@ fn evaluator_end_to_end_small_subset() {
         // Signal ready before blocking on accept
         ready_tx.send(()).map_err(|_| "send failed".to_string())?;
         // Run server — this blocks until a client connects and completes
-        rt.block_on(
-            wrongsv_evaluator_server::orchestrator::run_orchestrator(
-                &listen,
-                &server_token,
-                Some("raw,tls"),
-                duration_secs,
-                "127.0.0.1",
-            ),
-        )
+        rt.block_on(wrongsv_evaluator_server::orchestrator::run_orchestrator(
+            &listen,
+            &server_token,
+            Some("raw,tls"),
+            duration_secs,
+            "127.0.0.1",
+        ))
         .map_err(|e| e.to_string())
     });
 
@@ -52,8 +49,8 @@ fn evaluator_end_to_end_small_subset() {
     std::thread::sleep(Duration::from_millis(300));
 
     // Run client on main thread
-    let results = run_evaluation(&listen_addr, token, duration_secs)
-        .expect("evaluation should succeed");
+    let results =
+        run_evaluation(&listen_addr, token, duration_secs).expect("evaluation should succeed");
 
     // Verify results
     assert!(
@@ -81,7 +78,10 @@ fn evaluator_end_to_end_small_subset() {
 
         // Bandwidth should be >= 0
         assert!(r.bandwidth_mbps.upload >= 0.0, "bw upload should be >= 0");
-        assert!(r.bandwidth_mbps.download >= 0.0, "bw download should be >= 0");
+        assert!(
+            r.bandwidth_mbps.download >= 0.0,
+            "bw download should be >= 0"
+        );
 
         // Packet loss should be in [0, 100]
         assert!(
@@ -104,8 +104,7 @@ fn evaluator_end_to_end_small_subset() {
 /// Test that the server rejects a client with a bad token.
 #[test]
 fn evaluator_rejects_bad_token() {
-    let listener =
-        std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
     let addr = listener.local_addr().expect("local addr");
     let port = addr.port();
     drop(listener);
@@ -119,11 +118,13 @@ fn evaluator_rejects_bad_token() {
     let server_handle = std::thread::spawn(move || -> Result<(), String> {
         let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
         ready_tx.send(()).map_err(|_| "send failed".to_string())?;
-        rt.block_on(
-            wrongsv_evaluator_server::orchestrator::run_orchestrator(
-                &listen, &server_token, Some("raw"), 1, "127.0.0.1",
-            ),
-        )
+        rt.block_on(wrongsv_evaluator_server::orchestrator::run_orchestrator(
+            &listen,
+            &server_token,
+            Some("raw"),
+            1,
+            "127.0.0.1",
+        ))
         .map_err(|e| e.to_string())
     });
 

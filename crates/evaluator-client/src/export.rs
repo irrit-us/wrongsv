@@ -65,20 +65,32 @@ mod tests {
             ProtocolResult {
                 protocol: "raw".into(),
                 latency_ms: LatencyStats {
-                    min: 0.1, max: 1.2, avg: 0.5, p50: 0.45, p95: 1.0, p99: 1.1,
+                    min: 0.1,
+                    max: 1.2,
+                    avg: 0.5,
+                    p50: 0.45,
+                    p95: 1.0,
+                    p99: 1.1,
                 },
                 bandwidth_mbps: BandwidthStats {
-                    upload: 1000.0, download: 2000.0,
+                    upload: 1000.0,
+                    download: 2000.0,
                 },
                 packet_loss_pct: 0.0,
             },
             ProtocolResult {
                 protocol: "tls".into(),
                 latency_ms: LatencyStats {
-                    min: 5.0, max: 50.0, avg: 10.0, p50: 8.0, p95: 40.0, p99: 48.0,
+                    min: 5.0,
+                    max: 50.0,
+                    avg: 10.0,
+                    p50: 8.0,
+                    p95: 40.0,
+                    p99: 48.0,
                 },
                 bandwidth_mbps: BandwidthStats {
-                    upload: 500.0, download: 600.0,
+                    upload: 500.0,
+                    download: 600.0,
                 },
                 packet_loss_pct: 0.5,
             },

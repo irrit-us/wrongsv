@@ -80,7 +80,8 @@ fn build_proxy_config(
             );
             // Server generates its own cert material; client skips cert
             // verification for evaluator (all-zeros raw_pubkey signals skip).
-            let raw_pubkey_hex = "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+            let raw_pubkey_hex =
+                "0000000000000000000000000000000000000000000000000000000000000000".to_string();
             use base64::Engine;
             let pubkey_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(pk.as_bytes());
             let params = TransportParams {
@@ -378,7 +379,8 @@ async fn serve_client(
             l.local_addr().unwrap().port()
         };
 
-        let (config_toml, uuid, params) = build_proxy_config(protocol, proxy_port, echo_addr, proxy_bind);
+        let (config_toml, uuid, params) =
+            build_proxy_config(protocol, proxy_port, echo_addr, proxy_bind);
         let server_config: wrongsv_server::Config =
             toml::from_str(&config_toml).expect("eval config should parse");
         let server = wrongsv_server::InboundServer::new(server_config)

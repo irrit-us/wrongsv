@@ -3,8 +3,8 @@
 //! Uses a background thread with tokio runtime for the async quinn connection.
 
 use std::io::{self, Read, Write};
-use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread::JoinHandle;
 
 use super::BoxedIo;
@@ -216,7 +216,9 @@ async fn quic_handshake(
     vless_header: &[u8],
 ) -> Result<(quinn::SendStream, quinn::RecvStream), io::Error> {
     let tls_config = make_quic_tls_config();
-    let mut client_config = quinn::ClientConfig::new(Arc::new(quinn::crypto::rustls::QuicClientConfig::try_from(tls_config).map_err(io::Error::other)?));
+    let mut client_config = quinn::ClientConfig::new(Arc::new(
+        quinn::crypto::rustls::QuicClientConfig::try_from(tls_config).map_err(io::Error::other)?,
+    ));
 
     let mut transport = quinn::TransportConfig::default();
     transport.max_idle_timeout(Some(std::time::Duration::from_secs(30).try_into().unwrap()));
@@ -234,7 +236,12 @@ async fn quic_handshake(
         .connect(server_addr, "cloudfront.net")
         .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, format!("connect: {e}")))?
         .await
-        .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, format!("QUIC connect: {e}")))?;
+        .map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::ConnectionRefused,
+                format!("QUIC connect: {e}"),
+            )
+        })?;
 
     let (mut send, mut recv) = connection
         .open_bi()

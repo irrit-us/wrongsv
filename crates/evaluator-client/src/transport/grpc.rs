@@ -4,8 +4,8 @@
 //! async h2 connection, bridging to sync Read/Write via channels.
 
 use std::io::{self, Read, Write};
-use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread::JoinHandle;
 
 use rustls::ClientConfig;
@@ -76,11 +76,7 @@ async fn read_grpc_frame(
                     return Ok(Some(payload));
                 }
             }
-            Some(Err(e)) => {
-                return Err(Box::new(io::Error::other(
-                    format!("h2 stream: {e}"),
-                )))
-            }
+            Some(Err(e)) => return Err(Box::new(io::Error::other(format!("h2 stream: {e}")))),
             None => {
                 if buf.is_empty() {
                     return Ok(None);
@@ -99,8 +95,7 @@ async fn grpc_handshake(
     use_tls: bool,
     hdr_frame: &[u8],
 ) -> Result<(h2::RecvStream, h2::SendStream<bytes::Bytes>), io::Error> {
-    tcp.set_nodelay(true)
-        .map_err(io::Error::other)?;
+    tcp.set_nodelay(true).map_err(io::Error::other)?;
 
     let client = if use_tls {
         let tls_cfg = super::tls_common::make_no_verify_config();
@@ -114,13 +109,17 @@ async fn grpc_handshake(
         let (client, conn) = h2::client::handshake(tls_stream)
             .await
             .map_err(|e| io::Error::other(format!("h2: {e}")))?;
-        tokio::spawn(async move { let _ = conn.await; });
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
         client
     } else {
         let (client, conn) = h2::client::handshake(tcp)
             .await
             .map_err(|e| io::Error::other(format!("h2: {e}")))?;
-        tokio::spawn(async move { let _ = conn.await; });
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
         client
     };
 
@@ -147,9 +146,10 @@ async fn grpc_handshake(
         .map_err(|e| io::Error::other(format!("response: {e}")))?;
 
     if response.status() != http::StatusCode::OK {
-        return Err(io::Error::other(
-            format!("gRPC status: {}", response.status()),
-        ));
+        return Err(io::Error::other(format!(
+            "gRPC status: {}",
+            response.status()
+        )));
     }
 
     let mut body = response.into_body();

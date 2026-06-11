@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use rustls::ClientConfig;
 
-use super::tls_common;
 use super::BoxedIo;
+use super::tls_common;
 
 /// Perform the HTTPUpgrade handshake.
 fn http_upgrade_handshake(stream: &mut dyn ReadWrite, path: &str) -> io::Result<()> {

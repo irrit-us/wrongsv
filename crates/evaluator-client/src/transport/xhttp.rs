@@ -4,8 +4,8 @@
 //! Spawns a background thread with tokio runtime for async h2.
 
 use std::io::{self, Read, Write};
-use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread::JoinHandle;
 
 use rustls::ClientConfig;
@@ -64,8 +64,7 @@ async fn xhttp_handshake(
     use_tls: bool,
     vless_header: &[u8],
 ) -> Result<(h2::RecvStream, h2::SendStream<bytes::Bytes>), io::Error> {
-    tcp.set_nodelay(true)
-        .map_err(io::Error::other)?;
+    tcp.set_nodelay(true).map_err(io::Error::other)?;
 
     let client = if use_tls {
         let tls_cfg = super::tls_common::make_no_verify_config();
@@ -79,13 +78,17 @@ async fn xhttp_handshake(
         let (client, conn) = h2::client::handshake(tls_stream)
             .await
             .map_err(|e| io::Error::other(format!("h2: {e}")))?;
-        tokio::spawn(async move { let _ = conn.await; });
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
         client
     } else {
         let (client, conn) = h2::client::handshake(tcp)
             .await
             .map_err(|e| io::Error::other(format!("h2: {e}")))?;
-        tokio::spawn(async move { let _ = conn.await; });
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
         client
     };
 
@@ -110,9 +113,10 @@ async fn xhttp_handshake(
         .map_err(|e| io::Error::other(format!("response: {e}")))?;
 
     if response.status() != http::StatusCode::OK {
-        return Err(io::Error::other(
-            format!("XHTTP status: {}", response.status()),
-        ));
+        return Err(io::Error::other(format!(
+            "XHTTP status: {}",
+            response.status()
+        )));
     }
 
     let mut body = response.into_body();

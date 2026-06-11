@@ -39,7 +39,12 @@ use tls_common::make_no_verify_config;
 /// Connect to the proxy on the given host and port. Used by all transports.
 fn connect_proxy(host: &str, port: u16) -> io::Result<TcpStream> {
     let addrs: Vec<SocketAddr> = std::net::ToSocketAddrs::to_socket_addrs(&(host, port))
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, format!("resolve {host}:{port}: {e}")))?
+        .map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("resolve {host}:{port}: {e}"),
+            )
+        })?
         .collect();
     for addr in addrs {
         match TcpStream::connect_timeout(&addr, Duration::from_secs(5)) {
@@ -55,6 +60,7 @@ fn connect_proxy(host: &str, port: u16) -> io::Result<TcpStream> {
 
 // ── Dispatch ─────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 pub fn connect_for_protocol(
     protocol: &str,
     proxy_host: &str,
@@ -83,7 +89,14 @@ pub fn connect_for_protocol(
         }
         "ws+tls" => {
             let sock = connect_proxy(proxy_host, proxy_port)?;
-            websocket::connect_ws(sock, uuid, target_addr, target_port, flow, Some(make_no_verify_config()))
+            websocket::connect_ws(
+                sock,
+                uuid,
+                target_addr,
+                target_port,
+                flow,
+                Some(make_no_verify_config()),
+            )
         }
         "httpupgrade" => {
             let sock = connect_proxy(proxy_host, proxy_port)?;
@@ -91,44 +104,95 @@ pub fn connect_for_protocol(
         }
         "httpupgrade+tls" => {
             let sock = connect_proxy(proxy_host, proxy_port)?;
-            httpupgrade::connect_httpupgrade(sock, uuid, target_addr, target_port, flow, Some(make_no_verify_config()))
+            httpupgrade::connect_httpupgrade(
+                sock,
+                uuid,
+                target_addr,
+                target_port,
+                flow,
+                Some(make_no_verify_config()),
+            )
         }
         "grpc" => {
             let addr = format!("{proxy_host}:{proxy_port}");
-            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(io::Error::other)?;
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(io::Error::other)?;
             let tcp = rt.block_on(async { tokio::net::TcpStream::connect(&addr).await })?;
             grpc::connect_grpc(tcp, uuid, target_addr, target_port, flow, None)
         }
         "grpc+tls" => {
             let addr = format!("{proxy_host}:{proxy_port}");
-            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(io::Error::other)?;
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(io::Error::other)?;
             let tcp = rt.block_on(async { tokio::net::TcpStream::connect(&addr).await })?;
-            grpc::connect_grpc(tcp, uuid, target_addr, target_port, flow, Some(make_no_verify_config()))
+            grpc::connect_grpc(
+                tcp,
+                uuid,
+                target_addr,
+                target_port,
+                flow,
+                Some(make_no_verify_config()),
+            )
         }
         "xhttp" => {
             let addr = format!("{proxy_host}:{proxy_port}");
-            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(io::Error::other)?;
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(io::Error::other)?;
             let tcp = rt.block_on(async { tokio::net::TcpStream::connect(&addr).await })?;
             xhttp::connect_xhttp(tcp, uuid, target_addr, target_port, flow, None)
         }
         "xhttp+tls" => {
             let addr = format!("{proxy_host}:{proxy_port}");
-            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(io::Error::other)?;
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(io::Error::other)?;
             let tcp = rt.block_on(async { tokio::net::TcpStream::connect(&addr).await })?;
-            xhttp::connect_xhttp(tcp, uuid, target_addr, target_port, flow, Some(make_no_verify_config()))
+            xhttp::connect_xhttp(
+                tcp,
+                uuid,
+                target_addr,
+                target_port,
+                flow,
+                Some(make_no_verify_config()),
+            )
         }
         "reality" => {
             let pubkey = reality_pubkey_b64.ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::InvalidInput, "reality requires server pubkey")
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "reality requires server pubkey",
+                )
             })?;
             let short_id = reality_short_id.ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::InvalidInput, "reality requires short_id")
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "reality requires short_id",
+                )
             })?;
             let raw_pubkey = reality_raw_pubkey.ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::InvalidInput, "reality requires raw_pubkey")
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "reality requires raw_pubkey",
+                )
             })?;
             let sock = connect_proxy(proxy_host, proxy_port)?;
-            reality::connect_reality(sock, uuid, target_addr, target_port, flow, pubkey, short_id, raw_pubkey)
+            reality::connect_reality(
+                sock,
+                uuid,
+                target_addr,
+                target_port,
+                flow,
+                pubkey,
+                short_id,
+                raw_pubkey,
+            )
         }
         "anytls" => {
             let sock = connect_proxy(proxy_host, proxy_port)?;

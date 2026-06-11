@@ -64,7 +64,10 @@ fn read_tls_record(stream: &mut TcpStream) -> io::Result<(u8, Vec<u8>, [u8; 5])>
     let ct = hdr[0];
     let len = u16::from_be_bytes([hdr[3], hdr[4]]) as usize;
     if len > 65536 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "TLS record too large"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "TLS record too large",
+        ));
     }
     let mut payload = vec![0u8; len];
     stream.read_exact(&mut payload)?;
@@ -94,7 +97,10 @@ impl AeadState {
             .cipher
             .decrypt(
                 nonce,
-                aes_gcm::aead::Payload { msg: payload, aad: aad.as_slice() },
+                aes_gcm::aead::Payload {
+                    msg: payload,
+                    aad: aad.as_slice(),
+                },
             )
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("decrypt: {e}")))?;
         self.seq += 1;
@@ -116,7 +122,8 @@ impl AeadState {
         let record_len = plaintext_len + 16; // AES-GCM tag
         let hdr: [u8; 5] = [
             record_type,
-            0x03, 0x03,
+            0x03,
+            0x03,
             (record_len >> 8) as u8,
             record_len as u8,
         ];
@@ -124,7 +131,10 @@ impl AeadState {
             .cipher
             .encrypt(
                 nonce,
-                aes_gcm::aead::Payload { msg: &inner, aad: hdr.as_slice() },
+                aes_gcm::aead::Payload {
+                    msg: &inner,
+                    aad: hdr.as_slice(),
+                },
             )
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("encrypt: {e}")))?;
         self.seq += 1;
@@ -223,7 +233,10 @@ fn parse_server_hello(payload: &[u8]) -> io::Result<([u8; 32], [u8; 32])> {
     }
     let body = &payload[4..];
     if body.len() < 34 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "ServerHello too short"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "ServerHello too short",
+        ));
     }
     let mut server_random = [0u8; 32];
     server_random.copy_from_slice(&body[2..34]);
@@ -231,12 +244,18 @@ fn parse_server_hello(payload: &[u8]) -> io::Result<([u8; 32], [u8; 32])> {
     let session_id_len = body[34] as usize;
     let mut pos = 35 + session_id_len;
     if pos + 3 > body.len() {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "ServerHello truncated at cipher_suite"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "ServerHello truncated at cipher_suite",
+        ));
     }
     pos += 3; // cipher_suite(2) + compression(1)
 
     if pos + 2 > body.len() {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "ServerHello truncated at extensions"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "ServerHello truncated at extensions",
+        ));
     }
     let ext_len = u16::from_be_bytes([body[pos], body[pos + 1]]) as usize;
     pos += 2;
@@ -254,7 +273,8 @@ fn parse_server_hello(payload: &[u8]) -> io::Result<([u8; 32], [u8; 32])> {
         }
         if ext_type == 0x0033 && ext_size >= 4 {
             let group = u16::from_be_bytes([ext_data[ext_pos], ext_data[ext_pos + 1]]);
-            let key_len = u16::from_be_bytes([ext_data[ext_pos + 2], ext_data[ext_pos + 3]]) as usize;
+            let key_len =
+                u16::from_be_bytes([ext_data[ext_pos + 2], ext_data[ext_pos + 3]]) as usize;
             if group == 0x001D && key_len == 32 && ext_size >= 4 + key_len {
                 let mut ks = [0u8; 32];
                 ks.copy_from_slice(&ext_data[ext_pos + 4..ext_pos + 4 + 32]);
@@ -264,8 +284,12 @@ fn parse_server_hello(payload: &[u8]) -> io::Result<([u8; 32], [u8; 32])> {
         ext_pos += ext_size;
     }
 
-    let server_key_share = server_key_share
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "key_share not found in ServerHello"))?;
+    let server_key_share = server_key_share.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "key_share not found in ServerHello",
+        )
+    })?;
     Ok((server_random, server_key_share))
 }
 
@@ -278,7 +302,11 @@ fn derive_auth_key(client_random: &[u8; 32], shared_secret: &[u8]) -> [u8; 32] {
     auth_key
 }
 
-fn verify_reality_cert(auth_key: &[u8; 32], raw_pubkey: &[u8; 32], cert_der: &[u8]) -> io::Result<()> {
+fn verify_reality_cert(
+    auth_key: &[u8; 32],
+    raw_pubkey: &[u8; 32],
+    cert_der: &[u8],
+) -> io::Result<()> {
     if cert_der.len() < 64 {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "cert too short"));
     }
@@ -290,7 +318,10 @@ fn verify_reality_cert(auth_key: &[u8; 32], raw_pubkey: &[u8; 32], cert_der: &[u
     if sig == expected.as_slice() {
         Ok(())
     } else {
-        Err(io::Error::new(io::ErrorKind::InvalidData, "cert HMAC mismatch"))
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "cert HMAC mismatch",
+        ))
     }
 }
 
@@ -317,7 +348,10 @@ impl Read for RealityConnection {
                         return Ok(n);
                     }
                     0x15 => {
-                        return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "TLS alert"));
+                        return Err(io::Error::new(
+                            io::ErrorKind::ConnectionAborted,
+                            "TLS alert",
+                        ));
                     }
                     0x14 => {
                         continue; // change_cipher_spec — skip
@@ -327,7 +361,10 @@ impl Read for RealityConnection {
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                     retries += 1;
                     if retries > MAX_RETRIES {
-                        return Err(io::Error::new(e.kind(), "no application data after max retries"));
+                        return Err(io::Error::new(
+                            e.kind(),
+                            "no application data after max retries",
+                        ));
                     }
                     std::thread::sleep(Duration::from_millis(5));
                     continue;
@@ -380,6 +417,7 @@ fn write_all_retry(sock: &mut TcpStream, mut data: &[u8]) -> io::Result<()> {
 // ── Connect ─────────────────────────────────────────────────────────────────
 
 /// Connect via REALITY with full handshake.
+#[allow(clippy::too_many_arguments)]
 pub fn connect_reality(
     mut sock: TcpStream,
     uuid: &str,
@@ -396,36 +434,45 @@ pub fn connect_reality(
     let server_pk_bytes: [u8; 32] = {
         use base64::Engine;
         let mut b64 = server_pubkey_b64.to_string();
-        while b64.len() % 4 != 0 {
+        while !b64.len().is_multiple_of(4) {
             b64.push('=');
         }
         let bytes = base64::engine::general_purpose::URL_SAFE
             .decode(&b64)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, format!("pubkey b64: {e}")))?;
-        bytes.try_into()
+        bytes
+            .try_into()
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "pubkey must be 32 bytes"))?
     };
 
     let short_id: [u8; 4] = {
         if short_id_hex.len() != 8 {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "short_id must be 8 hex chars"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "short_id must be 8 hex chars",
+            ));
         }
         let mut sid = [0u8; 4];
         for i in 0..4 {
-            sid[i] = u8::from_str_radix(&short_id_hex[i * 2..i * 2 + 2], 16)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, format!("short_id hex: {e}")))?;
+            sid[i] = u8::from_str_radix(&short_id_hex[i * 2..i * 2 + 2], 16).map_err(|e| {
+                io::Error::new(io::ErrorKind::InvalidInput, format!("short_id hex: {e}"))
+            })?;
         }
         sid
     };
 
     let raw_pubkey: [u8; 32] = {
         if raw_pubkey_hex.len() != 64 {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "raw_pubkey must be 64 hex chars"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "raw_pubkey must be 64 hex chars",
+            ));
         }
         let mut pk = [0u8; 32];
         for i in 0..32 {
-            pk[i] = u8::from_str_radix(&raw_pubkey_hex[i * 2..i * 2 + 2], 16)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, format!("raw_pubkey hex: {e}")))?;
+            pk[i] = u8::from_str_radix(&raw_pubkey_hex[i * 2..i * 2 + 2], 16).map_err(|e| {
+                io::Error::new(io::ErrorKind::InvalidInput, format!("raw_pubkey hex: {e}"))
+            })?;
         }
         pk
     };
@@ -458,7 +505,8 @@ pub fn connect_reality(
     plaintext[8..12].copy_from_slice(&short_id);
 
     // Build temp ClientHello for AAD
-    let temp_hello = build_reality_client_hello(client_random, [0u8; 32], *client_pk.as_bytes(), sni);
+    let temp_hello =
+        build_reality_client_hello(client_random, [0u8; 32], *client_pk.as_bytes(), sni);
     let aad = &temp_hello[5..]; // strip TLS record header
 
     // Encrypt session_id
@@ -468,14 +516,18 @@ pub fn connect_reality(
     let ct = cipher
         .encrypt(
             nonce,
-            aes_gcm::aead::Payload { msg: &plaintext, aad },
+            aes_gcm::aead::Payload {
+                msg: &plaintext,
+                aad,
+            },
         )
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("AES-GCM encrypt: {e}")))?;
 
     let mut session_id = [0u8; 32];
     session_id.copy_from_slice(&ct);
 
-    let client_hello = build_reality_client_hello(client_random, session_id, *client_pk.as_bytes(), sni);
+    let client_hello =
+        build_reality_client_hello(client_random, session_id, *client_pk.as_bytes(), sni);
     let client_hello_body = &client_hello[5..]; // for transcript
 
     sock.write_all(&client_hello)?;
@@ -483,7 +535,10 @@ pub fn connect_reality(
     // Step 4: Read ServerHello
     let (ct_type, server_hello_payload, _sh_hdr) = read_tls_record(&mut sock)?;
     if ct_type != 0x16 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("expected handshake, got 0x{ct_type:02x}")));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("expected handshake, got 0x{ct_type:02x}"),
+        ));
     }
     let (_server_random, server_key_share) = parse_server_hello(&server_hello_payload)?;
 
@@ -542,7 +597,8 @@ pub fn connect_reality(
                 let mut pos = 0;
                 while pos + 4 <= pt.len() {
                     let msg_type = pt[pos];
-                    let msg_len = u32::from_be_bytes([0, pt[pos + 1], pt[pos + 2], pt[pos + 3]]) as usize;
+                    let msg_len =
+                        u32::from_be_bytes([0, pt[pos + 1], pt[pos + 2], pt[pos + 3]]) as usize;
                     pos += 4;
                     if pos + msg_len > pt.len() {
                         break;
@@ -558,7 +614,9 @@ pub fn connect_reality(
                             let cert_req_ctx_len = msg[0] as usize;
                             let off = 1 + cert_req_ctx_len;
                             if msg.len() >= off + 3 {
-                                let cert_len = u32::from_be_bytes([0, msg[off], msg[off + 1], msg[off + 2]]) as usize;
+                                let cert_len =
+                                    u32::from_be_bytes([0, msg[off], msg[off + 1], msg[off + 2]])
+                                        as usize;
                                 if msg.len() >= off + 3 + cert_len {
                                     cert_der = msg[off + 3..off + 3 + cert_len].to_vec();
                                 }
@@ -570,7 +628,10 @@ pub fn connect_reality(
                 }
             }
             0x15 => {
-                return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "server alert during handshake"));
+                return Err(io::Error::new(
+                    io::ErrorKind::ConnectionAborted,
+                    "server alert during handshake",
+                ));
             }
             _ => {}
         }
@@ -640,7 +701,8 @@ pub fn connect_reality(
     conn.read_exact(&mut resp)?;
 
     // Use a short read timeout so WouldBlock retries don't stall data transfer
-    conn.sock.set_read_timeout(Some(Duration::from_millis(50)))?;
+    conn.sock
+        .set_read_timeout(Some(Duration::from_millis(50)))?;
     if resp[1] > 0 {
         let mut addons = vec![0u8; resp[1] as usize];
         conn.read_exact(&mut addons)?;

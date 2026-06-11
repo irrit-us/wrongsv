@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
-use super::tls_common;
 use super::BoxedIo;
+use super::tls_common;
 
 const ANYTLS_PASSWORD: &str = "eval-anytls-pass";
 

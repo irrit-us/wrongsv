@@ -115,7 +115,10 @@ impl TlsConnection {
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                     retries += 1;
                     if retries > MAX_RETRIES {
-                        return Err(io::Error::new(e.kind(), "no application data after max retries"));
+                        return Err(io::Error::new(
+                            e.kind(),
+                            "no application data after max retries",
+                        ));
                     }
                     match self.conn.read_tls(&mut self.sock) {
                         Ok(0) => return Ok(0),
@@ -160,7 +163,6 @@ impl TlsConnection {
         }
         Ok(())
     }
-
 }
 
 impl Read for TlsConnection {
@@ -189,9 +191,7 @@ pub fn tls_handshake_sync(sock: TcpStream, server_name: &str) -> io::Result<TlsC
     let dns_name = rustls::pki_types::DnsName::try_from(server_name.to_string())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "bad SNI"))?;
     let server_name = rustls::pki_types::ServerName::DnsName(dns_name);
-    let mut conn =
-        rustls::ClientConnection::new(config, server_name)
-            .map_err(io::Error::other)?;
+    let mut conn = rustls::ClientConnection::new(config, server_name).map_err(io::Error::other)?;
 
     let mut sock = sock;
     loop {

@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use rustls::ClientConfig;
 
-use super::tls_common;
 use super::BoxedIo;
+use super::tls_common;
 
 /// WebSocket frame from the client (always masked, random key).
 fn make_ws_frame(payload: &[u8]) -> Vec<u8> {
@@ -105,9 +105,7 @@ impl Read for WsConnection {
                 0x09 => {
                     // Ping — respond with masked pong
                     let mask: [u8; 4] = rand::random();
-                    let pong: Vec<u8> = vec![
-                        0x8A, 0x80, mask[0], mask[1], mask[2], mask[3],
-                    ];
+                    let pong: Vec<u8> = vec![0x8A, 0x80, mask[0], mask[1], mask[2], mask[3]];
                     let _ = self.inner.write_all(&pong);
                 }
                 _ => {} // Skip other frames

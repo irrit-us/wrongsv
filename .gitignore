@@ -16,3 +16,6 @@ wrongsv.gz
 # Evaluator test output
 eval-result.json
 eval-result.csv
+
+# Task tracking (session-local)
+TASK_LIST.md
