@@ -312,6 +312,7 @@ async fn serve_client(
     protocols: &[String],
     duration_secs: u64,
     proxy_bind: &str,
+    fixed_proxy_port: Option<u16>,
 ) {
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
@@ -373,8 +374,10 @@ async fn serve_client(
             }
         };
 
-        // Pick an ephemeral proxy port
-        let proxy_port = {
+        // Pick proxy port: fixed if requested, otherwise ephemeral
+        let proxy_port = if let Some(port) = fixed_proxy_port {
+            port
+        } else {
             let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             l.local_addr().unwrap().port()
         };
@@ -481,6 +484,7 @@ pub async fn run_orchestrator(
     requested_protocols: Option<&str>,
     duration_secs: u64,
     proxy_bind: &str,
+    fixed_proxy_port: Option<u16>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let protocols = resolve_protocols(requested_protocols);
     info!(
@@ -493,7 +497,15 @@ pub async fn run_orchestrator(
     let (stream, peer) = listener.accept().await?;
     info!("evaluator client connected from {peer}");
 
-    serve_client(stream, token, &protocols, duration_secs, proxy_bind).await;
+    serve_client(
+        stream,
+        token,
+        &protocols,
+        duration_secs,
+        proxy_bind,
+        fixed_proxy_port,
+    )
+    .await;
 
     info!("evaluator orchestrator done");
     Ok(())

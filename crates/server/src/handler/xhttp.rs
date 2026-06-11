@@ -57,7 +57,7 @@ pub(crate) fn parse_xhttp_config(xc: &XhttpServerConfig) -> Result<XhttpConfig, 
 pub(crate) struct XhttpStream {
     incoming_rx: Receiver<Vec<u8>>,
     pending: Vec<u8>,
-    outgoing_tx: tokio_mpsc::UnboundedSender<Vec<u8>>,
+    outgoing_tx: tokio_mpsc::Sender<Vec<u8>>,
     eof: bool,
     _thread: std::thread::JoinHandle<()>,
 }
@@ -71,7 +71,7 @@ impl XhttpStream {
         let path = config.path.clone();
         let host = config.host.clone();
         let (incoming_tx, incoming_rx) = mpsc::sync_channel::<Vec<u8>>(64);
-        let (outgoing_tx, outgoing_rx) = tokio_mpsc::unbounded_channel::<Vec<u8>>();
+        let (outgoing_tx, outgoing_rx) = tokio_mpsc::channel::<Vec<u8>>(256);
 
         let thread = std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_multi_thread()
@@ -146,7 +146,7 @@ impl Write for XhttpStream {
             ));
         }
         self.outgoing_tx
-            .send(buf.to_vec())
+            .blocking_send(buf.to_vec())
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "XHTTP stream closed"))?;
         Ok(buf.len())
     }
@@ -164,13 +164,15 @@ async fn drive_xhttp_connection(
     path: &str,
     host: Option<&str>,
     incoming_tx: mpsc::SyncSender<Vec<u8>>,
-    outgoing_rx: tokio_mpsc::UnboundedReceiver<Vec<u8>>,
+    outgoing_rx: tokio_mpsc::Receiver<Vec<u8>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tcp.set_nonblocking(true)?;
     let tcp = tokio::net::TcpStream::from_std(tcp)?;
     tcp.set_nodelay(true)?;
 
-    let mut conn = h2::server::handshake(tcp)
+    let mut conn = h2::server::Builder::new()
+        .initial_window_size(1_048_576) // 1 MiB — avoids flow-control stalls
+        .handshake(tcp)
         .await
         .map_err(|e| format!("h2 handshake: {e}"))?;
     trace!("{peer} HTTP/2 handshake done");
@@ -302,7 +304,7 @@ async fn drive_incoming(
 
 async fn drive_outgoing(
     send: &mut h2::SendStream<bytes::Bytes>,
-    mut outgoing_rx: tokio_mpsc::UnboundedReceiver<Vec<u8>>,
+    mut outgoing_rx: tokio_mpsc::Receiver<Vec<u8>>,
     peer: std::net::SocketAddr,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     loop {
@@ -417,7 +419,7 @@ fn relay_xhttp_raw(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = [0u8; 32768];
     target.set_nodelay(true)?;
-    target.set_read_timeout(Some(Duration::from_secs(2)))?;
+    target.set_read_timeout(Some(Duration::from_millis(50)))?;
 
     if !initial_data.is_empty() {
         target.write_all(&initial_data)?;
@@ -436,7 +438,7 @@ fn relay_xhttp_raw(
             Err(ref e)
                 if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
             {
-                target.set_read_timeout(Some(Duration::from_secs(2)))?;
+                target.set_read_timeout(Some(Duration::from_millis(50)))?;
             }
             Err(e) => return Err(e.into()),
         }
@@ -473,7 +475,7 @@ fn relay_xhttp_vision(
     let mut down_user_uuid: Option<[u8; 16]> = Some(down_state.user_uuid);
 
     target.set_nodelay(true)?;
-    target.set_read_timeout(Some(Duration::from_secs(2)))?;
+    target.set_read_timeout(Some(Duration::from_millis(50)))?;
     let mut buf = [0u8; 32768];
 
     if !initial_data.is_empty() {
@@ -523,7 +525,7 @@ fn relay_xhttp_vision(
                     if e.kind() == io::ErrorKind::WouldBlock
                         || e.kind() == io::ErrorKind::TimedOut =>
                 {
-                    target.set_read_timeout(Some(Duration::from_secs(2)))?;
+                    target.set_read_timeout(Some(Duration::from_millis(50)))?;
                     break false;
                 }
                 Err(e) => return Err(e.into()),

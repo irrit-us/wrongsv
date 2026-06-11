@@ -502,14 +502,14 @@ pub(crate) fn relay_anytls_raw(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = [0u8; 32768];
     target.set_nodelay(true)?;
-    target.set_read_timeout(Some(Duration::from_secs(2)))?;
+    target.set_read_timeout(Some(Duration::from_millis(50)))?;
 
     if !initial_data.is_empty() {
         target.write_all(&initial_data)?;
     }
 
     let (conn, stream) = tls.get_mut();
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_read_timeout(Some(Duration::from_millis(50)))?;
 
     loop {
         // Drain target first — it's the fast, low-latency side.
@@ -536,7 +536,7 @@ pub(crate) fn relay_anytls_raw(
                 if e.kind() == std::io::ErrorKind::WouldBlock
                     || e.kind() == std::io::ErrorKind::TimedOut =>
             {
-                target.set_read_timeout(Some(Duration::from_secs(2)))?;
+                target.set_read_timeout(Some(Duration::from_millis(50)))?;
             }
             Err(e) => return Err(e.into()),
         }

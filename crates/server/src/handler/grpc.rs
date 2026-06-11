@@ -58,7 +58,7 @@ pub(crate) fn parse_grpc_config(gc: &GrpcServerConfig) -> Result<GrpcConfig, Str
 pub(crate) struct GrpcStream {
     incoming_rx: Receiver<Vec<u8>>,
     pending: Vec<u8>,
-    outgoing_tx: tokio_mpsc::UnboundedSender<Vec<u8>>,
+    outgoing_tx: tokio_mpsc::Sender<Vec<u8>>,
     eof: bool,
     _thread: std::thread::JoinHandle<()>,
 }
@@ -71,7 +71,7 @@ impl GrpcStream {
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let service_path = format!("/{}/Tun", config.service_name);
         let (incoming_tx, incoming_rx) = mpsc::sync_channel::<Vec<u8>>(32);
-        let (outgoing_tx, outgoing_rx) = tokio_mpsc::unbounded_channel::<Vec<u8>>();
+        let (outgoing_tx, outgoing_rx) = tokio_mpsc::channel::<Vec<u8>>(256);
 
         let svc = service_path;
         let thread = std::thread::spawn(move || {
@@ -140,7 +140,7 @@ impl Write for GrpcStream {
             ));
         }
         self.outgoing_tx
-            .send(buf.to_vec())
+            .blocking_send(buf.to_vec())
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "gRPC stream closed"))?;
         Ok(buf.len())
     }
@@ -157,13 +157,15 @@ async fn drive_grpc_connection(
     peer: std::net::SocketAddr,
     service_path: &str,
     incoming_tx: mpsc::SyncSender<Vec<u8>>,
-    outgoing_rx: tokio_mpsc::UnboundedReceiver<Vec<u8>>,
+    outgoing_rx: tokio_mpsc::Receiver<Vec<u8>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tcp.set_nonblocking(true)?;
     let tcp = tokio::net::TcpStream::from_std(tcp)?;
     tcp.set_nodelay(true)?;
 
-    let mut conn = h2::server::handshake(tcp)
+    let mut conn = h2::server::Builder::new()
+        .initial_window_size(1_048_576) // 1 MiB — avoids flow-control stalls on localhost
+        .handshake(tcp)
         .await
         .map_err(|e| format!("h2 handshake: {e}"))?;
     trace!("{peer} HTTP/2 handshake done");
@@ -294,7 +296,7 @@ async fn drive_incoming(
 
 async fn drive_outgoing(
     send: &mut h2::SendStream<bytes::Bytes>,
-    mut outgoing_rx: tokio_mpsc::UnboundedReceiver<Vec<u8>>,
+    mut outgoing_rx: tokio_mpsc::Receiver<Vec<u8>>,
     peer: std::net::SocketAddr,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     loop {
@@ -413,7 +415,7 @@ fn relay_grpc_raw(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = [0u8; 32768];
     target.set_nodelay(true)?;
-    target.set_read_timeout(Some(Duration::from_secs(2)))?;
+    target.set_read_timeout(Some(Duration::from_millis(50)))?;
 
     if !initial_data.is_empty() {
         target.write_all(&initial_data)?;
@@ -432,7 +434,7 @@ fn relay_grpc_raw(
             Err(ref e)
                 if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
             {
-                target.set_read_timeout(Some(Duration::from_secs(2)))?;
+                target.set_read_timeout(Some(Duration::from_millis(50)))?;
             }
             Err(e) => return Err(e.into()),
         }

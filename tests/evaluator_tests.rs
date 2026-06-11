@@ -36,6 +36,7 @@ fn evaluator_end_to_end_small_subset() {
             Some("raw,tls"),
             duration_secs,
             "127.0.0.1",
+            None,
         ))
         .map_err(|e| e.to_string())
     });
@@ -124,6 +125,7 @@ fn evaluator_rejects_bad_token() {
             Some("raw"),
             1,
             "127.0.0.1",
+            None,
         ))
         .map_err(|e| e.to_string())
     });

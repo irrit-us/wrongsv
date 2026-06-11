@@ -75,7 +75,9 @@ async fn xhttp_handshake(
             .connect(server_name, tcp)
             .await
             .map_err(|e| io::Error::other(format!("TLS: {e}")))?;
-        let (client, conn) = h2::client::handshake(tls_stream)
+        let (client, conn) = h2::client::Builder::new()
+            .initial_window_size(1_048_576)
+            .handshake(tls_stream)
             .await
             .map_err(|e| io::Error::other(format!("h2: {e}")))?;
         tokio::spawn(async move {
@@ -83,7 +85,9 @@ async fn xhttp_handshake(
         });
         client
     } else {
-        let (client, conn) = h2::client::handshake(tcp)
+        let (client, conn) = h2::client::Builder::new()
+            .initial_window_size(1_048_576)
+            .handshake(tcp)
             .await
             .map_err(|e| io::Error::other(format!("h2: {e}")))?;
         tokio::spawn(async move {

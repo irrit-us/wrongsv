@@ -174,7 +174,7 @@ pub(crate) fn relay_reality(
 ) -> Result<(), Box<dyn std::error::Error>> {
     trace!("relay_reality: start, initial_data={}B", initial_data.len());
     let mut buf = [0u8; 32768];
-    target.set_read_timeout(Some(Duration::from_secs(1)))?;
+    target.set_read_timeout(Some(Duration::from_millis(10)))?;
 
     if !initial_data.is_empty() {
         target.write_all(&initial_data)?;
@@ -187,7 +187,7 @@ pub(crate) fn relay_reality(
     let (conn, stream) = tls.get_mut();
     stream
         .get_mut()
-        .set_read_timeout(Some(Duration::from_secs(1)))?;
+        .set_read_timeout(Some(Duration::from_millis(10)))?;
 
     let mut c2t_bytes: u64 = 0;
     let mut t2c_bytes: u64 = 0;
@@ -304,7 +304,7 @@ pub(crate) fn relay_reality_vision(
         stream.get_mut().set_nonblocking(false)?;
         stream
             .get_mut()
-            .set_read_timeout(Some(Duration::from_secs(1)))?;
+            .set_read_timeout(Some(Duration::from_millis(10)))?;
     }
 
     let tls = Arc::new(Mutex::new(tls));

@@ -71,6 +71,10 @@ enum Commands {
         /// Bind address for spawned proxy servers (use 0.0.0.0 for remote clients)
         #[arg(long, default_value = "127.0.0.1")]
         proxy_bind: String,
+        /// Fixed proxy port (use with SSH -L forwarding for genuine remote eval).
+        /// When set, the proxy uses this port instead of a random ephemeral one.
+        #[arg(long)]
+        fixed_proxy_port: Option<u16>,
     },
     /// Run a multi-protocol evaluation against an evaluator server
     EvalClient {
@@ -147,6 +151,7 @@ fn main() {
                 protocols,
                 duration,
                 proxy_bind,
+                fixed_proxy_port,
             } => {
                 // Auto-generate token if not provided
                 let token = token.unwrap_or_else(|| {
@@ -177,6 +182,7 @@ fn main() {
                     protocols.as_deref(),
                     duration,
                     &proxy_bind,
+                    fixed_proxy_port,
                 )) {
                     error!("evaluator server error: {e}");
                     process::exit(1);
