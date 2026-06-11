@@ -8,9 +8,26 @@ wrongsv-protocol.workspace = true
 wrongsv-vless-encoding.workspace = true
 wrongsv-uuid.workspace = true
 wrongsv-net-types.workspace = true
+wrongsv-websocket.workspace = true
+wrongsv-grpc.workspace = true
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "sync", "macros", "time", "io-util"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing.workspace = true
 rand.workspace = true
 bytes.workspace = true
+rustls = { version = "0.23", default-features = false, features = ["tls12", "std", "aws_lc_rs"] }
+webpki-roots = "1.0"
+h2 = "0.4"
+http = "1"
+quinn = "0.11"
+kcp = "0.6"
+sha2.workspace = true
+base64.workspace = true
+aes-gcm.workspace = true
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+hkdf = "0.12"
+hmac = "0.12"
+hex = "0.4"
+futures = "0.3"
+tokio-rustls = "0.26"

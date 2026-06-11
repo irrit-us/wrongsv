@@ -40,6 +40,15 @@ pub enum ServerMessage {
         bw_port: u16,
         pl_port: u16,
         uuid: String,
+        /// REALITY: base64-encoded X25519 server public key (url-safe, no pad)
+        #[serde(default)]
+        reality_pubkey_b64: Option<String>,
+        /// REALITY: hex-encoded short ID (8 chars = 4 bytes)
+        #[serde(default)]
+        reality_short_id: Option<String>,
+        /// REALITY: hex-encoded raw Ed25519 pubkey for cert verification
+        #[serde(default)]
+        reality_raw_pubkey: Option<String>,
     },
     /// Start the test.
     #[serde(rename = "start")]

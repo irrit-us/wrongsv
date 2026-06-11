@@ -34,22 +34,46 @@ pub async fn spawn_echo_target() -> Result<SocketAddr, std::io::Error> {
 }
 
 /// Spawn a bandwidth (sink/source) server. Returns the bound address.
-/// Sends a continuous stream of 64 KiB payload chunks for the client to
-/// measure download throughput.
+/// Waits for a "BW_DOWNLOAD" trigger from the client, then sends
+/// continuous 64 KiB payload chunks for download measurements.
+/// Upload data before the trigger is discarded.
 pub async fn spawn_bandwidth_target() -> Result<SocketAddr, std::io::Error> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
     tokio::spawn(async move {
-        while let Ok((mut stream, peer)) = listener.accept().await {
+        while let Ok((stream, peer)) = listener.accept().await {
             info!("bandwidth target: connection from {peer}");
             tokio::spawn(async move {
-                let payload = vec![0xAAu8; 65536];
-                // Simple approach: just keep writing. The read side is
-                // not critical for the bandwidth target — the client
-                // measures download throughput by reading.
+                let (mut read_half, mut write_half) = stream.into_split();
+                // Scan incoming stream for "BW_DOWNLOAD" trigger — discard
+                // upload data (0xBB…) until we find the exact 11-byte marker.
+                // Without this, the target would start sending download data
+                // while the client is still uploading, causing a TCP deadlock.
+                let mut buf = vec![0u8; 65536];
+                let mut window: Vec<u8> = Vec::new();
                 loop {
-                    use tokio::io::AsyncWriteExt;
-                    if stream.write_all(&payload).await.is_err() {
+                    match read_half.read(&mut buf).await {
+                        Ok(0) => return,
+                        Ok(n) => {
+                            window.extend_from_slice(&buf[..n]);
+                            if window.windows(11).any(|w| w == b"BW_DOWNLOAD") {
+                                break;
+                            }
+                            // Keep only the last 10 bytes — a partial
+                            // trigger might straddle a read boundary.
+                            let keep = window.len().min(10);
+                            if window.len() > keep {
+                                let drain_end = window.len() - keep;
+                                window.drain(..drain_end);
+                            }
+                        }
+                        Err(_) => return,
+                    }
+                }
+                // Continuously send data for download measurement
+                let payload = vec![0xAAu8; 65536];
+                loop {
+                    if write_half.write_all(&payload).await.is_err() {
                         break;
                     }
                 }

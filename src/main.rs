@@ -59,9 +59,9 @@ enum Commands {
         /// Listen address for the control channel
         #[arg(long, default_value = "127.0.0.1:19999")]
         listen: String,
-        /// Shared authentication token
+        /// Shared authentication token (auto-generated if not provided)
         #[arg(long)]
-        token: String,
+        token: Option<String>,
         /// Comma-separated protocol list (default: all 14 combinations)
         #[arg(long)]
         protocols: Option<String>,
@@ -148,6 +148,28 @@ fn main() {
                 duration,
                 proxy_bind,
             } => {
+                // Auto-generate token if not provided
+                let token = token.unwrap_or_else(|| {
+                    let mut bytes = [0u8; 16];
+                    std::fs::File::open("/dev/urandom")
+                        .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut bytes))
+                        .unwrap_or_else(|_| {
+                            // Fallback: time-based
+                            let t = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default();
+                            bytes[0..8].copy_from_slice(&t.as_nanos().to_be_bytes());
+                            bytes[8..16].copy_from_slice(&(t.as_nanos() >> 32).to_be_bytes());
+                        });
+                    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+                    eprintln!("\x1b[1;33m╔══════════════════════════════════════╗");
+                    eprintln!("\x1b[1;33m║  Auto-generated auth token:          ║");
+                    eprintln!("\x1b[1;33m║  {hex}  ║");
+                    eprintln!("\x1b[1;33m║  Pass --token with eval-client to    ║");
+                    eprintln!("\x1b[1;33m║  use a different token.              ║");
+                    eprintln!("\x1b[1;33m╚══════════════════════════════════════╝\x1b[0m");
+                    hex
+                });
                 let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
                 if let Err(e) = rt.block_on(wrongsv_evaluator_server::run_orchestrator(
                     &listen,

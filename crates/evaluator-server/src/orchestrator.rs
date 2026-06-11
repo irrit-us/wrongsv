@@ -31,12 +31,20 @@ pub const DEFAULT_PROTOCOLS: &[&str] = &[
 ];
 
 /// Build a wrongsv server config TOML for the given protocol.
+/// Extra parameters needed by some transports on the client side.
+#[derive(Default)]
+pub struct TransportParams {
+    pub reality_pubkey_b64: Option<String>,
+    pub reality_short_id: Option<String>,
+    pub reality_raw_pubkey: Option<String>,
+}
+
 fn build_proxy_config(
     protocol: &str,
     proxy_port: u16,
     _target_addr: SocketAddr,
     proxy_bind: &str,
-) -> (String, String) {
+) -> (String, String, TransportParams) {
     let uuid = format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
         rand::random::<u8>(),
@@ -58,9 +66,10 @@ fn build_proxy_config(
     );
     let uid = &uuid;
 
-    let config_toml = match protocol {
+    match protocol {
         "reality" => {
             let sk = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
+            let pk = x25519_dalek::PublicKey::from(&sk);
             let sk_hex: String = sk.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
             let short_id = format!(
                 "{:02x}{:02x}{:02x}{:02x}",
@@ -69,7 +78,17 @@ fn build_proxy_config(
                 rand::random::<u8>(),
                 rand::random::<u8>(),
             );
-            format!(
+            // Server generates its own cert material; client skips cert
+            // verification for evaluator (all-zeros raw_pubkey signals skip).
+            let raw_pubkey_hex = "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+            use base64::Engine;
+            let pubkey_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(pk.as_bytes());
+            let params = TransportParams {
+                reality_pubkey_b64: Some(pubkey_b64),
+                reality_short_id: Some(short_id.clone()),
+                reality_raw_pubkey: Some(raw_pubkey_hex),
+            };
+            let config = format!(
                 r#"
 listen = "{proxy_bind}:{proxy_port}"
 
@@ -81,10 +100,12 @@ flow = "xtls-rprx-vision"
 private_key = "{sk_hex}"
 short_ids = ["{short_id}"]
 "#
-            )
+            );
+            (config, uid.to_string(), params)
         }
-        "anytls" => format!(
-            r#"
+        "anytls" => {
+            let config = format!(
+                r#"
 listen = "{proxy_bind}:{proxy_port}"
 
 [[users]]
@@ -93,9 +114,12 @@ id = "{uid}"
 [anytls]
 password = "eval-anytls-pass"
 "#
-        ),
-        "tls" => format!(
-            r#"
+            );
+            (config, uid.to_string(), TransportParams::default())
+        }
+        "tls" => {
+            let config = format!(
+                r#"
 listen = "{proxy_bind}:{proxy_port}"
 
 [[users]]
@@ -103,17 +127,23 @@ id = "{uid}"
 
 [tls]
 "#
-        ),
-        "raw" => format!(
-            r#"
+            );
+            (config, uid.to_string(), TransportParams::default())
+        }
+        "raw" => {
+            let config = format!(
+                r#"
 listen = "{proxy_bind}:{proxy_port}"
 
 [[users]]
 id = "{uid}"
 "#
-        ),
-        "ws" => format!(
-            r#"
+            );
+            (config, uid.to_string(), TransportParams::default())
+        }
+        "ws" => {
+            let config = format!(
+                r#"
 listen = "{proxy_bind}:{proxy_port}"
 
 [[users]]
@@ -122,9 +152,12 @@ id = "{uid}"
 [websocket]
 path = "/eval"
 "#
-        ),
-        "ws+tls" => format!(
-            r#"
+            );
+            (config, uid.to_string(), TransportParams::default())
+        }
+        "ws+tls" => {
+            let config = format!(
+                r#"
 listen = "{proxy_bind}:{proxy_port}"
 
 [[users]]
@@ -135,9 +168,12 @@ path = "/eval"
 
 [websocket.tls]
 "#
-        ),
-        "httpupgrade" => format!(
-            r#"
+            );
+            (config, uid.to_string(), TransportParams::default())
+        }
+        "httpupgrade" => {
+            let config = format!(
+                r#"
 listen = "{proxy_bind}:{proxy_port}"
 
 [[users]]
@@ -146,9 +182,12 @@ id = "{uid}"
 [httpupgrade]
 path = "/eval"
 "#
-        ),
-        "httpupgrade+tls" => format!(
-            r#"
+            );
+            (config, uid.to_string(), TransportParams::default())
+        }
+        "httpupgrade+tls" => {
+            let config = format!(
+                r#"
 listen = "{proxy_bind}:{proxy_port}"
 
 [[users]]
@@ -159,9 +198,12 @@ path = "/eval"
 
 [httpupgrade.tls]
 "#
-        ),
-        "grpc" => format!(
-            r#"
+            );
+            (config, uid.to_string(), TransportParams::default())
+        }
+        "grpc" => {
+            let config = format!(
+                r#"
 listen = "{proxy_bind}:{proxy_port}"
 
 [[users]]
@@ -170,9 +212,12 @@ id = "{uid}"
 [grpc]
 service_name = "EvalService"
 "#
-        ),
-        "grpc+tls" => format!(
-            r#"
+            );
+            (config, uid.to_string(), TransportParams::default())
+        }
+        "grpc+tls" => {
+            let config = format!(
+                r#"
 listen = "{proxy_bind}:{proxy_port}"
 
 [[users]]
@@ -183,9 +228,12 @@ service_name = "EvalService"
 
 [grpc.tls]
 "#
-        ),
-        "xhttp" => format!(
-            r#"
+            );
+            (config, uid.to_string(), TransportParams::default())
+        }
+        "xhttp" => {
+            let config = format!(
+                r#"
 listen = "{proxy_bind}:{proxy_port}"
 
 [[users]]
@@ -194,9 +242,12 @@ id = "{uid}"
 [xhttp]
 path = "/eval"
 "#
-        ),
-        "xhttp+tls" => format!(
-            r#"
+            );
+            (config, uid.to_string(), TransportParams::default())
+        }
+        "xhttp+tls" => {
+            let config = format!(
+                r#"
 listen = "{proxy_bind}:{proxy_port}"
 
 [[users]]
@@ -207,9 +258,12 @@ path = "/eval"
 
 [xhttp.tls]
 "#
-        ),
-        "quic" => format!(
-            r#"
+            );
+            (config, uid.to_string(), TransportParams::default())
+        }
+        "quic" => {
+            let config = format!(
+                r#"
 listen = "{proxy_bind}:{proxy_port}"
 
 [[users]]
@@ -219,9 +273,12 @@ id = "{uid}"
 
 [quic.tls]
 "#
-        ),
-        "kcp" => format!(
-            r#"
+            );
+            (config, uid.to_string(), TransportParams::default())
+        }
+        "kcp" => {
+            let config = format!(
+                r#"
 listen = "{proxy_bind}:{proxy_port}"
 
 [[users]]
@@ -232,11 +289,11 @@ seed = "eval-kcp-seed"
 tti = 20
 mtu = 1350
 "#
-        ),
+            );
+            (config, uid.to_string(), TransportParams::default())
+        }
         _ => panic!("unknown protocol: {protocol}"),
-    };
-
-    (config_toml, uid.to_string())
+    }
 }
 
 /// Resolve the protocol list from user input or default to all.
@@ -321,7 +378,7 @@ async fn serve_client(
             l.local_addr().unwrap().port()
         };
 
-        let (config_toml, uuid) = build_proxy_config(protocol, proxy_port, echo_addr, proxy_bind);
+        let (config_toml, uuid, params) = build_proxy_config(protocol, proxy_port, echo_addr, proxy_bind);
         let server_config: wrongsv_server::Config =
             toml::from_str(&config_toml).expect("eval config should parse");
         let server = wrongsv_server::InboundServer::new(server_config)
@@ -339,6 +396,9 @@ async fn serve_client(
             bw_port: bw_addr.port(),
             pl_port: pl_addr.port(),
             uuid: uuid.clone(),
+            reality_pubkey_b64: params.reality_pubkey_b64,
+            reality_short_id: params.reality_short_id,
+            reality_raw_pubkey: params.reality_raw_pubkey,
         };
         if send_msg(&mut writer, &test_msg).await.is_err() {
             break;
@@ -419,7 +479,7 @@ pub async fn run_orchestrator(
     requested_protocols: Option<&str>,
     duration_secs: u64,
     proxy_bind: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let protocols = resolve_protocols(requested_protocols);
     info!(
         "evaluator orchestrator listening on {listen_addr}, token={token}, protocols={:?}, duration={duration_secs}s",

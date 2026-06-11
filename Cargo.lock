@@ -1779,6 +1779,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ef86cd5876211988985292b91c96a8f2d298df24e75989a43a3c73f2d4d8168b"
 dependencies = [
  "aws-lc-rs",
+ "log",
  "once_cell",
  "ring",
  "rustls-pki-types",
@@ -2200,6 +2201,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "tokio-rustls"
+version = "0.26.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
+dependencies = [
+ "rustls",
+ "tokio",
 ]
 
 [[package]]
@@ -2863,16 +2874,33 @@ dependencies = [
 name = "wrongsv-evaluator-client"
 version = "0.2.5"
 dependencies = [
+ "aes-gcm",
+ "base64",
  "bytes",
+ "futures",
+ "h2",
+ "hex",
+ "hkdf",
+ "hmac",
+ "http",
+ "kcp",
+ "quinn",
  "rand 0.8.6",
+ "rustls",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
+ "tokio-rustls",
  "tracing",
+ "webpki-roots",
+ "wrongsv-grpc",
  "wrongsv-net-types",
  "wrongsv-protocol",
  "wrongsv-uuid",
  "wrongsv-vless-encoding",
+ "wrongsv-websocket",
+ "x25519-dalek",
 ]
 
 [[package]]

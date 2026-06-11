@@ -12,3 +12,7 @@ benches/traffic/tools/bin/
 benches/traffic/results/
 !benches/traffic/results/.gitkeep
 wrongsv.gz
+
+# Evaluator test output
+eval-result.json
+eval-result.csv

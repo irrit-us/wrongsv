@@ -6,6 +6,7 @@
 
 pub mod export;
 pub mod runner;
+pub mod transport;
 
 pub use export::{BandwidthStats, LatencyStats, ProtocolResult, export_csv, export_json};
 pub use runner::run_evaluation;
