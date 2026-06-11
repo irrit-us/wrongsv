@@ -144,7 +144,7 @@ fn run_latency_test(stream: &mut dyn transport::ReadWrite, _duration: Duration) 
         let _ = read_exact_retry(stream, &mut buf);
     }
 
-    for _ in 0..PING_COUNT {
+    for _i in 0..PING_COUNT {
         let payload = [0x00u8; PING_SIZE];
         let start = Instant::now();
         if stream.write_all(&payload).is_ok() {
@@ -204,7 +204,9 @@ fn run_upload_phase(stream: &mut dyn transport::ReadWrite, duration: Duration) -
     let mut total_sent: u64 = 0;
     while start.elapsed() < duration {
         match stream.write(&payload) {
-            Ok(n) => total_sent += n as u64,
+            Ok(n) => {
+                total_sent += n as u64;
+            }
             Err(_) => break,
         }
     }
@@ -223,7 +225,9 @@ fn run_download_phase(stream: &mut dyn transport::ReadWrite, duration: Duration)
     let mut buf = [0u8; 65536];
     while start.elapsed() < duration {
         match stream.read(&mut buf) {
-            Ok(n) if n > 0 => total_recv += n as u64,
+            Ok(n) if n > 0 => {
+                total_recv += n as u64;
+            }
             Ok(0) => {
                 std::thread::sleep(Duration::from_millis(10));
                 continue;
@@ -250,9 +254,9 @@ fn run_bandwidth_test(
 ) -> BandwidthStats {
     // --- upload ---
     let upload_start = Instant::now();
-    let _total_sent = run_upload_phase(upload_stream, duration);
+    let total_sent = run_upload_phase(upload_stream, duration);
     let upload_elapsed = upload_start.elapsed().as_secs_f64().max(0.001);
-    let upload_mbps = (_total_sent as f64 * 8.0) / (upload_elapsed * 1_000_000.0);
+    let upload_mbps = (total_sent as f64 * 8.0) / (upload_elapsed * 1_000_000.0);
 
     // --- download on fresh connection ---
     // Send trigger immediately (no upload backlog on this connection).
@@ -260,8 +264,9 @@ fn run_bandwidth_test(
     download_stream.flush().ok();
     std::thread::sleep(Duration::from_millis(200));
 
+    let dl_start = Instant::now();
     let total_recv = run_download_phase(download_stream, duration);
-    let download_elapsed = duration.as_secs_f64().max(0.001);
+    let download_elapsed = dl_start.elapsed().as_secs_f64().max(0.001);
     let download_mbps = (total_recv as f64 * 8.0) / (download_elapsed * 1_000_000.0);
 
     BandwidthStats {
@@ -430,7 +435,9 @@ pub fn run_evaluation(
                         reality_raw_pubkey.as_deref(),
                     )
                 };
-                let bw = match (make_bw_conn(), make_bw_conn()) {
+                let bw_up = make_bw_conn();
+                let bw_dn = make_bw_conn();
+                let bw = match (bw_up, bw_dn) {
                     (Ok(mut up), Ok(mut dn)) => {
                         let result = run_bandwidth_test(&mut *up, &mut *dn, duration);
                         drop(up);

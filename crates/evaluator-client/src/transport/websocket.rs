@@ -103,9 +103,17 @@ impl Read for WsConnection {
                     return Ok(0);
                 }
                 0x09 => {
-                    // Ping — respond with masked pong
+                    // Ping — respond with masked pong per RFC 6455 §5.5.3.
+                    // The pong MUST echo the ping's application data.
                     let mask: [u8; 4] = rand::random();
-                    let pong: Vec<u8> = vec![0x8A, 0x80, mask[0], mask[1], mask[2], mask[3]];
+                    let plen = payload.len();
+                    let mut pong = Vec::with_capacity(2 + plen + 4);
+                    pong.push(0x8A); // FIN + Pong
+                    pong.push(0x80 | (plen as u8)); // masked + len
+                    pong.extend_from_slice(&mask);
+                    for (i, b) in payload.iter().enumerate() {
+                        pong.push(b ^ mask[i % 4]);
+                    }
                     let _ = self.inner.write_all(&pong);
                 }
                 _ => {} // Skip other frames
@@ -226,5 +234,140 @@ pub fn connect_ws(
         }
 
         Ok(Box::new(WsConnection::new(Box::new(sock))))
+    }
+}
+
+// ── tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// Mock stream that feeds a server→client ping frame and captures writes.
+    /// Uses Arc<Mutex<Vec<u8>>> for the write buffer so the test can inspect
+    /// the pong after WsConnection takes ownership of the mock.
+    struct PingMock {
+        frame: Vec<u8>,
+        pos: usize,
+        written: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl PingMock {
+        fn new(payload: &[u8]) -> (Self, Arc<Mutex<Vec<u8>>>) {
+            // Build unmasked ping frame (server→client direction)
+            let mut frame = Vec::new();
+            frame.push(0x89); // FIN | Ping
+            frame.push(payload.len() as u8); // unmasked
+            frame.extend_from_slice(payload);
+            let written = Arc::new(Mutex::new(Vec::new()));
+            let mock = PingMock {
+                frame,
+                pos: 0,
+                written: Arc::clone(&written),
+            };
+            (mock, written)
+        }
+    }
+
+    impl Read for PingMock {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.pos >= self.frame.len() {
+                return Err(io::Error::new(io::ErrorKind::WouldBlock, "no data"));
+            }
+            let n = (self.frame.len() - self.pos).min(buf.len());
+            buf[..n].copy_from_slice(&self.frame[self.pos..self.pos + n]);
+            self.pos += n;
+            Ok(n)
+        }
+    }
+
+    impl Write for PingMock {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.written.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn pong_echoes_ping_payload_per_rfc6455() {
+        let ping_payload = b"hello";
+        let (mock, written) = PingMock::new(ping_payload);
+        let mut conn = WsConnection::new(Box::new(mock));
+
+        // Read will process the ping frame and write a pong response
+        let mut buf = [0u8; 64];
+        let result = conn.read(&mut buf);
+        // Should get WouldBlock (ping consumed, no app data available)
+        assert!(
+            matches!(&result, Err(e) if e.kind() == io::ErrorKind::WouldBlock),
+            "expected WouldBlock after ping, got {result:?}"
+        );
+
+        let pong = written.lock().unwrap();
+        assert!(!pong.is_empty(), "pong frame was written");
+
+        // Pong frame structure: [0x8A, 0x85, mask[4], masked_payload[...]]
+        assert_eq!(pong[0], 0x8A, "pong opcode byte");
+        let mask_flag = pong[1];
+        assert!(mask_flag & 0x80 != 0, "pong must be masked (client→server)");
+        let plen = (mask_flag & 0x7F) as usize;
+        assert_eq!(
+            plen,
+            ping_payload.len(),
+            "pong payload length must equal ping payload length"
+        );
+        assert_eq!(pong.len(), 2 + 4 + plen, "pong frame total length");
+
+        // XOR-unmask the payload
+        let mask = &pong[2..6];
+        let unmasked: Vec<u8> = pong[6..]
+            .iter()
+            .enumerate()
+            .map(|(i, b)| b ^ mask[i % 4])
+            .collect();
+        assert_eq!(
+            &unmasked, ping_payload,
+            "RFC 6455 §5.5.3: pong MUST echo ping's application data"
+        );
+    }
+
+    #[test]
+    fn pong_handles_empty_ping() {
+        let (mock, written) = PingMock::new(b"");
+        let mut conn = WsConnection::new(Box::new(mock));
+        let mut buf = [0u8; 64];
+        let _ = conn.read(&mut buf);
+
+        let pong = written.lock().unwrap();
+        assert!(!pong.is_empty(), "empty ping still gets a pong response");
+        assert_eq!(pong[0], 0x8A, "pong opcode");
+        let plen = (pong[1] & 0x7F) as usize;
+        assert_eq!(plen, 0, "empty ping → empty pong payload");
+        // Just mask bytes (4), no payload
+        assert_eq!(pong.len(), 2 + 4);
+    }
+
+    #[test]
+    fn pong_handles_large_ping_payload() {
+        let ping_payload = vec![0xAAu8; 125]; // max 7-bit length
+        let (mock, written) = PingMock::new(&ping_payload);
+        let mut conn = WsConnection::new(Box::new(mock));
+        let mut buf = [0u8; 64];
+        let _ = conn.read(&mut buf);
+
+        let pong = written.lock().unwrap();
+        let plen = (pong[1] & 0x7F) as usize;
+        assert_eq!(plen, 125, "large ping payload round-trips");
+        assert_eq!(pong.len(), 2 + 4 + 125);
+
+        // Verify all bytes round-trip correctly
+        let mask = &pong[2..6];
+        for (i, b) in pong[6..].iter().enumerate() {
+            assert_eq!(b ^ mask[i % 4], 0xAA, "byte {i} round-trips");
+        }
     }
 }

@@ -154,8 +154,8 @@ impl TlsConnection {
                 Ok(0) => break,
                 Ok(_) => continue,
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    // The socket write timeout (50 ms) already provides
-                    // back-pressure — no need for an extra sleep here.
+                    // The socket write timeout (2 s) provides back-pressure —
+                    // no need for an extra sleep here.
                     continue;
                 }
                 Err(e) => return Err(e),

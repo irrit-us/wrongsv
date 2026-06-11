@@ -114,7 +114,22 @@ pub fn connect_kcp(
 ) -> io::Result<BoxedIo> {
     let seed = "eval-kcp-seed";
     let header = super::raw::build_vless_header(uuid, target_addr, target_port, flow);
-    let server_addr: SocketAddr = format!("{proxy_host}:{proxy_port}").parse().unwrap();
+    // Resolve hostname via DNS — SocketAddr::parse only handles IP literals.
+    let server_addr: SocketAddr =
+        std::net::ToSocketAddrs::to_socket_addrs(&(proxy_host, proxy_port))
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("resolve KCP target {proxy_host}:{proxy_port}: {e}"),
+                )
+            })?
+            .next()
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::AddrNotAvailable,
+                    format!("no addresses resolved for {proxy_host}:{proxy_port}"),
+                )
+            })?;
 
     let (read_tx, read_rx) = mpsc::channel::<Vec<u8>>();
     let (write_tx, write_rx) = mpsc::sync_channel::<Vec<u8>>(32);
@@ -129,7 +144,8 @@ pub fn connect_kcp(
                 return;
             }
         };
-        let _ = udp.set_read_timeout(Some(Duration::from_millis(100)));
+        // Short timeout so the burst-drain loop doesn't stall.
+        let _ = udp.set_read_timeout(Some(Duration::from_millis(10)));
 
         // Create KCP session with conv=rand
         let conv: u16 = rand::random();
@@ -145,10 +161,6 @@ pub fn connect_kcp(
 
         // Send VLESS header through KCP
         let _ = kcp.send(&header);
-        // Drain KCP output to send the data
-        // KCP output is handled via the Write impl on KcpOutput which sends UDP directly
-        // But we need to call kcp.output() to flush... Actually, kcp.send() calls output.write().
-        // Let's verify: Kcp::send calls self.output.write() internally, so data is sent immediately.
 
         // Wait for VLESS response
         let mut tick: u32 = 0;
@@ -156,9 +168,9 @@ pub fn connect_kcp(
         let mut resp_offset = 0;
         let mut got_response = false;
 
-        // Poll for response with timeout
-        for _ in 0..50 {
-            tick = tick.wrapping_add(1);
+        // Poll for response with timeout (tick = ms elapsed for correct KCP timing)
+        for _i in 0..50 {
+            tick = tick.wrapping_add(10); // 10ms per iteration
             let _ = kcp.update(tick);
 
             // Try to receive UDP data
@@ -175,7 +187,11 @@ pub fn connect_kcp(
                         }
                     }
                 }
-                _ => {}
+                Ok((_n, _src)) => {}
+                Err(ref _e)
+                    if _e.kind() == io::ErrorKind::WouldBlock
+                        || _e.kind() == io::ErrorKind::TimedOut => {}
+                Err(_e) => {}
             }
 
             // Try to read from KCP
@@ -199,8 +215,9 @@ pub fn connect_kcp(
                             }
                         }
                     }
+                    Ok(0) => {}
                     Ok(_) => {}
-                    Err(_) => {}
+                    Err(_e) => {}
                 }
             }
 
@@ -221,31 +238,54 @@ pub fn connect_kcp(
 
         let _ = hs_tx.send(Ok(()));
 
-        // Main I/O loop
+        // Main I/O loop (tick = ms elapsed for correct KCP timing)
+        //
+        // IMPORTANT: kcp.send() always succeeds — it just pushes to snd_queue.
+        // The send window is only enforced in flush() (called by update()).
+        // We must limit queue depth or snd_queue grows unbounded, OOMs/hangs.
+        // snd_buf ≤ snd_wnd (128). Allow snd_queue up to 32 extra segments
+        // so it can drain fully and let wait_snd fall below threshold.
+        let max_queue = kcp.snd_wnd() as usize + 32;
         loop {
-            tick = tick.wrapping_add(1);
+            // 1. Feed outgoing data into KCP (queues in snd_queue)
+            while kcp.wait_snd() < max_queue {
+                match write_rx.try_recv() {
+                    Ok(data) => {
+                        let _ = kcp.send(&data);
+                    }
+                    Err(_) => break,
+                }
+            }
+
+            // 2. Receive incoming UDP and feed to KCP
+            // Read ALL available packets in a burst — reading one per cycle
+            // causes UDP buffer overflow when the server sends data at high rate.
+            let mut udp_buf = [0u8; 2048];
+            loop {
+                match udp.recv_from(&mut udp_buf) {
+                    Ok((n, src)) if src == server_addr && n >= 3 => {
+                        let cmd = udp_buf[2];
+                        let data = &udp_buf[3..n];
+                        if cmd == 1 {
+                            let _ = kcp.input(data);
+                        }
+                    }
+                    Ok(_) => {} // wrong src, ignore
+                    Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(_) => break,
+                }
+            }
+
+            // 3. KCP update (flushes snd_queue → output, processes ACKs)
+            tick = tick.wrapping_add(2); // 2ms elapsed (matches sleep)
             let _ = kcp.update(tick);
 
-            // Check for outgoing data
-            while let Ok(data) = write_rx.try_recv() {
-                let _ = kcp.send(&data);
-            }
-
-            // Check for incoming UDP data
-            let mut udp_buf = [0u8; 2048];
-            match udp.recv_from(&mut udp_buf) {
-                Ok((n, src)) if src == server_addr && n >= 3 => {
-                    let cmd = udp_buf[2];
-                    let data = &udp_buf[3..n];
-                    if cmd == 1 {
-                        let _ = kcp.input(data);
-                    }
-                }
-                _ => {}
-            }
-
-            // Read from KCP and forward to read channel
-            let mut kcp_read_buf = [0u8; 4096];
+            // 4. Read delivered KCP data and forward to application
+            // Buffer must be >= server's max KCP message (bandwidth target
+            // sends 64KB; relay reads into 32KB buf → kcp.send() produces
+            // ~32KB messages). kcp.recv() returns UserBufTooSmall if the
+            // buffer is too small, and we MUST read the data to drain rcv_queue.
+            let mut kcp_read_buf = [0u8; 65536];
             match kcp.recv(&mut kcp_read_buf) {
                 Ok(n) if n > 0 => {
                     if read_tx.send(kcp_read_buf[..n].to_vec()).is_err() {
@@ -255,7 +295,7 @@ pub fn connect_kcp(
                 _ => {}
             }
 
-            thread::sleep(Duration::from_millis(5));
+            thread::sleep(Duration::from_millis(2));
         }
     });
 

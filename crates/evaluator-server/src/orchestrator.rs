@@ -287,7 +287,7 @@ id = "{uid}"
 
 [kcp]
 seed = "eval-kcp-seed"
-tti = 20
+tti = 10
 mtu = 1350
 "#
             );

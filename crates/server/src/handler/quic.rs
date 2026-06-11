@@ -136,7 +136,7 @@ async fn handle_quic_connection(
 pub(crate) struct QuicStream {
     incoming_rx: Receiver<Vec<u8>>,
     pending: Vec<u8>,
-    outgoing_tx: tokio_mpsc::UnboundedSender<Vec<u8>>,
+    outgoing_tx: tokio_mpsc::Sender<Vec<u8>>,
     eof: bool,
     _thread: std::thread::JoinHandle<()>,
 }
@@ -148,7 +148,7 @@ impl QuicStream {
         peer: SocketAddr,
     ) -> Self {
         let (incoming_tx, incoming_rx) = mpsc::sync_channel::<Vec<u8>>(64);
-        let (outgoing_tx, outgoing_rx) = tokio_mpsc::unbounded_channel::<Vec<u8>>();
+        let (outgoing_tx, outgoing_rx) = tokio_mpsc::channel::<Vec<u8>>(256);
 
         let thread = std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_multi_thread()
@@ -221,7 +221,7 @@ impl Write for QuicStream {
             ));
         }
         self.outgoing_tx
-            .send(buf.to_vec())
+            .blocking_send(buf.to_vec())
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "QUIC stream closed"))?;
         Ok(buf.len())
     }
@@ -247,7 +247,7 @@ async fn drive_quic_recv(mut recv: quinn::RecvStream, incoming_tx: mpsc::SyncSen
 
 async fn drive_quic_send(
     mut send: quinn::SendStream,
-    mut outgoing_rx: tokio_mpsc::UnboundedReceiver<Vec<u8>>,
+    mut outgoing_rx: tokio_mpsc::Receiver<Vec<u8>>,
     peer: SocketAddr,
 ) {
     loop {

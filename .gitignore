@@ -19,3 +19,6 @@ eval-result.csv
 
 # Task tracking (session-local)
 TASK_LIST.md
+
+# Claude Code session artifacts (plans, worktrees)
+.claude/

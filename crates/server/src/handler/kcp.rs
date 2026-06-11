@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream, UdpSocket};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -134,7 +134,7 @@ impl Write for ChanWriter {
 
 struct KcpSession {
     kcp: Kcp<ChanWriter>,
-    incoming_tx: mpsc::SyncSender<Vec<u8>>,
+    incoming_tx: mpsc::Sender<Vec<u8>>,
     /// Pending VLESS output — fed to kcp.send() in the update loop.
     vless_outgoing_rx: mpsc::Receiver<Vec<u8>>,
     last_update: Instant,
@@ -144,7 +144,7 @@ impl KcpSession {
     fn new(
         conv: u32,
         output: ChanWriter,
-        incoming_tx: mpsc::SyncSender<Vec<u8>>,
+        incoming_tx: mpsc::Sender<Vec<u8>>,
         vless_outgoing_rx: mpsc::Receiver<Vec<u8>>,
         mtu: usize,
     ) -> Self {
@@ -174,7 +174,7 @@ struct KcpShared {
 // ── Stream bridge (sync Read + Write over KCP) ────────────────────────
 
 pub(crate) struct KcpRelayStream {
-    incoming_rx: Receiver<Vec<u8>>,
+    incoming_rx: mpsc::Receiver<Vec<u8>>,
     pending: Vec<u8>,
     /// Send VLESS output through KCP (channel is read in update loop).
     vless_tx: mpsc::SyncSender<Vec<u8>>,
@@ -182,13 +182,94 @@ pub(crate) struct KcpRelayStream {
 }
 
 impl KcpRelayStream {
-    fn new(incoming_rx: Receiver<Vec<u8>>, vless_tx: mpsc::SyncSender<Vec<u8>>) -> Self {
+    fn new(incoming_rx: mpsc::Receiver<Vec<u8>>, vless_tx: mpsc::SyncSender<Vec<u8>>) -> Self {
         KcpRelayStream {
             incoming_rx,
             pending: Vec::new(),
             vless_tx,
             eof: false,
         }
+    }
+
+    /// Split into reader and writer for concurrent bidirectional relay.
+    fn split(self) -> (KcpRelayReader, KcpRelayWriter) {
+        (
+            KcpRelayReader {
+                incoming_rx: self.incoming_rx,
+                pending: self.pending,
+                eof: self.eof,
+            },
+            KcpRelayWriter {
+                vless_tx: self.vless_tx,
+            },
+        )
+    }
+}
+
+/// Read half of KcpRelayStream: KCP → target.
+pub(crate) struct KcpRelayReader {
+    incoming_rx: mpsc::Receiver<Vec<u8>>,
+    pending: Vec<u8>,
+    eof: bool,
+}
+
+impl Read for KcpRelayReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if !self.pending.is_empty() {
+            let n = self.pending.len().min(buf.len());
+            buf[..n].copy_from_slice(&self.pending[..n]);
+            self.pending.drain(..n);
+            return Ok(n);
+        }
+        if self.eof {
+            return Ok(0);
+        }
+        match self.incoming_rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(data) => {
+                if data.len() <= buf.len() {
+                    let n = data.len();
+                    buf[..n].copy_from_slice(&data);
+                    Ok(n)
+                } else {
+                    let n = buf.len();
+                    buf[..n].copy_from_slice(&data[..n]);
+                    self.pending.extend_from_slice(&data[n..]);
+                    Ok(n)
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                Err(io::Error::new(io::ErrorKind::WouldBlock, "no KCP data"))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                self.eof = true;
+                Ok(0)
+            }
+        }
+    }
+}
+
+/// Write half of KcpRelayStream: target → KCP.
+pub(crate) struct KcpRelayWriter {
+    vless_tx: mpsc::SyncSender<Vec<u8>>,
+}
+
+impl Write for KcpRelayWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self.vless_tx.try_send(buf.to_vec()) {
+            Ok(()) => Ok(buf.len()),
+            Err(mpsc::TrySendError::Full(_)) => Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "KCP send buffer full",
+            )),
+            Err(mpsc::TrySendError::Disconnected(_)) => Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "KCP stream closed",
+            )),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
@@ -203,7 +284,10 @@ impl Read for KcpRelayStream {
         if self.eof {
             return Ok(0);
         }
-        match self.incoming_rx.recv() {
+        // Use recv_timeout to avoid blocking forever:
+        // when download writes get WouldBlock and upload has no data yet,
+        // a short timeout lets the loop retry the download direction.
+        match self.incoming_rx.recv_timeout(Duration::from_millis(50)) {
             Ok(data) => {
                 if data.len() <= buf.len() {
                     let n = data.len();
@@ -216,7 +300,11 @@ impl Read for KcpRelayStream {
                     Ok(n)
                 }
             }
-            Err(_) => {
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "no data from KCP",
+            )),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
                 self.eof = true;
                 Ok(0)
             }
@@ -232,11 +320,19 @@ impl Write for KcpRelayStream {
                 "KCP stream closed",
             ));
         }
-        // Route VLESS output through KCP (kcp.send() called in update loop)
-        self.vless_tx
-            .send(buf.to_vec())
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "KCP stream closed"))?;
-        Ok(buf.len())
+        // Use try_send for backpressure: returns WouldBlock when channel is full,
+        // allowing the relay loop to service the upload direction.
+        match self.vless_tx.try_send(buf.to_vec()) {
+            Ok(()) => Ok(buf.len()),
+            Err(mpsc::TrySendError::Full(_)) => Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "KCP send buffer full",
+            )),
+            Err(mpsc::TrySendError::Disconnected(_)) => Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "KCP stream closed",
+            )),
+        }
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -305,11 +401,14 @@ pub(crate) async fn run_kcp_endpoint(
                             s.last_update = Instant::now();
                             let _ = s.kcp.input(kcp_data);
                         } else {
+                            // New KCP session
                             // New KCP session — create one with VLESS relay
                             let session_mtu = sh.mtu;
-                            let (incoming_tx, incoming_rx) = mpsc::sync_channel::<Vec<u8>>(64);
-                            // Channel: VLESS handler → KCP send
-                            let (vless_tx, vless_rx) = mpsc::sync_channel::<Vec<u8>>(64);
+                            // Unbounded: KCP recv window bounds the data, so this won't OOM.
+                            // Must NOT use sync_channel — a blocked update loop prevents ACKs.
+                            let (incoming_tx, incoming_rx) = mpsc::channel::<Vec<u8>>();
+                            // Channel: VLESS handler → KCP send (small capacity for backpressure)
+                            let (vless_tx, vless_rx) = mpsc::sync_channel::<Vec<u8>>(8);
                             // Channel: KCP output → UDP sender
                             let (udp_tx, mut udp_rx) = tokio_mpsc::unbounded_channel::<Vec<u8>>();
 
@@ -329,8 +428,8 @@ pub(crate) async fn run_kcp_endpoint(
                             let v = Arc::clone(&validator);
                             let ks = kyber_sk;
                             std::thread::spawn(move || {
-                                let mut stream = KcpRelayStream::new(incoming_rx, vless_tx);
-                                if let Err(e) = handle_vless_over_kcp(&mut stream, v, ks, src) {
+                                let stream = KcpRelayStream::new(incoming_rx, vless_tx);
+                                if let Err(e) = handle_vless_over_kcp(stream, v, ks, src) {
                                     warn!("{src} KCP stream error: {e}");
                                 }
                                 // Dropping stream drops vless_tx → signals update loop
@@ -342,9 +441,19 @@ pub(crate) async fn run_kcp_endpoint(
                             tokio::spawn(async move {
                                 while let Some(raw_kcp_data) = udp_rx.recv().await {
                                     let packet = mkcp_seal(&send_seed, CMD_DATA, &raw_kcp_data);
-                                    let _ = sock.send_to(&packet, src);
+                                    // Retry on WouldBlock — the socket is nonblocking
+                                    // (inherited from main socket via try_clone).
+                                    loop {
+                                        match sock.send_to(&packet, src) {
+                                            Ok(_) => break,
+                                            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                                                // Kernel UDP send buffer full; yield and retry.
+                                                tokio::time::sleep(Duration::from_millis(1)).await;
+                                            }
+                                            Err(_) => break, // other errors: drop packet
+                                        }
+                                    }
                                 }
-                                // KCP session removed
                             });
                         }
                     } else if cmd == CMD_TERMINATE {
@@ -394,27 +503,28 @@ async fn run_kcp_update_loop(
 
         for (&key, session) in &sh.sessions {
             let mut s = session.lock().unwrap();
-            let _ = s.kcp.update(tick);
-            // Check if KCP session is dead (no activity for 30 seconds)
-            if s.last_update.elapsed() > Duration::from_secs(30) {
-                to_remove.push(key);
-            }
-        }
 
-        for key in to_remove {
-            sh.sessions.remove(&key);
-        }
-
-        // Feed VLESS output through KCP.send() and deliver KCP.recv() data
-        for (&_key, session) in &sh.sessions {
-            let mut s = session.lock().unwrap();
-            // Feed pending VLESS output into KCP
+            // ── Step 1: Feed VLESS output into KCP BEFORE update ──
             let mut had_output = false;
-            while let Ok(data) = s.vless_outgoing_rx.try_recv() {
-                let _ = s.kcp.send(&data);
-                had_output = true;
+
+            // Drain vless_outgoing_rx while KCP queue has room.
+            // kcp.send() always succeeds (it just pushes to snd_queue) —
+            // we use waitsnd() for backpressure to avoid unbounded queue growth.
+            let max_queue = (s.kcp.snd_wnd() as usize) * 2;
+            while s.kcp.wait_snd() < max_queue {
+                match s.vless_outgoing_rx.try_recv() {
+                    Ok(data) => {
+                        let _ = s.kcp.send(&data);
+                        had_output = true;
+                    }
+                    Err(_) => break, // channel empty or disconnected
+                }
             }
-            // Deliver received KCP data to VLESS handler
+
+            // ── Step 2: KCP update (flushes snd_queue → output) ──
+            let _ = s.kcp.update(tick);
+
+            // ── Step 3: Deliver KCP.recv() data to VLESS handler ──
             let mut rbuf = [0u8; 65536];
             loop {
                 match s.kcp.recv(&mut rbuf) {
@@ -426,9 +536,19 @@ async fn run_kcp_update_loop(
                     }
                 }
             }
+
             if had_output {
                 s.last_update = Instant::now();
             }
+
+            // Check if KCP session is dead (no activity for 30 seconds)
+            if s.last_update.elapsed() > Duration::from_secs(30) {
+                to_remove.push(key);
+            }
+        }
+
+        for key in to_remove {
+            sh.sessions.remove(&key);
         }
     }
 }
@@ -436,16 +556,23 @@ async fn run_kcp_update_loop(
 // ── VLESS over KCP ─────────────────────────────────────────────────────
 
 fn handle_vless_over_kcp(
-    stream: &mut KcpRelayStream,
+    mut stream: KcpRelayStream,
     validator: Arc<MemoryValidator>,
     kyber_sk: Option<[u8; 64]>,
     peer: SocketAddr,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut first = vec![0u8; 8192];
-    let n = stream.read(&mut first)?;
-    if n == 0 {
-        return Err("KCP closed before VLESS header".into());
-    }
+    // Retry on WouldBlock — KCP data may not be available immediately
+    let n = loop {
+        match stream.read(&mut first) {
+            Ok(0) => return Err("KCP closed before VLESS header".into()),
+            Ok(n) => break n,
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    };
     first.truncate(n);
     trace!("{peer} KCP read {} bytes VLESS header", first.len());
 
@@ -467,13 +594,23 @@ fn handle_vless_over_kcp(
     validate_vless_command(request, use_vision)?;
 
     let resp_buf = response_header_buf(request)?;
-    stream.write_all(&resp_buf)?;
+    // Retry loop: with try_send, write() may return WouldBlock if channel is backed up
+    loop {
+        match stream.write_all(&resp_buf) {
+            Ok(()) => break,
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    stream.flush()?;
 
     if request.command == RequestCommand::Udp {
         if !account.udp {
             return Err("UDP not enabled for this user".into());
         }
-        relay_kcp_udp(stream, request, remaining_body)?;
+        relay_kcp_udp(&mut stream, request, remaining_body)?;
         debug!("{peer} KCP UDP relay finished");
         return Ok(());
     }
@@ -482,16 +619,19 @@ fn handle_vless_over_kcp(
     target.set_nodelay(true)?;
     target.set_read_timeout(Some(Duration::from_secs(300)))?;
 
+    let (reader, writer) = stream.split();
+
     if use_vision {
         relay_kcp_vision(
-            stream,
+            reader,
+            writer,
             target,
             &decoded.user_sent_id,
             &account.testseed,
             remaining_body,
         )?;
     } else {
-        relay_kcp_raw(stream, target, remaining_body)?;
+        relay_kcp_raw(reader, writer, target, remaining_body)?;
     }
     debug!("{peer} KCP relay finished");
     Ok(())
@@ -500,56 +640,101 @@ fn handle_vless_over_kcp(
 // ── KCP relay functions ─────────────────────────────────────────────────
 
 fn relay_kcp_raw(
-    client: &mut KcpRelayStream,
+    mut reader: KcpRelayReader,
+    mut writer: KcpRelayWriter,
     mut target: TcpStream,
     initial_data: Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut buf = [0u8; 32768];
     target.set_nodelay(true)?;
-    target.set_read_timeout(Some(Duration::from_secs(2)))?;
 
     if !initial_data.is_empty() {
         target.write_all(&initial_data)?;
-        target.set_read_timeout(Some(Duration::from_millis(10)))?;
     }
 
+    let mut t_read = target.try_clone()?;
+    let mut t_write = target;
+
+    // Upload: KCP reader → target
+    let up = std::thread::spawn(move || {
+        let mut buf = [0u8; 32768];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if let Err(e) = t_write.write_all(&buf[..n]) {
+                        debug!("KCP upload write error: {e}");
+                        break;
+                    }
+                }
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => {
+                    debug!("KCP upload read error: {e}");
+                    break;
+                }
+            }
+        }
+        let _ = t_write.shutdown(std::net::Shutdown::Write);
+    });
+
+    // Download: target → KCP writer
     loop {
-        match target.read(&mut buf) {
+        let mut buf = [0u8; 32768];
+        match t_read.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
-                client.write_all(&buf[..n])?;
-                target.set_read_timeout(Some(Duration::from_millis(10)))?;
-                continue;
+                // Retry on WouldBlock — write_all would drop data since
+                // the underlying try_send doesn't buffer unsent bytes.
+                let mut written = 0;
+                while written < n {
+                    match writer.write(&buf[written..n]) {
+                        Ok(w) => written += w,
+                        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(e) => {
+                            debug!("KCP download write error: {e}");
+                            break;
+                        }
+                    }
+                }
+                if written < n {
+                    break; // write error, exit
+                }
             }
             Err(ref e)
                 if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
             {
-                target.set_read_timeout(Some(Duration::from_secs(2)))?;
+                continue;
             }
-            Err(e) => return Err(e.into()),
-        }
-
-        match client.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                target.write_all(&buf[..n])?;
-                target.set_read_timeout(Some(Duration::from_millis(10)))?;
+            Err(e) => {
+                debug!("KCP download read error: {e}");
+                break;
             }
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
-            Err(e) => return Err(e.into()),
         }
     }
-    let _ = target.shutdown(std::net::Shutdown::Write);
+
+    up.join().ok();
     Ok(())
 }
 
 fn relay_kcp_vision(
-    client: &mut KcpRelayStream,
+    reader: KcpRelayReader,
+    writer: KcpRelayWriter,
     mut target: TcpStream,
     user_sent_id: &[u8],
     testseed: &[u32],
     initial_data: Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Re-bundle reader and writer for the sequential vision relay
+    // (vision has shared state, so concurrent threads are harder)
+    let mut client = KcpRelayStream {
+        incoming_rx: reader.incoming_rx,
+        pending: reader.pending,
+        vless_tx: writer.vless_tx,
+        eof: reader.eof,
+    };
     let up_seed = if testseed.len() >= 4 {
         testseed.to_vec()
     } else {
@@ -560,7 +745,7 @@ fn relay_kcp_vision(
     let mut down_user_uuid: Option<[u8; 16]> = Some(down_state.user_uuid);
 
     target.set_nodelay(true)?;
-    target.set_read_timeout(Some(Duration::from_secs(2)))?;
+    target.set_read_timeout(Some(Duration::from_millis(50)))?;
     let mut buf = [0u8; 32768];
 
     if !initial_data.is_empty() {
@@ -601,7 +786,15 @@ fn relay_kcp_vision(
                         down_user_uuid = w.user_uuid;
                     }
                     if !encoded.is_empty() {
-                        client.write_all(&encoded)?;
+                        match client.write_all(&encoded) {
+                            Ok(()) => {}
+                            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                                // KCP congested — break to try upload side
+                                target.set_read_timeout(Some(Duration::from_millis(50)))?;
+                                break false;
+                            }
+                            Err(e) => return Err(e.into()),
+                        }
                     }
                     target.set_read_timeout(Some(Duration::from_millis(10)))?;
                 }
@@ -609,7 +802,7 @@ fn relay_kcp_vision(
                     if e.kind() == io::ErrorKind::WouldBlock
                         || e.kind() == io::ErrorKind::TimedOut =>
                 {
-                    target.set_read_timeout(Some(Duration::from_secs(2)))?;
+                    target.set_read_timeout(Some(Duration::from_millis(50)))?;
                     break false;
                 }
                 Err(e) => return Err(e.into()),
