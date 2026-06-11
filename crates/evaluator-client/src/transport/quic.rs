@@ -109,14 +109,14 @@ impl rustls::client::danger::ServerCertVerifier for SkipVerify {
 
 fn make_quic_tls_config() -> Arc<rustls::ClientConfig> {
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-    Arc::new(
-        rustls::ClientConfig::builder_with_provider(provider)
-            .with_protocol_versions(&[&rustls::version::TLS13])
-            .unwrap()
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(SkipVerify))
-            .with_no_client_auth(),
-    )
+    let mut config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .unwrap()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(SkipVerify))
+        .with_no_client_auth();
+    config.alpn_protocols = vec![b"h3".to_vec()];
+    Arc::new(config)
 }
 
 // ── Connect ──────────────────────────────────────────────────────────────
