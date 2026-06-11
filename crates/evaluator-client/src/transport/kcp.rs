@@ -74,7 +74,7 @@ impl Read for KcpStream {
                 return Ok(n);
             }
         }
-        match self.read_rx.recv() {
+        match self.read_rx.recv_timeout(Duration::from_millis(100)) {
             Ok(data) => {
                 if data.is_empty() {
                     return Ok(0);
@@ -86,7 +86,11 @@ impl Read for KcpStream {
                 }
                 Ok(n)
             }
-            Err(_) => Ok(0),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "KCP read timeout",
+            )),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Ok(0),
         }
     }
 }

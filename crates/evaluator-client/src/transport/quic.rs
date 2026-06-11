@@ -6,6 +6,7 @@ use std::io::{self, Read, Write};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use super::BoxedIo;
 
@@ -26,7 +27,7 @@ impl Read for QuicStream {
                 return Ok(n);
             }
         }
-        match self.read_rx.recv() {
+        match self.read_rx.recv_timeout(Duration::from_millis(100)) {
             Ok(data) => {
                 if data.is_empty() {
                     return Ok(0);
@@ -38,7 +39,11 @@ impl Read for QuicStream {
                 }
                 Ok(n)
             }
-            Err(_) => Ok(0),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "QUIC read timeout",
+            )),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Ok(0),
         }
     }
 }
@@ -130,7 +135,22 @@ pub fn connect_quic(
     flow: &str,
 ) -> io::Result<BoxedIo> {
     let header = super::raw::build_vless_header(uuid, target_addr, target_port, flow);
-    let proxy_addr = format!("{proxy_host}:{proxy_port}");
+    // Resolve now — avoids DNS in async context and catches bad hostnames early.
+    let server_addr: std::net::SocketAddr =
+        std::net::ToSocketAddrs::to_socket_addrs(&(proxy_host, proxy_port))
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("resolve QUIC target {proxy_host}:{proxy_port}: {e}"),
+                )
+            })?
+            .next()
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::AddrNotAvailable,
+                    format!("no addresses resolved for {proxy_host}:{proxy_port}"),
+                )
+            })?;
 
     let (read_tx, read_rx) = mpsc::channel::<Vec<u8>>();
     let (write_tx, write_rx) = mpsc::sync_channel::<Vec<u8>>(32);
@@ -154,7 +174,7 @@ pub fn connect_quic(
         });
 
         rt.block_on(async {
-            match quic_handshake(&proxy_addr, &header).await {
+            match quic_handshake(server_addr, &header).await {
                 Ok((mut send, mut recv)) => {
                     let _ = hs_tx.send(Ok(()));
 
@@ -213,7 +233,7 @@ pub fn connect_quic(
 }
 
 async fn quic_handshake(
-    proxy_addr: &str,
+    server_addr: std::net::SocketAddr,
     vless_header: &[u8],
 ) -> Result<(quinn::SendStream, quinn::RecvStream), io::Error> {
     let tls_config = make_quic_tls_config();
@@ -228,10 +248,6 @@ async fn quic_handshake(
     let mut endpoint = quinn::Endpoint::client("127.0.0.1:0".parse().unwrap())
         .map_err(|e| io::Error::other(format!("endpoint: {e}")))?;
     endpoint.set_default_client_config(client_config);
-
-    let server_addr: std::net::SocketAddr = proxy_addr
-        .parse()
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
 
     let connection = endpoint
         .connect(server_addr, "cloudfront.net")

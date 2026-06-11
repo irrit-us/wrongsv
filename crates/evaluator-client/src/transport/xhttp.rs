@@ -7,6 +7,7 @@ use std::io::{self, Read, Write};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use rustls::ClientConfig;
 
@@ -29,7 +30,7 @@ impl Read for XhttpStream {
                 return Ok(n);
             }
         }
-        match self.read_rx.recv() {
+        match self.read_rx.recv_timeout(Duration::from_millis(100)) {
             Ok(data) => {
                 if data.is_empty() {
                     return Ok(0);
@@ -41,7 +42,11 @@ impl Read for XhttpStream {
                 }
                 Ok(n)
             }
-            Err(_) => Ok(0),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "xHTTP read timeout",
+            )),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Ok(0),
         }
     }
 }
