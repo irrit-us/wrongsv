@@ -115,22 +115,12 @@ pub fn connect_for_protocol(
         }
         "grpc" => {
             let addr = format!("{proxy_host}:{proxy_port}");
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(io::Error::other)?;
-            let tcp = rt.block_on(async { tokio::net::TcpStream::connect(&addr).await })?;
-            grpc::connect_grpc(tcp, uuid, target_addr, target_port, flow, None)
+            grpc::connect_grpc(&addr, uuid, target_addr, target_port, flow, None)
         }
         "grpc+tls" => {
             let addr = format!("{proxy_host}:{proxy_port}");
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(io::Error::other)?;
-            let tcp = rt.block_on(async { tokio::net::TcpStream::connect(&addr).await })?;
             grpc::connect_grpc(
-                tcp,
+                &addr,
                 uuid,
                 target_addr,
                 target_port,
@@ -140,22 +130,12 @@ pub fn connect_for_protocol(
         }
         "xhttp" => {
             let addr = format!("{proxy_host}:{proxy_port}");
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(io::Error::other)?;
-            let tcp = rt.block_on(async { tokio::net::TcpStream::connect(&addr).await })?;
-            xhttp::connect_xhttp(tcp, uuid, target_addr, target_port, flow, None)
+            xhttp::connect_xhttp(&addr, uuid, target_addr, target_port, flow, None)
         }
         "xhttp+tls" => {
             let addr = format!("{proxy_host}:{proxy_port}");
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(io::Error::other)?;
-            let tcp = rt.block_on(async { tokio::net::TcpStream::connect(&addr).await })?;
             xhttp::connect_xhttp(
-                tcp,
+                &addr,
                 uuid,
                 target_addr,
                 target_port,
@@ -198,8 +178,8 @@ pub fn connect_for_protocol(
             let sock = connect_proxy(proxy_host, proxy_port)?;
             anytls::connect_anytls(sock, uuid, target_addr, target_port, flow)
         }
-        "quic" => quic::connect_quic(proxy_port, uuid, target_addr, target_port, flow),
-        "kcp" => kcp::connect_kcp(proxy_port, uuid, target_addr, target_port, flow),
+        "quic" => quic::connect_quic(proxy_host, proxy_port, uuid, target_addr, target_port, flow),
+        "kcp" => kcp::connect_kcp(proxy_host, proxy_port, uuid, target_addr, target_port, flow),
         _ => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("unknown protocol: {protocol}"),

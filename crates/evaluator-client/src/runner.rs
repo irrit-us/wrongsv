@@ -197,7 +197,9 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
 /// the "BW_DOWNLOAD" trigger so the server target switches to download mode.
 /// Returns total bytes sent.
 fn run_upload_phase(stream: &mut dyn transport::ReadWrite, duration: Duration) -> u64 {
-    let payload = vec![0xBBu8; 65536];
+    // 16 KiB — fits within h2 initial flow-control window (65535 bytes)
+    // which is needed for gRPC/xHTTP transports.
+    let payload = vec![0xBBu8; 16384];
     let start = Instant::now();
     let mut total_sent: u64 = 0;
     while start.elapsed() < duration {

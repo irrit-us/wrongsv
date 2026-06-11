@@ -105,6 +105,7 @@ impl Write for KcpStream {
 }
 
 pub fn connect_kcp(
+    proxy_host: &str,
     proxy_port: u16,
     uuid: &str,
     target_addr: &str,
@@ -113,7 +114,7 @@ pub fn connect_kcp(
 ) -> io::Result<BoxedIo> {
     let seed = "eval-kcp-seed";
     let header = super::raw::build_vless_header(uuid, target_addr, target_port, flow);
-    let server_addr: SocketAddr = format!("127.0.0.1:{proxy_port}").parse().unwrap();
+    let server_addr: SocketAddr = format!("{proxy_host}:{proxy_port}").parse().unwrap();
 
     let (read_tx, read_rx) = mpsc::channel::<Vec<u8>>();
     let (write_tx, write_rx) = mpsc::sync_channel::<Vec<u8>>(32);

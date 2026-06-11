@@ -176,7 +176,7 @@ async fn grpc_handshake(
 // ── Connect ──────────────────────────────────────────────────────────────
 
 pub fn connect_grpc(
-    tcp_stream: tokio::net::TcpStream,
+    proxy_addr: &str,
     uuid: &str,
     target_addr: &str,
     target_port: u16,
@@ -186,14 +186,15 @@ pub fn connect_grpc(
     let use_tls = tls_config.is_some();
     let header = super::raw::build_vless_header(uuid, target_addr, target_port, flow);
     let hdr_frame = wrongsv_grpc::encode_hunk_frame(&header);
+    let addr = proxy_addr.to_string();
 
     let (read_tx, read_rx) = mpsc::channel::<Vec<u8>>();
     let (write_tx, write_rx) = mpsc::sync_channel::<Vec<u8>>(32);
     let (hs_tx, hs_rx) = mpsc::sync_channel::<Result<(), io::Error>>(1);
-    let (tokio_write_tx, mut tokio_write_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let (tokio_write_tx, mut tokio_write_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
 
     let handle = std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
+        let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .unwrap();
@@ -202,14 +203,21 @@ pub fn connect_grpc(
         let bridge_tx = tokio_write_tx;
         std::thread::spawn(move || {
             while let Ok(data) = write_rx.recv() {
-                if bridge_tx.send(data).is_err() {
+                if bridge_tx.blocking_send(data).is_err() {
                     break;
                 }
             }
         });
 
         rt.block_on(async {
-            match grpc_handshake(tcp_stream, use_tls, &hdr_frame).await {
+            let tcp = match tokio::net::TcpStream::connect(&addr).await {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = hs_tx.send(Err(io::Error::other(format!("TCP connect: {e}"))));
+                    return;
+                }
+            };
+            match grpc_handshake(tcp, use_tls, &hdr_frame).await {
                 Ok((mut body, mut send_stream)) => {
                     let _ = hs_tx.send(Ok(()));
 
