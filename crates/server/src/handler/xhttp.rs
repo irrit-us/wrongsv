@@ -419,7 +419,7 @@ fn relay_xhttp_raw(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = [0u8; 32768];
     target.set_nodelay(true)?;
-    target.set_read_timeout(Some(Duration::from_millis(50)))?;
+    target.set_read_timeout(Some(Duration::from_millis(10)))?;
 
     if !initial_data.is_empty() {
         target.write_all(&initial_data)?;
@@ -438,7 +438,7 @@ fn relay_xhttp_raw(
             Err(ref e)
                 if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
             {
-                target.set_read_timeout(Some(Duration::from_millis(50)))?;
+                target.set_read_timeout(Some(Duration::from_millis(10)))?;
             }
             Err(e) => return Err(e.into()),
         }
@@ -475,7 +475,7 @@ fn relay_xhttp_vision(
     let mut down_user_uuid: Option<[u8; 16]> = Some(down_state.user_uuid);
 
     target.set_nodelay(true)?;
-    target.set_read_timeout(Some(Duration::from_millis(50)))?;
+    target.set_read_timeout(Some(Duration::from_millis(10)))?;
     let mut buf = [0u8; 32768];
 
     if !initial_data.is_empty() {
@@ -525,7 +525,7 @@ fn relay_xhttp_vision(
                     if e.kind() == io::ErrorKind::WouldBlock
                         || e.kind() == io::ErrorKind::TimedOut =>
                 {
-                    target.set_read_timeout(Some(Duration::from_millis(50)))?;
+                    target.set_read_timeout(Some(Duration::from_millis(10)))?;
                     break false;
                 }
                 Err(e) => return Err(e.into()),

@@ -415,7 +415,7 @@ fn relay_grpc_raw(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = [0u8; 32768];
     target.set_nodelay(true)?;
-    target.set_read_timeout(Some(Duration::from_millis(50)))?;
+    target.set_read_timeout(Some(Duration::from_millis(10)))?;
 
     if !initial_data.is_empty() {
         target.write_all(&initial_data)?;
@@ -434,7 +434,7 @@ fn relay_grpc_raw(
             Err(ref e)
                 if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
             {
-                target.set_read_timeout(Some(Duration::from_millis(50)))?;
+                target.set_read_timeout(Some(Duration::from_millis(10)))?;
             }
             Err(e) => return Err(e.into()),
         }

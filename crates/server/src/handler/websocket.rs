@@ -642,8 +642,7 @@ pub(crate) fn relay_ws_raw<S: Read + Write>(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = [0u8; 32768];
     target.set_nodelay(true)?;
-    // Fast timeout to avoid starving the uplink (same fix as anytls/tls relay)
-    target.set_read_timeout(Some(Duration::from_millis(50)))?;
+    target.set_read_timeout(Some(Duration::from_millis(10)))?;
 
     if !initial_data.is_empty() {
         target.write_all(&initial_data)?;
@@ -667,7 +666,8 @@ pub(crate) fn relay_ws_raw<S: Read + Write>(
                 if e.kind() == std::io::ErrorKind::WouldBlock
                     || e.kind() == std::io::ErrorKind::TimedOut =>
             {
-                target.set_read_timeout(Some(Duration::from_millis(50)))?;
+                // Keep 10ms — 50ms backoff kills upload throughput.
+                target.set_read_timeout(Some(Duration::from_millis(10)))?;
             }
             Err(e) => return Err(e.into()),
         }
@@ -708,8 +708,7 @@ pub(crate) fn relay_ws_vision<S: Read + Write>(
     let mut down_user_uuid: Option<[u8; 16]> = Some(down_state.user_uuid);
 
     target.set_nodelay(true)?;
-    // Fast timeout to avoid starving the uplink (same fix as anytls/tls relay)
-    target.set_read_timeout(Some(Duration::from_millis(50)))?;
+    target.set_read_timeout(Some(Duration::from_millis(10)))?;
     let mut buf = [0u8; 32768];
 
     if !initial_data.is_empty() {
@@ -760,7 +759,7 @@ pub(crate) fn relay_ws_vision<S: Read + Write>(
                     if e.kind() == std::io::ErrorKind::WouldBlock
                         || e.kind() == std::io::ErrorKind::TimedOut =>
                 {
-                    target.set_read_timeout(Some(Duration::from_millis(50)))?;
+                    target.set_read_timeout(Some(Duration::from_millis(10)))?;
                     break false;
                 }
                 Err(e) => return Err(e.into()),

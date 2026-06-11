@@ -502,14 +502,14 @@ pub(crate) fn relay_anytls_raw(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = [0u8; 32768];
     target.set_nodelay(true)?;
-    target.set_read_timeout(Some(Duration::from_millis(50)))?;
+    target.set_read_timeout(Some(Duration::from_millis(10)))?;
 
     if !initial_data.is_empty() {
         target.write_all(&initial_data)?;
     }
 
     let (conn, stream) = tls.get_mut();
-    stream.set_read_timeout(Some(Duration::from_millis(50)))?;
+    stream.set_read_timeout(Some(Duration::from_millis(10)))?;
 
     loop {
         // Drain target first — it's the fast, low-latency side.
@@ -536,7 +536,9 @@ pub(crate) fn relay_anytls_raw(
                 if e.kind() == std::io::ErrorKind::WouldBlock
                     || e.kind() == std::io::ErrorKind::TimedOut =>
             {
-                target.set_read_timeout(Some(Duration::from_millis(50)))?;
+                // Keep aggressive polling — 50ms backoff kills upload throughput
+                // (16 KB/50ms ≈ 2.5 Mbps). 10ms gives ~13 Mbps floor per iteration.
+                target.set_read_timeout(Some(Duration::from_millis(10)))?;
             }
             Err(e) => return Err(e.into()),
         }
