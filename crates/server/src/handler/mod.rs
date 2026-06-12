@@ -562,6 +562,7 @@ impl InboundServer {
         );
 
         let validator = Arc::clone(&self.validator);
+        let metrics = Arc::clone(&self.metrics);
         let kyber_sk = self.kyber_sk;
         let reality_config = self.reality_config.clone();
         let anytls_config = self.anytls_config.clone();
@@ -603,6 +604,7 @@ impl InboundServer {
                 Ok((stream, addr)) => {
                     debug!("accepted connection from {}", addr);
                     let v = Arc::clone(&validator);
+                    let m = Arc::clone(&metrics);
                     let rc = reality_config.clone();
                     let ac = anytls_config.clone();
                     let tc = tls_config.clone();
@@ -626,7 +628,7 @@ impl InboundServer {
                             } else if let Some(ref wc) = wsc {
                                 handle_ws_connection(stream, v, kyber_sk, wc)
                             } else if let Some(ref hc) = huc {
-                                handle_httpupgrade_connection(stream, v, kyber_sk, hc)
+                                handle_httpupgrade_connection(stream, v, kyber_sk, hc, m)
                             } else if let Some(ref gc) = gc {
                                 handle_grpc_connection(stream, v, kyber_sk, gc)
                             } else if let Some(ref xc) = xc {
@@ -651,7 +653,7 @@ impl InboundServer {
                             } else if let Some(ref vmc) = vmc {
                                 handle_vmess_connection(stream, vmc)
                             } else {
-                                handle_connection(stream, v, kyber_sk)
+                                handle_connection(stream, v, kyber_sk, m)
                             }
                         }));
                         match result {

@@ -20,6 +20,58 @@ pub mod server;
 pub use config::MetricsConfig;
 pub use server::{ServerHandle, serve};
 
+/// Per-connection handle for recording bytes against a specific user.
+///
+/// Cheap to clone (one `Arc` + a `String`). Use [`MetricsTap::disabled`] for
+/// flows without a known email — its `record_*` methods become no-ops.
+#[derive(Clone)]
+pub struct MetricsTap {
+    registry: Option<Arc<Registry>>,
+    email: String,
+}
+
+impl MetricsTap {
+    /// Build a tap bound to one user's email.
+    pub fn new(registry: Arc<Registry>, email: impl Into<String>) -> Self {
+        Self {
+            registry: Some(registry),
+            email: email.into(),
+        }
+    }
+
+    /// Build a tap that drops every call. Useful as a default for handlers
+    /// without per-user identification.
+    pub fn disabled() -> Self {
+        Self {
+            registry: None,
+            email: String::new(),
+        }
+    }
+
+    /// Record bytes received from the client.
+    pub fn record_in(&self, n: u64) {
+        if let Some(reg) = &self.registry {
+            reg.record_bytes_in(&self.email, n);
+        }
+    }
+
+    /// Record bytes sent back to the client.
+    pub fn record_out(&self, n: u64) {
+        if let Some(reg) = &self.registry {
+            reg.record_bytes_out(&self.email, n);
+        }
+    }
+
+    /// Open an active-connection guard. Returns a no-op guard when the tap
+    /// is disabled.
+    pub fn track_connection(&self) -> ConnectionGuard {
+        match &self.registry {
+            Some(reg) => reg.connection_started(&self.email),
+            None => ConnectionGuard { stats: None },
+        }
+    }
+}
+
 /// Stats tracked for one user (keyed by email).
 #[derive(Debug, Default)]
 struct UserStats {
@@ -326,5 +378,39 @@ mod tests {
         assert_eq!(a.bytes_out, 0);
         assert_eq!(b.bytes_in, 0);
         assert_eq!(b.bytes_out, 20);
+    }
+
+    #[test]
+    fn metrics_tap_records_against_user() {
+        let reg = Arc::new(Registry::new());
+        let tap = MetricsTap::new(Arc::clone(&reg), "alice@test");
+        tap.record_in(64);
+        tap.record_out(128);
+        let snap = &reg.snapshot()[0];
+        assert_eq!(snap.email, "alice@test");
+        assert_eq!(snap.bytes_in, 64);
+        assert_eq!(snap.bytes_out, 128);
+    }
+
+    #[test]
+    fn metrics_tap_disabled_is_no_op() {
+        let tap = MetricsTap::disabled();
+        tap.record_in(100);
+        tap.record_out(200);
+        let _g = tap.track_connection();
+        // No registry to inspect — the test just exercises the no-op path.
+    }
+
+    #[test]
+    fn metrics_tap_track_connection_decrements_on_drop() {
+        let reg = Arc::new(Registry::new());
+        let tap = MetricsTap::new(Arc::clone(&reg), "bob@test");
+        let guard = tap.track_connection();
+        let snap = &reg.snapshot()[0];
+        assert_eq!(snap.active_connections, 1);
+        drop(guard);
+        let snap = &reg.snapshot()[0];
+        assert_eq!(snap.active_connections, 0);
+        assert_eq!(snap.total_connections, 1);
     }
 }

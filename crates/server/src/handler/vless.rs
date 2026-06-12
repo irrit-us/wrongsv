@@ -107,6 +107,7 @@ pub(crate) fn handle_connection(
     mut stream: TcpStream,
     validator: Arc<MemoryValidator>,
     kyber_sk: Option<[u8; 64]>,
+    metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let peer = stream.peer_addr()?;
     trace!("{peer} new connection");
@@ -126,6 +127,8 @@ pub(crate) fn handle_connection(
 
     let request = &decoded.header;
     let account = &request.user.account;
+    let tap = wrongsv_metrics::MetricsTap::new(metrics, request.user.email.clone());
+    let _conn_guard = tap.track_connection();
 
     log_vless_request(peer, request);
     trace!(
@@ -143,7 +146,7 @@ pub(crate) fn handle_connection(
         if !account.udp {
             return Err("UDP not enabled for this user".into());
         }
-        relay_udp(stream, request, remaining_body)?;
+        relay_udp(stream, request, remaining_body, tap)?;
         debug!("{peer} UDP relay finished");
         return Ok(());
     }
@@ -165,10 +168,10 @@ pub(crate) fn handle_connection(
 
     if use_vision {
         trace!("{peer} starting vision relay");
-        relay_vision(stream, target, &decoded.user_sent_id, &account.testseed)?;
+        relay_vision(stream, target, &decoded.user_sent_id, &account.testseed, tap)?;
     } else {
         trace!("{peer} starting raw relay");
-        relay_raw_with_initial(stream, target, remaining_body)?;
+        relay_raw_with_initial(stream, target, remaining_body, tap)?;
     }
     debug!("{peer} relay finished");
 

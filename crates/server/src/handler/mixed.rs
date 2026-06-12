@@ -79,7 +79,12 @@ pub(crate) fn handle_mixed_proxy_connection(
         "{peer} {} -> {target_addr}",
         mixed_protocol_name(request.protocol)
     );
-    relay_raw_with_initial(stream, target, request.initial_data)?;
+    relay_raw_with_initial(
+        stream,
+        target,
+        request.initial_data,
+        wrongsv_metrics::MetricsTap::disabled(),
+    )?;
     debug!("{peer} mixed proxy relay finished");
     Ok(())
 }

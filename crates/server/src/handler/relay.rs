@@ -332,9 +332,12 @@ pub(crate) fn mixed_protocol_name(protocol: MixedProtocol) -> &'static str {
 pub(crate) fn relay_raw(
     mut client: TcpStream,
     mut target: TcpStream,
+    metrics: wrongsv_metrics::MetricsTap,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut c2 = client.try_clone()?;
     let mut t2 = target.try_clone()?;
+    let metrics_up = metrics.clone();
+    let metrics_down = metrics;
 
     let t1 = thread::spawn(move || {
         let mut buf = [0u8; 32768];
@@ -342,6 +345,7 @@ pub(crate) fn relay_raw(
             match c2.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    metrics_up.record_in(n as u64);
                     if let Err(e) = t2.write_all(&buf[..n]) {
                         debug!("write error client->target: {}", e);
                         break;
@@ -362,6 +366,7 @@ pub(crate) fn relay_raw(
             match target.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    metrics_down.record_out(n as u64);
                     if let Err(e) = client.write_all(&buf[..n]) {
                         debug!("write error target->client: {}", e);
                         break;
@@ -385,17 +390,20 @@ pub(crate) fn relay_raw_with_initial(
     client: TcpStream,
     mut target: TcpStream,
     initial_data: Vec<u8>,
+    metrics: wrongsv_metrics::MetricsTap,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !initial_data.is_empty() {
+        metrics.record_in(initial_data.len() as u64);
         target.write_all(&initial_data)?;
     }
-    relay_raw(client, target)
+    relay_raw(client, target, metrics)
 }
 
 pub(crate) fn relay_udp(
     mut client: TcpStream,
     request: &RequestHeader,
     remaining: Vec<u8>,
+    metrics: wrongsv_metrics::MetricsTap,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if is_packetaddr_request(request) {
         debug!("packetaddr UDP relay, {} remaining bytes", remaining.len());
@@ -421,6 +429,7 @@ pub(crate) fn relay_udp(
     let done1 = Arc::clone(&done);
     let done2 = Arc::clone(&done);
 
+    let metrics_up = metrics.clone();
     let udp_send = Arc::clone(&socket);
     let t1 = thread::spawn(move || {
         let chained = std::io::Cursor::new(remaining).chain(c_read);
@@ -431,6 +440,7 @@ pub(crate) fn relay_udp(
             }
             match reader.read_packet() {
                 Ok(pkt) => {
+                    metrics_up.record_in(pkt.len() as u64);
                     if udp_send.send(&pkt).is_err() {
                         break;
                     }
@@ -444,6 +454,7 @@ pub(crate) fn relay_udp(
         done1.store(true, Ordering::SeqCst);
     });
 
+    let metrics_down = metrics;
     let udp_recv = Arc::clone(&socket);
     let t2 = thread::spawn(move || {
         let mut writer = LengthPacketWriter::new(c_write);
@@ -455,6 +466,7 @@ pub(crate) fn relay_udp(
             match udp_recv.recv(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    metrics_down.record_out(n as u64);
                     if writer.write_packet(&buf[..n]).is_err() {
                         break;
                     }
@@ -483,6 +495,7 @@ pub(crate) fn relay_vision(
     target: TcpStream,
     user_sent_id: &[u8],
     testseed: &[u32],
+    metrics: wrongsv_metrics::MetricsTap,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let c_read = client.try_clone()?;
     let c_write = client;
@@ -496,6 +509,7 @@ pub(crate) fn relay_vision(
     } else {
         vec![900, 500, 900, 256]
     };
+    let metrics_up = metrics.clone();
 
     let t1 = thread::spawn(move || {
         let mut reader = VisionReader::new(c_read, up_state, true);
@@ -505,6 +519,7 @@ pub(crate) fn relay_vision(
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    metrics_up.record_in(n as u64);
                     if let Err(e) = tgt.write_all(&buf[..n]) {
                         debug!("write uplink: {}", e);
                         break;
@@ -521,6 +536,7 @@ pub(crate) fn relay_vision(
 
     // Target → Client (downlink): read from target raw, write to client with Vision
     let down_state = TrafficState::new(user_sent_id);
+    let metrics_down = metrics;
     let t2 = thread::spawn(move || {
         let mut writer = VisionWriter::new(c_write, down_state, false, up_seed);
         let mut buf = [0u8; 32768];
@@ -529,6 +545,7 @@ pub(crate) fn relay_vision(
             match tgt.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    metrics_down.record_out(n as u64);
                     if let Err(e) = writer.write(&buf[..n]) {
                         debug!("write downlink: {}", e);
                         break;
