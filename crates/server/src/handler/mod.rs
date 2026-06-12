@@ -415,6 +415,20 @@ impl InboundServer {
         self.spawn_with_shutdown(ShutdownSignal::new())
     }
 
+    /// Hex-encoded REALITY cert raw_pubkey, if REALITY is configured.
+    ///
+    /// Callers (e.g. the evaluator orchestrator) need this to verify the
+    /// server's HMAC-signed cert; without it the client must skip the check.
+    pub fn reality_raw_pubkey_hex(&self) -> Option<String> {
+        self.reality_config.as_ref().map(|rc| {
+            rc.cert_material
+                .raw_pubkey
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect()
+        })
+    }
+
     pub fn spawn_with_shutdown(self, shutdown: ShutdownSignal) -> ServerHandle {
         let run_shutdown = shutdown.clone();
         let thread = thread::spawn(move || {

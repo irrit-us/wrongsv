@@ -274,14 +274,16 @@ bind = "127.0.0.1"
     );
     let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
     let server = wrongsv_server::InboundServer::new(config).unwrap();
+    let raw_pubkey_hex = server
+        .reality_raw_pubkey_hex()
+        .expect("REALITY config should expose raw_pubkey");
     let _handle = server.spawn();
     thread::sleep(Duration::from_millis(200));
 
     let echo_addr = spawn_echo_target();
 
-    // raw_pubkey "00...0" disables client-side cert HMAC verification — we
-    // only care that bytes flow through `relay_reality_raw` so MetricsTap
-    // can record them.
+    // Use the server's actual raw_pubkey so the client-side cert HMAC
+    // verification path is exercised end-to-end (not bypassed).
     let proxy_host = listen.split(':').next().unwrap();
     let proxy_port: u16 = listen.split(':').next_back().unwrap().parse().unwrap();
     let mut conn = wrongsv_evaluator_client::transport::connect_for_protocol(
@@ -293,7 +295,7 @@ bind = "127.0.0.1"
         "",
         Some(&pk_b64),
         Some(short_id),
-        Some(&"00".repeat(32)),
+        Some(&raw_pubkey_hex),
     )
     .expect("REALITY handshake should succeed");
 

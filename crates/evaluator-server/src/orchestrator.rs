@@ -110,16 +110,14 @@ fn build_proxy_config(
                 rand::random::<u8>(),
                 rand::random::<u8>(),
             );
-            // Server generates its own cert material; client skips cert
-            // verification for evaluator (all-zeros raw_pubkey signals skip).
-            let raw_pubkey_hex =
-                "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+            // raw_pubkey is filled in after `InboundServer::new` constructs
+            // the cert material (see the post-build patch site below).
             use base64::Engine;
             let pubkey_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(pk.as_bytes());
             let params = TransportParams {
                 reality_pubkey_b64: Some(pubkey_b64),
                 reality_short_id: Some(short_id.clone()),
-                reality_raw_pubkey: Some(raw_pubkey_hex),
+                reality_raw_pubkey: None,
             };
             let config = format!(
                 r#"
@@ -518,12 +516,15 @@ async fn serve_client(
             l.local_addr().unwrap().port()
         };
 
-        let (config_toml, uuid, params) =
+        let (config_toml, uuid, mut params) =
             build_proxy_config(protocol, proxy_port, echo_addr, proxy_bind);
         let server_config: wrongsv_server::Config =
             toml::from_str(&config_toml).expect("eval config should parse");
         let server = wrongsv_server::InboundServer::new(server_config)
             .expect("eval server should initialize");
+        if protocol == "reality" {
+            params.reality_raw_pubkey = server.reality_raw_pubkey_hex();
+        }
         let _handle = server.spawn();
 
         // Give the proxy a moment to start

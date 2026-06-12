@@ -103,6 +103,54 @@ fn evaluator_end_to_end_small_subset() {
     }
 }
 
+/// Run REALITY through the evaluator end-to-end so we verify the
+/// orchestrator hands the client the server's real cert raw_pubkey
+/// (not the previous all-zeros bypass). The eval-client's
+/// `verify_reality_cert` only runs when raw_pubkey is non-zero, so this
+/// test would have failed silently before the orchestrator was patched.
+#[test]
+fn evaluator_reality_uses_real_raw_pubkey() {
+    let duration_secs = 3;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+    let port = listener.local_addr().expect("local addr").port();
+    drop(listener);
+    let listen_addr = format!("127.0.0.1:{port}");
+    let token = "reality-cert-token";
+
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let listen = listen_addr.clone();
+    let server_token = token.to_string();
+    let server_handle = std::thread::spawn(move || -> Result<(), String> {
+        let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
+        ready_tx.send(()).map_err(|_| "send failed".to_string())?;
+        rt.block_on(wrongsv_evaluator_server::orchestrator::run_orchestrator(
+            &listen,
+            &server_token,
+            Some("reality"),
+            None,
+            duration_secs,
+            "127.0.0.1",
+            None,
+        ))
+        .map_err(|e| e.to_string())
+    });
+
+    ready_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("server should start");
+    std::thread::sleep(Duration::from_millis(300));
+
+    let results =
+        run_evaluation(&listen_addr, token, duration_secs).expect("evaluation should succeed");
+    let reality = results
+        .iter()
+        .find(|r| r.protocol == "reality")
+        .expect("reality result present");
+    assert_eq!(reality.packet_loss_pct, 0.0, "REALITY should be lossless on loopback: {reality:?}");
+
+    let _ = server_handle.join();
+}
+
 /// Test that the server rejects a client with a bad token.
 #[test]
 fn evaluator_rejects_bad_token() {

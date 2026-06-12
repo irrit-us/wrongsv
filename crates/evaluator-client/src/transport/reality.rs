@@ -524,16 +524,27 @@ pub fn connect_reality(
                     pos += msg_len;
 
                     if msg_type == 0x0b {
-                        // Certificate
-                        if msg.len() >= 4 {
-                            let cert_req_ctx_len = msg[0] as usize;
-                            let off = 1 + cert_req_ctx_len;
-                            if msg.len() >= off + 3 {
-                                let cert_len =
-                                    u32::from_be_bytes([0, msg[off], msg[off + 1], msg[off + 2]])
-                                        as usize;
-                                if msg.len() >= off + 3 + cert_len {
-                                    cert_der = msg[off + 3..off + 3 + cert_len].to_vec();
+                        // TLS 1.3 Certificate (RFC 8446 §4.4.2):
+                        //   certificate_request_context<0..255>
+                        //   certificate_list<0..2^24-1>
+                        //     CertificateEntry: cert_data<0..2^24-1> + extensions<0..2^16-1>
+                        if !msg.is_empty() {
+                            let ctx_len = msg[0] as usize;
+                            let list_start = 1 + ctx_len;
+                            // Skip 3-byte certificate_list length to reach the
+                            // first CertificateEntry's cert_data_length.
+                            let entry_start = list_start + 3;
+                            if msg.len() >= entry_start + 3 {
+                                let cert_len = u32::from_be_bytes([
+                                    0,
+                                    msg[entry_start],
+                                    msg[entry_start + 1],
+                                    msg[entry_start + 2],
+                                ])
+                                    as usize;
+                                if msg.len() >= entry_start + 3 + cert_len {
+                                    cert_der = msg[entry_start + 3..entry_start + 3 + cert_len]
+                                        .to_vec();
                                 }
                             }
                         }
