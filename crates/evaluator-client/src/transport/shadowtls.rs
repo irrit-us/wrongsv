@@ -57,10 +57,7 @@ impl Read for StlsStream {
 impl Write for StlsStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.write_tx.send(buf.to_vec()).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "ShadowTLS write channel closed",
-            )
+            io::Error::new(io::ErrorKind::BrokenPipe, "ShadowTLS write channel closed")
         })?;
         Ok(buf.len())
     }
@@ -327,45 +324,53 @@ pub fn connect_shadowtls(
         };
         let mut sock_w = sock;
 
+        // Short read timeout on the reader socket so that read_tls
+        // never blocks forever while holding the conn mutex — the
+        // writer thread also needs the mutex to send data.
+        // 500ms chosen as a balance: short enough that a dead peer
+        // is detected quickly, long enough for ~400ms RTT paths
+        // (SSH tunnel to remote regions).
+        let _ = sock_r.set_read_timeout(Some(Duration::from_millis(500)));
+
+        let conn = Arc::new(std::sync::Mutex::new(conn));
+        let conn_r = Arc::clone(&conn);
+
         // Reader: TLS plaintext → channel
         let rt = std::thread::spawn(move || {
             let mut buf = vec![0u8; 65536];
             loop {
-                match conn.reader().read(&mut buf) {
-                    Ok(0) => {
-                        match conn.read_tls(&mut sock_r) {
-                            Ok(0) => {
-                                let _ = read_tx.send(Vec::new());
-                                break;
-                            }
-                            Ok(_) => {
-                                if conn.process_new_packets().is_err() {
-                                    break;
-                                }
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                    Ok(n) => {
+                // Lock only for the duration of each TLS operation.
+                // Blocking socket reads happen inside read_tls, so we
+                // must NOT hold the lock across retry loops.
+                let mut c = conn_r.lock().unwrap();
+                let reader_result = c.reader().read(&mut buf);
+                match reader_result {
+                    Ok(n) if n > 0 => {
+                        drop(c);
                         if read_tx.send(buf[..n].to_vec()).is_err() {
                             break;
                         }
                     }
-                    Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                        match conn.read_tls(&mut sock_r) {
+                    _ => {
+                        // No plaintext available — feed TLS records from socket
+                        match c.read_tls(&mut sock_r) {
                             Ok(0) => {
                                 let _ = read_tx.send(Vec::new());
                                 break;
                             }
                             Ok(_) => {
-                                if conn.process_new_packets().is_err() {
+                                if c.process_new_packets().is_err() {
                                     break;
                                 }
+                            }
+                            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                                drop(c);
+                                std::thread::sleep(Duration::from_millis(5));
+                                continue;
                             }
                             Err(_) => break,
                         }
                     }
-                    Err(_) => break,
                 }
             }
         });
@@ -374,19 +379,21 @@ pub fn connect_shadowtls(
         loop {
             match write_rx.recv() {
                 Ok(data) => {
-                    if conn.writer().write_all(&data).is_err() {
+                    let mut c = conn.lock().unwrap();
+                    if c.writer().write_all(&data).is_err() {
                         break;
                     }
-                    while conn.wants_write() {
-                        if conn.write_tls(&mut sock_w).is_err() {
+                    while c.wants_write() {
+                        if c.write_tls(&mut sock_w).is_err() {
                             break;
                         }
                     }
                 }
                 Err(_) => {
-                    conn.send_close_notify();
-                    while conn.wants_write() {
-                        let _ = conn.write_tls(&mut sock_w);
+                    let mut c = conn.lock().unwrap();
+                    c.send_close_notify();
+                    while c.wants_write() {
+                        let _ = c.write_tls(&mut sock_w);
                     }
                     break;
                 }

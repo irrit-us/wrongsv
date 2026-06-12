@@ -149,7 +149,9 @@ pub fn connect_kcp(
             }
         };
         // Short timeout so the burst-drain loop doesn't stall.
-        let _ = udp.set_read_timeout(Some(Duration::from_millis(10)));
+        // 200ms chosen to accommodate high-RTT paths (SSH tunnel, etc.)
+        // while still allowing the burst-drain loop to make progress.
+        let _ = udp.set_read_timeout(Some(Duration::from_millis(200)));
 
         // Create KCP session with conv=rand
         let conv: u16 = rand::random();
@@ -172,8 +174,9 @@ pub fn connect_kcp(
         let mut resp_offset = 0;
         let mut got_response = false;
 
-        // Poll for response with timeout (tick = ms elapsed for correct KCP timing)
-        for _i in 0..50 {
+        // Poll for response. 200 iterations × 10ms = 2 s timeout — generous
+        // enough for high-RTT paths (SSH tunnel to remote, ~200ms+ RTT).
+        for _i in 0..200 {
             tick = tick.wrapping_add(10); // 10ms per iteration
             let _ = kcp.update(tick);
 

@@ -120,18 +120,12 @@ pub(crate) fn handle_vmess_connection(
     target.set_nodelay(true)?;
     target.set_read_timeout(Some(Duration::from_secs(60)))?;
 
-    sock.set_read_timeout(Some(Duration::from_millis(10)))?;
+    sock.set_read_timeout(Some(Duration::from_secs(1)))?;
+    sock.set_write_timeout(Some(Duration::from_secs(5)))?;
 
-    // Body readers/writers — separate keys/IVs for client→server and server→client
+    // Body readers/writers — same key and IV for both directions
     let client_body_key = &instr.body_key;
     let client_body_iv = &instr.body_iv;
-
-    // Server→client body: use the same key + different IV (body_iv with first 4 bytes XOR'd)
-    let mut server_iv = instr.body_iv;
-    server_iv[0] ^= 0xff;
-    server_iv[1] ^= 0xff;
-    server_iv[2] ^= 0xff;
-    server_iv[3] ^= 0xff;
 
     let mut client_r = sock.try_clone()?;
     let mut client_w = sock;
@@ -176,7 +170,7 @@ pub(crate) fn handle_vmess_connection(
 
     // Thread 2: Read from target → encrypt with VMess body → write to client
     let sbk = *client_body_key;
-    let sbv = server_iv;
+    let sbv = *client_body_iv;
     let t2 = thread::spawn(move || {
         let result = (|| -> Result<(), Box<dyn std::error::Error>> {
             let mut writer = vmess::VmessBodyWriter::new(&sbk, &sbv);

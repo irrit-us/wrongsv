@@ -262,7 +262,7 @@ pub fn build_header(
     payload.append(&mut ciphertext);
     payload.extend_from_slice(tag.as_slice());
 
-    let total_len = (2 + payload.len()) as u16; // 2-byte header length field
+    let total_len = payload.len() as u16;
     Ok((total_len, payload))
 }
 
@@ -765,6 +765,31 @@ mod tests {
 
         let (_len, payload) = build_header(&k1, &eaudid, &body_key, &body_iv, &request).unwrap();
         assert!(decrypt_header(&k2, &eaudid, &payload).is_err());
+    }
+
+    #[test]
+    fn test_header_total_len_matches_payload() {
+        // Regression test for #48 sub-bug 1: build_header returned
+        // total_len = 2 + payload.len() which caused the server to
+        // expect 2 extra bytes and deadlock.
+        let cmd_key = derive_cmd_key(&test_uuid());
+        let (_plain, eaudid) = generate_eaudid(&cmd_key);
+        let body_key = [0u8; 16];
+        let body_iv = [0u8; 16];
+
+        let request = VmessRequest {
+            command: VmessCommand::Tcp,
+            address: "test.example.com".into(),
+            port: 443,
+        };
+
+        let (total_len, payload) =
+            build_header(&cmd_key, &eaudid, &body_key, &body_iv, &request).unwrap();
+        assert_eq!(
+            total_len as usize,
+            payload.len(),
+            "total_len must equal payload.len(), not 2+len"
+        );
     }
 
     #[test]

@@ -7,7 +7,7 @@ use std::time::Duration;
 use tokio::sync::mpsc as tokio_mpsc;
 
 use http::StatusCode;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, trace};
 use wrongsv_protocol::{RequestCommand, RequestHeader};
 use wrongsv_vless::MemoryValidator;
 
@@ -331,9 +331,19 @@ pub(crate) fn handle_grpc_connection(
     trace!("{peer} gRPC connection");
 
     match &grpc_config.tls_config {
-        Some(_tls_config) => {
-            warn!("{peer} TLS+gRPC not yet implemented — closing connection");
-            Err("TLS+gRPC not yet implemented".into())
+        Some(tls_config) => {
+            // TLS+gRPC: handshake, then relay through local TCP bridge
+            // so the existing async h2 handler sees a plaintext stream.
+            let plain = tls_relay(stream, tls_config, peer, "grpc+tls")?;
+            handle_grpc_connection(
+                plain,
+                validator,
+                kyber_sk,
+                &GrpcConfig {
+                    tls_config: None,
+                    ..grpc_config.clone()
+                },
+            )
         }
         None => {
             stream.set_read_timeout(Some(Duration::from_secs(30)))?;

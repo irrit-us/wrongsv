@@ -7,7 +7,7 @@ use std::time::Duration;
 use tokio::sync::mpsc as tokio_mpsc;
 
 use http::StatusCode;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, trace};
 use wrongsv_protocol::{RequestCommand, RequestHeader};
 use wrongsv_vless::MemoryValidator;
 
@@ -335,9 +335,19 @@ pub(crate) fn handle_xhttp_connection(
     trace!("{peer} XHTTP connection");
 
     match &xhttp_config.tls_config {
-        Some(_tls_config) => {
-            warn!("{peer} TLS+XHTTP not yet implemented — closing connection");
-            Err("TLS+XHTTP not yet implemented".into())
+        Some(tls_config) => {
+            // TLS+XHTTP: handshake, then relay through local TCP bridge
+            // so the existing async h2 handler sees a plaintext stream.
+            let plain = tls_relay(stream, tls_config, peer, "xhttp+tls")?;
+            handle_xhttp_connection(
+                plain,
+                validator,
+                kyber_sk,
+                &XhttpConfig {
+                    tls_config: None,
+                    ..xhttp_config.clone()
+                },
+            )
         }
         None => {
             stream.set_read_timeout(Some(Duration::from_secs(30)))?;

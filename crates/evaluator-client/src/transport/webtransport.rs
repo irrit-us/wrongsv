@@ -176,51 +176,110 @@ pub fn connect_webtransport(
         });
 
         rt.block_on(async {
-            match wt_handshake(server_addr, &header).await {
-                Ok((mut send, mut recv)) => {
-                    let _ = hs_tx.send(Ok(()));
+            // Create endpoint + connection here so they live for the
+            // entire async block — dropping either closes the QUIC conn.
+            let wt_client_config = wtransport::ClientConfig::builder()
+                .with_bind_default()
+                .with_custom_tls(make_wt_tls_config())
+                .build();
 
-                    // Read loop
-                    let read_handle: tokio::task::JoinHandle<()> = tokio::spawn(async move {
-                        let mut buf = vec![0u8; 65536];
-                        loop {
-                            match recv.read(&mut buf).await {
-                                Ok(Some(n)) => {
-                                    if read_tx.send(buf[..n].to_vec()).is_err() {
-                                        break;
-                                    }
-                                }
-                                Ok(None) | Err(_) => {
-                                    let _ = read_tx.send(Vec::new());
-                                    break;
-                                }
-                            }
-                        }
-                    });
+            let endpoint = match wtransport::Endpoint::client(wt_client_config) {
+                Ok(ep) => ep,
+                Err(e) => {
+                    let _ = hs_tx.send(Err(io::Error::other(format!("WT endpoint: {e}"))));
+                    return;
+                }
+            };
 
-                    // Write loop
-                    loop {
-                        match tokio_write_rx.recv().await {
-                            Some(data) => {
-                                if send.write_all(&data).await.is_err() {
-                                    break;
-                                }
-                            }
-                            None => {
-                                tokio::spawn(async move {
-                                    let _ = send.finish().await;
-                                });
+            let url = format!("https://{server_addr}/eval");
+            let connection = match endpoint.connect(url.as_str()).await {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = hs_tx.send(Err(io::Error::new(
+                        io::ErrorKind::ConnectionRefused,
+                        format!("WT connect: {e}"),
+                    )));
+                    return;
+                }
+            };
+
+            let (mut send, mut recv) = match connection.open_bi().await {
+                Ok(open) => match open.await {
+                    Ok(sr) => sr,
+                    Err(e) => {
+                        let _ =
+                            hs_tx.send(Err(io::Error::other(format!("WT opening stream: {e}"))));
+                        return;
+                    }
+                },
+                Err(e) => {
+                    let _ = hs_tx.send(Err(io::Error::other(format!("WT open bi: {e}"))));
+                    return;
+                }
+            };
+
+            // Send VLESS header
+            if let Err(e) = send.write_all(&header).await {
+                let _ = hs_tx.send(Err(io::Error::new(io::ErrorKind::BrokenPipe, e)));
+                return;
+            }
+
+            // Read VLESS response
+            let mut resp = [0u8; 2];
+            if let Err(e) = recv.read_exact(&mut resp).await {
+                let _ = hs_tx.send(Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("VLESS response: {e}"),
+                )));
+                return;
+            }
+            if resp[1] > 0 {
+                let mut addons = vec![0u8; resp[1] as usize];
+                let _ = recv.read_exact(&mut addons).await;
+            }
+
+            // Keep endpoint + connection alive for the relay lifetime
+            let _endpoint = endpoint;
+            let _connection = connection;
+
+            let _ = hs_tx.send(Ok(()));
+
+            // Read loop
+            let read_handle: tokio::task::JoinHandle<()> = tokio::spawn(async move {
+                let mut buf = vec![0u8; 65536];
+                loop {
+                    match recv.read(&mut buf).await {
+                        Ok(Some(n)) => {
+                            if read_tx.send(buf[..n].to_vec()).is_err() {
                                 break;
                             }
                         }
+                        Ok(None) | Err(_) => {
+                            let _ = read_tx.send(Vec::new());
+                            break;
+                        }
                     }
-
-                    read_handle.abort();
                 }
-                Err(e) => {
-                    let _ = hs_tx.send(Err(e));
+            });
+
+            // Write loop
+            loop {
+                match tokio_write_rx.recv().await {
+                    Some(data) => {
+                        if send.write_all(&data).await.is_err() {
+                            break;
+                        }
+                    }
+                    None => {
+                        tokio::spawn(async move {
+                            let _ = send.finish().await;
+                        });
+                        break;
+                    }
                 }
             }
+
+            read_handle.abort();
         });
     });
 
@@ -234,55 +293,4 @@ pub fn connect_webtransport(
         read_buf: Vec::new(),
         _handle: handle,
     }))
-}
-
-async fn wt_handshake(
-    server_addr: std::net::SocketAddr,
-    vless_header: &[u8],
-) -> Result<(wtransport::SendStream, wtransport::RecvStream), io::Error> {
-    let tls_config = make_wt_tls_config();
-    let client_config = wtransport::ClientConfig::builder()
-        .with_bind_default()
-        .with_custom_tls(tls_config)
-        .build();
-
-    let endpoint = wtransport::Endpoint::client(client_config)
-        .map_err(|e| io::Error::other(format!("WT endpoint: {e}")))?;
-
-    let url = format!("https://{server_addr}/eval");
-    let connection = endpoint.connect(url.as_str()).await.map_err(|e| {
-        io::Error::new(io::ErrorKind::ConnectionRefused, format!("WT connect: {e}"))
-    })?;
-
-    let opening = connection
-        .open_bi()
-        .await
-        .map_err(|e| io::Error::other(format!("WT open bi: {e}")))?;
-    let (mut send, mut recv) = opening
-        .await
-        .map_err(|e| io::Error::other(format!("WT opening stream: {e}")))?;
-
-    // Send VLESS header
-    send.write_all(vless_header)
-        .await
-        .map_err(|e| io::Error::new(io::ErrorKind::BrokenPipe, e))?;
-
-    // Read VLESS response
-    let mut resp = [0u8; 2];
-    match recv.read_exact(&mut resp).await {
-        Ok(()) => {
-            if resp[1] > 0 {
-                let mut addons = vec![0u8; resp[1] as usize];
-                let _ = recv.read_exact(&mut addons).await;
-            }
-        }
-        Err(e) => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("VLESS response: {e}"),
-            ));
-        }
-    }
-
-    Ok((send, recv))
 }

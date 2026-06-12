@@ -62,6 +62,8 @@ pub(crate) mod webtransport;
 pub(crate) use webtransport::*;
 pub(crate) mod shadowtls;
 pub(crate) use shadowtls::*;
+pub(crate) mod tls_relay;
+pub(crate) use tls_relay::*;
 pub(crate) mod vmess_handler;
 pub(crate) use vmess_handler::*;
 
