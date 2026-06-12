@@ -169,6 +169,20 @@ All 6 stacks pass locally at 0% loss (3-second tests):
 | post-quantum | reality | 0% | 16.05ms |
 | legacy | vmess | 0% | 82.25ms |
 
+### Remote Stack Results (2026-06-11, ~600ms RTT path)
+
+5/6 stacks pass. VMess shows suspected GFW interference (consistent with
+prior 12.5% remote loss pattern):
+
+| Stack | Protocols Tested | Loss | Latency (avg) | Notes |
+|-------|-----------------|------|---------------|-------|
+| tier1 | reality | 0% | 787ms | |
+| tier2 | reality | 0% | 787ms | |
+| tier3 | ws+tls | 0% | 1035ms | WS framing overhead at high RTT |
+| tier4 | shadowtls | 0% | 1080ms | |
+| post-quantum | reality | 0% | 787ms | |
+| legacy | vmess | 20% | 2055ms | ⚠️ suspected GFW DPI |
+
 For the full protocol-level matrix, see [Protocol Matrix](#protocol-matrix) above.
 
 ## Known Artifacts
