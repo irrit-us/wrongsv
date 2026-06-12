@@ -698,14 +698,14 @@ pub fn connect_reality(
 
     // Read VLESS response (handshake just completed, keep 10s timeout for this)
     let mut resp = [0u8; 2];
-    conn.read_exact(&mut resp)?;
+    super::read_exact_retry(&mut conn, &mut resp)?;
 
     // Use a short read timeout so WouldBlock retries don't stall data transfer
     conn.sock
         .set_read_timeout(Some(Duration::from_millis(50)))?;
     if resp[1] > 0 {
         let mut addons = vec![0u8; resp[1] as usize];
-        conn.read_exact(&mut addons)?;
+        super::read_exact_retry(&mut conn, &mut addons)?;
     }
 
     Ok(Box::new(conn))

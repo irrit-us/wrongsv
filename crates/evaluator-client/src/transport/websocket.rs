@@ -34,23 +34,59 @@ fn make_ws_frame(payload: &[u8]) -> Vec<u8> {
 }
 
 /// Read a WebSocket header from the server (unmasked).
+/// Uses WouldBlock-tolerant reads for high-RTT paths.
 fn read_ws_header(stream: &mut dyn Read) -> io::Result<(u8, u64)> {
     let mut hdr = [0u8; 2];
-    stream.read_exact(&mut hdr)?;
+    read_exact_ws(stream, &mut hdr)?;
     let opcode = hdr[0] & 0x0F;
     let mut len = (hdr[1] & 0x7F) as u64;
 
     if len == 126 {
         let mut buf = [0u8; 2];
-        stream.read_exact(&mut buf)?;
+        read_exact_ws(stream, &mut buf)?;
         len = u16::from_be_bytes(buf) as u64;
     } else if len == 127 {
         let mut buf = [0u8; 8];
-        stream.read_exact(&mut buf)?;
+        read_exact_ws(stream, &mut buf)?;
         len = u64::from_be_bytes(buf);
     }
 
     Ok((opcode, len))
+}
+
+/// WouldBlock-tolerant read_exact for WebSocket framing.
+fn read_exact_ws(stream: &mut dyn Read, mut buf: &mut [u8]) -> io::Result<()> {
+    let mut retries: u32 = 0;
+    const MAX_RETRIES: u32 = 600;
+    while !buf.is_empty() {
+        match stream.read(buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                let tmp = buf;
+                buf = &mut tmp[n..];
+                retries = 0;
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                retries += 1;
+                if retries > MAX_RETRIES {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "ws read_exact: too many WouldBlock retries",
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    if buf.is_empty() {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "ws read_exact: failed to fill buffer",
+        ))
+    }
 }
 
 /// WebSocket I/O wrapper: frames outgoing data, deframes incoming data.
@@ -85,7 +121,7 @@ impl Read for WsConnection {
             let (opcode, len) = read_ws_header(self.inner.as_mut())?;
             let mut payload = vec![0u8; len as usize];
             if len > 0 {
-                self.inner.read_exact(&mut payload)?;
+                read_exact_ws(self.inner.as_mut(), &mut payload)?;
             }
 
             match opcode {
@@ -156,15 +192,32 @@ fn ws_upgrade_handshake(stream: &mut dyn ReadWrite, path: &str) -> io::Result<()
 
     let mut buf = vec![0u8; 4096];
     let mut total = 0;
+    let mut retries: u32 = 0;
     loop {
-        let n = stream.read(&mut buf[total..])?;
-        if n == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "WS upgrade: connection closed",
-            ));
+        match stream.read(&mut buf[total..]) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "WS upgrade: connection closed",
+                ));
+            }
+            Ok(n) => {
+                total += n;
+                retries = 0;
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                retries += 1;
+                if retries > 600 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "WS upgrade: too many WouldBlock retries",
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                continue;
+            }
+            Err(e) => return Err(e),
         }
-        total += n;
         if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
             break;
         }
@@ -215,7 +268,7 @@ pub fn connect_ws(
         let (_opcode, len) = read_ws_header(&mut tls)?;
         if len > 0 {
             let mut discard = vec![0u8; len as usize];
-            tls.read_exact(&mut discard)?;
+            super::read_exact_retry(&mut tls, &mut discard)?;
         }
 
         Ok(Box::new(WsConnection::new(Box::new(tls))))
@@ -230,7 +283,7 @@ pub fn connect_ws(
         let (_opcode, len) = read_ws_header(&mut sock)?;
         if len > 0 {
             let mut discard = vec![0u8; len as usize];
-            sock.read_exact(&mut discard)?;
+            super::read_exact_retry(&mut sock, &mut discard)?;
         }
 
         Ok(Box::new(WsConnection::new(Box::new(sock))))
