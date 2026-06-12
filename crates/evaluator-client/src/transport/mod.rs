@@ -37,6 +37,45 @@ pub type BoxedIo = Box<dyn ReadWrite>;
 // Re-export for modules
 use tls_common::make_no_verify_config;
 
+// ── I/O helpers ───────────────────────────────────────────────────────────
+
+/// Like `Read::read_exact` but retries on `WouldBlock` — essential for
+/// high-RTT paths where TLS/TCP read timeouts fire before data arrives.
+/// Each retry sleeps 5 ms; total budget is ~3 s (600 retries).
+pub(crate) fn read_exact_retry(stream: &mut dyn ReadWrite, mut buf: &mut [u8]) -> io::Result<()> {
+    let mut retries: u32 = 0;
+    const MAX_RETRIES: u32 = 600;
+    while !buf.is_empty() {
+        match stream.read(buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                let tmp = buf;
+                buf = &mut tmp[n..];
+                retries = 0;
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                retries += 1;
+                if retries > MAX_RETRIES {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "read_exact_retry: too many WouldBlock retries",
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    if buf.is_empty() {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "failed to fill whole buffer",
+        ))
+    }
+}
+
 // ── Connection helper ────────────────────────────────────────────────────
 
 /// Connect to the proxy on the given host and port. Used by all transports.

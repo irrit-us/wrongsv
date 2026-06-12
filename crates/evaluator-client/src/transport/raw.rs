@@ -1,6 +1,6 @@
 //! Raw TCP VLESS transport — no TLS, no framing.
 
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
@@ -71,10 +71,10 @@ pub fn connect_raw(
     sock.write_all(&header)?;
 
     let mut resp = [0u8; 2];
-    sock.read_exact(&mut resp)?;
+    super::read_exact_retry(&mut sock, &mut resp)?;
     if resp[1] > 0 {
         let mut addons = vec![0u8; resp[1] as usize];
-        sock.read_exact(&mut addons)?;
+        super::read_exact_retry(&mut sock, &mut addons)?;
     }
 
     Ok(Box::new(sock))

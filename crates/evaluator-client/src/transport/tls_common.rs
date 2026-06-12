@@ -230,10 +230,10 @@ pub fn connect_tls(
     tls.write_all(&header)?;
 
     let mut resp = [0u8; 2];
-    tls.read_exact(&mut resp)?;
+    super::read_exact_retry(&mut tls, &mut resp)?;
     if resp[1] > 0 {
         let mut addons = vec![0u8; resp[1] as usize];
-        tls.read_exact(&mut addons)?;
+        super::read_exact_retry(&mut tls, &mut addons)?;
     }
 
     Ok(Box::new(tls))

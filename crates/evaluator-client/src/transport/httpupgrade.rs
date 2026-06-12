@@ -24,15 +24,32 @@ fn http_upgrade_handshake(stream: &mut dyn ReadWrite, path: &str) -> io::Result<
 
     let mut buf = vec![0u8; 4096];
     let mut total = 0;
+    let mut retries: u32 = 0;
     loop {
-        let n = stream.read(&mut buf[total..])?;
-        if n == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "HTTPUpgrade: connection closed",
-            ));
+        match stream.read(&mut buf[total..]) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "HTTPUpgrade: connection closed",
+                ));
+            }
+            Ok(n) => {
+                total += n;
+                retries = 0;
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                retries += 1;
+                if retries > 600 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "HTTPUpgrade: too many WouldBlock retries",
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                continue;
+            }
+            Err(e) => return Err(e),
         }
-        total += n;
         if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
             break;
         }
@@ -75,10 +92,10 @@ pub fn connect_httpupgrade(
         tls.write_all(&header)?;
 
         let mut resp = [0u8; 2];
-        tls.read_exact(&mut resp)?;
+        super::read_exact_retry(&mut tls, &mut resp)?;
         if resp[1] > 0 {
             let mut addons = vec![0u8; resp[1] as usize];
-            tls.read_exact(&mut addons)?;
+            super::read_exact_retry(&mut tls, &mut addons)?;
         }
 
         Ok(Box::new(tls))
@@ -90,10 +107,10 @@ pub fn connect_httpupgrade(
         sock.write_all(&header)?;
 
         let mut resp = [0u8; 2];
-        sock.read_exact(&mut resp)?;
+        super::read_exact_retry(&mut sock, &mut resp)?;
         if resp[1] > 0 {
             let mut addons = vec![0u8; resp[1] as usize];
-            sock.read_exact(&mut addons)?;
+            super::read_exact_retry(&mut sock, &mut addons)?;
         }
 
         Ok(Box::new(sock))
