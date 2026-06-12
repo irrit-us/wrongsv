@@ -231,8 +231,12 @@ rules:
 
 fn start_mihomo(config_path: &str, socks_port: u16) -> MihomoGuard {
     let bin = mihomo_bin().expect("mihomo not found");
+    // Each mihomo gets its own working directory so cache.db locks don't collide
+    // when multiple instances run in parallel (multi-user test).
+    let work_dir = format!("/tmp/mihomo-d-{socks_port}");
+    let _ = std::fs::create_dir_all(&work_dir);
     let child = Command::new(&bin)
-        .args(["-f", config_path])
+        .args(["-d", &work_dir, "-f", config_path])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
