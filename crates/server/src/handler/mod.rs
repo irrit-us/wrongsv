@@ -651,7 +651,7 @@ impl InboundServer {
                             } else if let Some(ref trc) = trc {
                                 handle_trojan_connection(stream, trc, m)
                             } else if let Some(ref vmc) = vmc {
-                                handle_vmess_connection(stream, vmc)
+                                handle_vmess_connection(stream, vmc, m)
                             } else {
                                 handle_connection(stream, v, kyber_sk, m)
                             }

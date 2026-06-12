@@ -55,6 +55,7 @@ pub(crate) fn parse_vmess_handler_config(
 pub(crate) fn handle_vmess_connection(
     stream: TcpStream,
     config: &VmessHandlerConfig,
+    metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let peer = stream.peer_addr()?;
     trace!("{peer} VMess connection");
@@ -76,6 +77,9 @@ pub(crate) fn handle_vmess_connection(
         }
     };
     info!("{peer} VMess auth OK user={user_email}");
+
+    let tap = wrongsv_metrics::MetricsTap::new(metrics, user_email);
+    let _conn_guard = tap.track_connection();
 
     // ── Read header ────────────────────────────────────────────────────
     let mut header_len_buf = [0u8; 2];
@@ -140,6 +144,7 @@ pub(crate) fn handle_vmess_connection(
     let cbk = *client_body_key;
     let cbv = *client_body_iv;
     let err_tx1 = err_tx.clone();
+    let tap_up = tap.clone();
     let t1 = thread::spawn(move || {
         let result = (|| -> Result<(), Box<dyn std::error::Error>> {
             let mut reader = vmess::VmessBodyReader::new(&cbk, &cbv);
@@ -147,6 +152,7 @@ pub(crate) fn handle_vmess_connection(
                 let mut plaintext = Vec::with_capacity(16384);
                 match reader.read_chunk(&mut client_r, &mut plaintext) {
                     Ok(true) => {
+                        tap_up.record_in(plaintext.len() as u64);
                         target_w.write_all(&plaintext)?;
                     }
                     Ok(false) => break, // EOF
@@ -171,6 +177,7 @@ pub(crate) fn handle_vmess_connection(
     // Thread 2: Read from target → encrypt with VMess body → write to client
     let sbk = *client_body_key;
     let sbv = *client_body_iv;
+    let tap_down = tap.clone();
     let t2 = thread::spawn(move || {
         let result = (|| -> Result<(), Box<dyn std::error::Error>> {
             let mut writer = vmess::VmessBodyWriter::new(&sbk, &sbv);
@@ -182,6 +189,7 @@ pub(crate) fn handle_vmess_connection(
                         break;
                     }
                     Ok(n) => {
+                        tap_down.record_out(n as u64);
                         writer.write_chunk(&mut client_w, &buf[..n])?;
                     }
                     Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
