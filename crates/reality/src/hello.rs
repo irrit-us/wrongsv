@@ -126,6 +126,89 @@ pub fn parse_client_hello(buf: &[u8]) -> Result<ParsedClientHello, RealityError>
     })
 }
 
+/// Build a complete REALITY ClientHello record (TLS 1.3).
+///
+/// The caller provides the pre-computed random, encrypted session_id, ephemeral
+/// X25519 public key, and SNI hostname.  The function assembles a wire-format
+/// TLS 1.3 ClientHello with the minimal set of extensions that a standard TLS
+/// stack expects: supported_versions (1.3), signature_algorithms (ed25519 +
+/// ecdsa_secp256r1), supported_groups (X25519), key_share (X25519), and
+/// server_name (SNI).
+pub fn build_reality_client_hello(
+    random: [u8; 32],
+    session_id: [u8; 32],
+    key_share: [u8; 32],
+    sni: &str,
+) -> Vec<u8> {
+    let mut body = Vec::new();
+    body.push(0x01); // handshake: client_hello
+    body.extend_from_slice(&[0x00, 0x00, 0x00]); // length placeholder
+    body.extend_from_slice(&[0x03, 0x03]); // TLS 1.2 compat version
+    body.extend_from_slice(&random);
+    body.push(32); // session_id length
+    body.extend_from_slice(&session_id);
+    // cipher_suites: TLS_AES_128_GCM_SHA256 (0x1301) — sufficient for our
+    // HKDF-SHA256 key schedule
+    body.extend_from_slice(&[0x00, 0x02, 0x13, 0x01]);
+    body.extend_from_slice(&[0x01, 0x00]); // compression: null
+
+    let mut extensions = Vec::new();
+
+    // supported_versions: TLS 1.3
+    extensions.extend_from_slice(&0x002bu16.to_be_bytes());
+    extensions.extend_from_slice(&3u16.to_be_bytes());
+    extensions.push(2); // versions len
+    extensions.extend_from_slice(&[0x03, 0x04]); // TLS 1.3
+
+    // signature_algorithms
+    extensions.extend_from_slice(&0x000du16.to_be_bytes());
+    extensions.extend_from_slice(&6u16.to_be_bytes());
+    extensions.extend_from_slice(&4u16.to_be_bytes());
+    extensions.extend_from_slice(&0x0807u16.to_be_bytes()); // ed25519
+    extensions.extend_from_slice(&0x0403u16.to_be_bytes()); // ecdsa_secp256r1_sha256
+
+    // supported_groups: X25519
+    extensions.extend_from_slice(&0x000au16.to_be_bytes());
+    extensions.extend_from_slice(&4u16.to_be_bytes());
+    extensions.extend_from_slice(&2u16.to_be_bytes());
+    extensions.extend_from_slice(&0x001du16.to_be_bytes());
+
+    // key_share: X25519
+    extensions.extend_from_slice(&0x0033u16.to_be_bytes());
+    extensions.extend_from_slice(&38u16.to_be_bytes());
+    extensions.extend_from_slice(&36u16.to_be_bytes());
+    extensions.extend_from_slice(&0x001du16.to_be_bytes());
+    extensions.extend_from_slice(&32u16.to_be_bytes());
+    extensions.extend_from_slice(&key_share);
+
+    // server_name: SNI
+    let host = sni.as_bytes();
+    extensions.extend_from_slice(&0x0000u16.to_be_bytes());
+    let sn_len: u16 = 5 + host.len() as u16;
+    extensions.extend_from_slice(&sn_len.to_be_bytes());
+    extensions.extend_from_slice(&(3 + host.len() as u16).to_be_bytes());
+    extensions.push(0);
+    extensions.extend_from_slice(&(host.len() as u16).to_be_bytes());
+    extensions.extend_from_slice(host);
+
+    body.extend_from_slice(&(extensions.len() as u16).to_be_bytes());
+    body.extend_from_slice(&extensions);
+
+    // Fill in handshake length (bytes after the 4-byte handshake header)
+    let hs_len = (body.len() - 4) as u32;
+    body[1] = (hs_len >> 16) as u8;
+    body[2] = (hs_len >> 8) as u8;
+    body[3] = hs_len as u8;
+
+    // Wrap in TLS record
+    let mut record = Vec::new();
+    record.push(0x16); // handshake
+    record.extend_from_slice(&[0x03, 0x01]);
+    record.extend_from_slice(&(body.len() as u16).to_be_bytes());
+    record.extend_from_slice(&body);
+    record
+}
+
 /// Find the X25519 key_share entry in TLS extensions.
 fn parse_key_share_ext(ext_data: &[u8], ext_end: usize) -> Result<[u8; 32], RealityError> {
     let mut pos = 0;

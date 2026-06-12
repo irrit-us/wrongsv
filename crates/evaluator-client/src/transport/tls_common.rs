@@ -226,7 +226,7 @@ pub fn connect_tls(
     sock.set_write_timeout(Some(Duration::from_secs(10)))?;
     let mut tls = tls_handshake_sync(sock, "cloudfront.net")?;
 
-    let header = super::raw::build_vless_header(uuid, target_addr, target_port, flow);
+    let header = super::raw::build_vless_header(uuid, target_addr, target_port, flow)?;
     tls.write_all(&header)?;
 
     let mut resp = [0u8; 2];

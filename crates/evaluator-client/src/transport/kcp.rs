@@ -117,7 +117,7 @@ pub fn connect_kcp(
     flow: &str,
 ) -> io::Result<BoxedIo> {
     let seed = "eval-kcp-seed";
-    let header = super::raw::build_vless_header(uuid, target_addr, target_port, flow);
+    let header = super::raw::build_vless_header(uuid, target_addr, target_port, flow)?;
     // Resolve hostname via DNS — SocketAddr::parse only handles IP literals.
     let server_addr: SocketAddr =
         std::net::ToSocketAddrs::to_socket_addrs(&(proxy_host, proxy_port))

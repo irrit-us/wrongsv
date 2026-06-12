@@ -139,7 +139,7 @@ pub fn connect_shadowtls(
     flow: &str,
 ) -> io::Result<BoxedIo> {
     let password = "eval-stls-pass"; // matches evaluator orchestrator default
-    let header = super::raw::build_vless_header(uuid, target_addr, target_port, flow);
+    let header = super::raw::build_vless_header(uuid, target_addr, target_port, flow)?;
     let stream = super::connect_proxy(proxy_host, proxy_port)?;
 
     let (read_tx, read_rx) = mpsc::channel::<Vec<u8>>();
@@ -319,7 +319,16 @@ pub fn connect_shadowtls(
         loop {
             match write_rx.recv() {
                 Ok(data) => {
-                    let mut c = conn.lock().unwrap();
+                    let mut c = loop {
+                        match conn.try_lock() {
+                            Ok(guard) => break guard,
+                            Err(std::sync::TryLockError::WouldBlock) => {
+                                // Reader holds the lock briefly during TLS socket I/O.
+                                std::thread::sleep(Duration::from_millis(1));
+                            }
+                            Err(std::sync::TryLockError::Poisoned(_)) => return,
+                        }
+                    };
                     if c.writer().write_all(&data).is_err() {
                         break;
                     }
@@ -330,7 +339,15 @@ pub fn connect_shadowtls(
                     }
                 }
                 Err(_) => {
-                    let mut c = conn.lock().unwrap();
+                    let mut c = loop {
+                        match conn.try_lock() {
+                            Ok(guard) => break guard,
+                            Err(std::sync::TryLockError::WouldBlock) => {
+                                std::thread::sleep(Duration::from_millis(1));
+                            }
+                            Err(std::sync::TryLockError::Poisoned(_)) => return,
+                        }
+                    };
                     c.send_close_notify();
                     while c.wants_write() {
                         let _ = c.write_tls(&mut sock_w);

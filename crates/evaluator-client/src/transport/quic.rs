@@ -83,7 +83,7 @@ pub fn connect_quic(
     target_port: u16,
     flow: &str,
 ) -> io::Result<BoxedIo> {
-    let header = super::raw::build_vless_header(uuid, target_addr, target_port, flow);
+    let header = super::raw::build_vless_header(uuid, target_addr, target_port, flow)?;
     // Resolve now — avoids DNS in async context and catches bad hostnames early.
     let server_addr: std::net::SocketAddr =
         std::net::ToSocketAddrs::to_socket_addrs(&(proxy_host, proxy_port))
@@ -108,7 +108,7 @@ pub fn connect_quic(
     let (tokio_write_tx, mut tokio_write_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
 
     let handle = std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_multi_thread()
+        let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();

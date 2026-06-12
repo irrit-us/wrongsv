@@ -145,82 +145,6 @@ impl AeadState {
     }
 }
 
-// ── ClientHello builder ─────────────────────────────────────────────────────
-
-fn build_reality_client_hello(
-    random: [u8; 32],
-    session_id: [u8; 32],
-    key_share: [u8; 32],
-    sni: &str,
-) -> Vec<u8> {
-    let mut body = Vec::new();
-    body.push(0x01); // handshake: client_hello
-    body.extend_from_slice(&[0x00, 0x00, 0x00]); // length placeholder
-    body.extend_from_slice(&[0x03, 0x03]); // TLS 1.2 compat version
-    body.extend_from_slice(&random);
-    body.push(32);
-    body.extend_from_slice(&session_id);
-    // cipher_suites: only TLS_AES_128_GCM_SHA256 — our HKDF is SHA-256 only
-    body.extend_from_slice(&[0x00, 0x02, 0x13, 0x01]);
-    body.extend_from_slice(&[0x01, 0x00]); // compression: null
-
-    let mut extensions = Vec::new();
-
-    // supported_versions: TLS 1.3
-    extensions.extend_from_slice(&0x002bu16.to_be_bytes()); // ext type
-    extensions.extend_from_slice(&3u16.to_be_bytes()); // ext len
-    extensions.push(2); // versions len
-    extensions.extend_from_slice(&[0x03, 0x04]); // TLS 1.3
-
-    // signature_algorithms
-    extensions.extend_from_slice(&0x000du16.to_be_bytes());
-    extensions.extend_from_slice(&6u16.to_be_bytes());
-    extensions.extend_from_slice(&4u16.to_be_bytes());
-    extensions.extend_from_slice(&0x0807u16.to_be_bytes()); // ed25519
-    extensions.extend_from_slice(&0x0403u16.to_be_bytes()); // ecdsa_secp256r1_sha256
-
-    // supported_groups: X25519
-    extensions.extend_from_slice(&0x000au16.to_be_bytes());
-    extensions.extend_from_slice(&4u16.to_be_bytes());
-    extensions.extend_from_slice(&2u16.to_be_bytes());
-    extensions.extend_from_slice(&0x001du16.to_be_bytes());
-
-    // key_share: X25519
-    extensions.extend_from_slice(&0x0033u16.to_be_bytes());
-    extensions.extend_from_slice(&38u16.to_be_bytes());
-    extensions.extend_from_slice(&36u16.to_be_bytes());
-    extensions.extend_from_slice(&0x001du16.to_be_bytes());
-    extensions.extend_from_slice(&32u16.to_be_bytes());
-    extensions.extend_from_slice(&key_share);
-
-    // server_name: SNI
-    let host = sni.as_bytes();
-    extensions.extend_from_slice(&0x0000u16.to_be_bytes());
-    let sn_len = 5 + host.len() as u16;
-    extensions.extend_from_slice(&sn_len.to_be_bytes());
-    extensions.extend_from_slice(&(3 + host.len() as u16).to_be_bytes());
-    extensions.push(0);
-    extensions.extend_from_slice(&(host.len() as u16).to_be_bytes());
-    extensions.extend_from_slice(host);
-
-    body.extend_from_slice(&(extensions.len() as u16).to_be_bytes());
-    body.extend_from_slice(&extensions);
-
-    // Fill handshake length
-    let hs_len = (body.len() - 4) as u32;
-    body[1] = (hs_len >> 16) as u8;
-    body[2] = (hs_len >> 8) as u8;
-    body[3] = hs_len as u8;
-
-    // TLS record wrapper
-    let mut record = Vec::new();
-    record.push(0x16); // handshake
-    record.extend_from_slice(&[0x03, 0x01]);
-    record.extend_from_slice(&(body.len() as u16).to_be_bytes());
-    record.extend_from_slice(&body);
-    record
-}
-
 // ── ServerHello parser ──────────────────────────────────────────────────────
 
 fn parse_server_hello(payload: &[u8]) -> io::Result<([u8; 32], [u8; 32])> {
@@ -495,16 +419,24 @@ pub fn connect_reality(
         .as_secs() as u32;
 
     // Build temp ClientHello for AAD
-    let temp_hello =
-        build_reality_client_hello(client_random, [0u8; 32], *client_pk.as_bytes(), sni);
+    let temp_hello = wrongsv_reality::build_reality_client_hello(
+        client_random,
+        [0u8; 32],
+        *client_pk.as_bytes(),
+        sni,
+    );
     let aad = &temp_hello[5..]; // strip TLS record header
 
     let session_id =
         wrongsv_reality::build_session_id(&auth_key, &client_random, timestamp, &short_id, aad)
             .map_err(|e| io::Error::other(format!("build session id: {e}")))?;
 
-    let client_hello =
-        build_reality_client_hello(client_random, session_id, *client_pk.as_bytes(), sni);
+    let client_hello = wrongsv_reality::build_reality_client_hello(
+        client_random,
+        session_id,
+        *client_pk.as_bytes(),
+        sni,
+    );
     let client_hello_body = &client_hello[5..]; // for transcript
 
     sock.write_all(&client_hello)?;
@@ -675,7 +607,7 @@ pub fn connect_reality(
     };
 
     // Step 10: Send VLESS header
-    let header = super::raw::build_vless_header(uuid, target_addr, target_port, flow);
+    let header = super::raw::build_vless_header(uuid, target_addr, target_port, flow)?;
     conn.write_all(&header)?;
     conn.flush()?;
 

@@ -164,7 +164,7 @@ pub fn connect_xhttp(
     tls_config: Option<Arc<ClientConfig>>,
 ) -> io::Result<BoxedIo> {
     let use_tls = tls_config.is_some();
-    let header = super::raw::build_vless_header(uuid, target_addr, target_port, flow);
+    let header = super::raw::build_vless_header(uuid, target_addr, target_port, flow)?;
     let addr = proxy_addr.to_string();
 
     let (read_tx, read_rx) = mpsc::channel::<Vec<u8>>();
@@ -174,7 +174,7 @@ pub fn connect_xhttp(
     let (tokio_write_tx, mut tokio_write_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
 
     let handle = std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_multi_thread()
+        let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();

@@ -28,7 +28,7 @@ pub fn connect_anytls(
     tls.write_all(&[0x00, 0x00])?;
 
     // Send VLESS header
-    let header = super::raw::build_vless_header(uuid, target_addr, target_port, flow);
+    let header = super::raw::build_vless_header(uuid, target_addr, target_port, flow)?;
     tls.write_all(&header)?;
 
     // Read VLESS response

@@ -193,7 +193,7 @@ pub fn connect_grpc(
     tls_config: Option<Arc<ClientConfig>>,
 ) -> io::Result<BoxedIo> {
     let use_tls = tls_config.is_some();
-    let header = super::raw::build_vless_header(uuid, target_addr, target_port, flow);
+    let header = super::raw::build_vless_header(uuid, target_addr, target_port, flow)?;
     let hdr_frame = wrongsv_grpc::encode_hunk_frame(&header);
     let addr = proxy_addr.to_string();
 
@@ -203,7 +203,7 @@ pub fn connect_grpc(
     let (tokio_write_tx, mut tokio_write_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
 
     let handle = std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_multi_thread()
+        let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();

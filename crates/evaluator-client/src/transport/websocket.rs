@@ -220,7 +220,7 @@ pub fn connect_ws(
 
         ws_upgrade_handshake(&mut tls, "/eval")?;
 
-        let header = super::raw::build_vless_header(uuid, target_addr, target_port, flow);
+        let header = super::raw::build_vless_header(uuid, target_addr, target_port, flow)?;
         let frame = make_ws_frame(&header);
         tls.write_all(&frame)?;
 
@@ -236,7 +236,7 @@ pub fn connect_ws(
         let mut sock = sock;
         ws_upgrade_handshake(&mut sock, "/eval")?;
 
-        let header = super::raw::build_vless_header(uuid, target_addr, target_port, flow);
+        let header = super::raw::build_vless_header(uuid, target_addr, target_port, flow)?;
         let frame = make_ws_frame(&header);
         sock.write_all(&frame)?;
 

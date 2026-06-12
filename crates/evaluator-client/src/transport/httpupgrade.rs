@@ -88,9 +88,8 @@ pub fn connect_httpupgrade(
         let mut tls = tls_common::tls_handshake_sync(sock, "cloudfront.net")?;
         http_upgrade_handshake(&mut tls, "/eval")?;
 
-        let header = super::raw::build_vless_header(uuid, target_addr, target_port, flow);
+        let header = super::raw::build_vless_header(uuid, target_addr, target_port, flow)?;
         tls.write_all(&header)?;
-
         let mut resp = [0u8; 2];
         super::read_exact_retry(&mut tls, &mut resp)?;
         if resp[1] > 0 {
@@ -103,9 +102,8 @@ pub fn connect_httpupgrade(
         let mut sock = sock;
         http_upgrade_handshake(&mut sock, "/eval")?;
 
-        let header = super::raw::build_vless_header(uuid, target_addr, target_port, flow);
+        let header = super::raw::build_vless_header(uuid, target_addr, target_port, flow)?;
         sock.write_all(&header)?;
-
         let mut resp = [0u8; 2];
         super::read_exact_retry(&mut sock, &mut resp)?;
         if resp[1] > 0 {

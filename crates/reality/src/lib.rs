@@ -13,7 +13,7 @@ mod tls;
 
 pub use auth::{build_session_id, compute_cert_hmac, derive_client_auth_key};
 pub use cert::generate_reality_cert;
-pub use hello::ParsedClientHello;
+pub use hello::{ParsedClientHello, build_reality_client_hello};
 pub use tls::{
     BufferedStream, RealityTlsStream, accept_reality, complete_handshake, spider_fallback,
 };
