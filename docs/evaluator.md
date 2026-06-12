@@ -36,7 +36,7 @@ eval-server [OPTIONS]
 | Flag | Default | Purpose |
 |------|---------|---------|
 | `--listen` | `0.0.0.0:19999` | Control channel bind address |
-| `--token` | `eval-token` | Shared auth token |
+| `--token` | auto-generated | Shared auth token (random 32-char hex if omitted) |
 | `--duration` | `3` | Test duration per protocol (seconds) |
 | `--protocols` | all 17 | Comma-separated subset (e.g. `kcp,raw,tls`) |
 | `--stack` | — | Comma-separated stacks (e.g. `tier1,tier2`) or `all` |
@@ -52,7 +52,7 @@ eval-client [OPTIONS]
 | Flag | Default | Purpose |
 |------|---------|---------|
 | `--server` | `127.0.0.1:19999` | Control channel address |
-| `--token` | `eval-token` | Shared auth token |
+| `--token` | auto-generated | Shared auth token (random 32-char hex if omitted) |
 | `--duration` | `3` | Test duration per protocol (seconds) |
 
 ## What Gets Measured

@@ -1,10 +1,18 @@
 //! Evaluator server binary — starts the evaluation orchestrator.
 //!
 //! Usage:
-//!   eval-server --listen 0.0.0.0:19999 --token my-token [--duration 3] [--protocols kcp,raw,tls] [--stack tier1] [--fixed-proxy-port 40000]
+//!   eval-server --listen 0.0.0.0:19999 [--token my-token] [--duration 3] [--protocols kcp,raw,tls] [--stack tier1] [--fixed-proxy-port 40000]
 
 use clap::Parser;
 use std::net::SocketAddr;
+use tracing::info;
+
+/// Generate a random 32-char hex token.
+fn random_token() -> String {
+    (0..16)
+        .map(|_| format!("{:02x}", rand::random::<u8>()))
+        .collect()
+}
 
 #[derive(Parser)]
 #[command(name = "eval-server")]
@@ -13,9 +21,9 @@ struct Cli {
     #[arg(long, default_value = "0.0.0.0:19999")]
     listen: String,
 
-    /// Authentication token
-    #[arg(long, default_value = "eval-token")]
-    token: String,
+    /// Authentication token (auto-generated if not set)
+    #[arg(long)]
+    token: Option<String>,
 
     /// Test duration in seconds per protocol
     #[arg(long, default_value = "3")]
@@ -52,10 +60,13 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .with_level(true)
         .init();
 
+    let token = cli.token.unwrap_or_else(random_token);
+    info!("auth token: {token}");
+
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(wrongsv_evaluator_server::orchestrator::run_orchestrator(
         &cli.listen,
-        &cli.token,
+        &token,
         cli.protocols.as_deref(),
         cli.stack.as_deref(),
         cli.duration,

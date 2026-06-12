@@ -1,9 +1,16 @@
 //! Evaluator client binary — connects to eval-server and runs all tests.
 //!
 //! Usage:
-//!   eval-client --server 127.0.0.1:19999 --token my-token [--duration 3]
+//!   eval-client --server 127.0.0.1:19999 [--token my-token] [--duration 3]
 
 use clap::Parser;
+
+/// Generate a random 32-char hex token.
+fn random_token() -> String {
+    (0..16)
+        .map(|_| format!("{:02x}", rand::random::<u8>()))
+        .collect()
+}
 
 #[derive(Parser)]
 #[command(name = "eval-client")]
@@ -12,9 +19,9 @@ struct Cli {
     #[arg(long, default_value = "127.0.0.1:19999")]
     server: String,
 
-    /// Authentication token
-    #[arg(long, default_value = "eval-token")]
-    token: String,
+    /// Authentication token (must match server; auto-generated if not set)
+    #[arg(long)]
+    token: Option<String>,
 
     /// Test duration in seconds per protocol
     #[arg(long, default_value = "3")]
@@ -24,10 +31,13 @@ struct Cli {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
+    let token = cli.token.unwrap_or_else(random_token);
+    eprintln!("auth token: {token}");
+
     println!("connecting to eval-server at {}...", cli.server);
 
     let results =
-        wrongsv_evaluator_client::runner::run_evaluation(&cli.server, &cli.token, cli.duration)?;
+        wrongsv_evaluator_client::runner::run_evaluation(&cli.server, &token, cli.duration)?;
 
     println!();
     println!("{:=<60}", "");
