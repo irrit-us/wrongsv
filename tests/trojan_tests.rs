@@ -408,3 +408,81 @@ fn test_trojan_rejects_bad_password_without_fallback() {
     let result = client.read(&mut response);
     assert!(result.is_err() || result.unwrap() == 0);
 }
+
+fn http_get(addr: &str, path: &str) -> String {
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    s.write_all(
+        format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").as_bytes(),
+    )
+    .unwrap();
+    let mut out = String::new();
+    s.read_to_string(&mut out).unwrap();
+    out
+}
+
+#[test]
+fn test_trojan_metrics_count_bytes_per_user() {
+    let listen = reserve_addr();
+    let metrics_addr = reserve_addr();
+    let metrics_port = metrics_addr
+        .split(':')
+        .next_back()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap();
+    let echo_addr = spawn_echo_target();
+    let email = "trojan-user@metrics.test";
+
+    let config_toml = format!(
+        r#"
+listen = "{listen}"
+
+[trojan]
+
+[[trojan.users]]
+password = "metrics-secret"
+email = "{email}"
+
+[metrics]
+port = {metrics_port}
+bind = "127.0.0.1"
+"#
+    );
+    let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
+    let server = wrongsv_server::InboundServer::new(config).unwrap();
+    let _handle = server.spawn();
+    thread::sleep(Duration::from_millis(200));
+
+    let payload = b"trojan-metrics-roundtrip-payload";
+    let mut client = TlsClient::connect(&listen);
+    write_trojan_connect(
+        &mut client,
+        "metrics-secret",
+        "localhost",
+        echo_addr.port(),
+        payload,
+    );
+
+    let mut response = vec![0u8; payload.len()];
+    client.read_exact(&mut response).unwrap();
+    assert_eq!(&response[..], payload, "echo mismatch");
+
+    client.shutdown();
+    thread::sleep(Duration::from_millis(200));
+
+    let scrape = http_get(&metrics_addr, "/metrics");
+    assert!(scrape.contains("200 OK"), "got: {scrape}");
+    let want_in = format!("wrongsv_user_bytes_in{{email=\"{email}\"}} {}", payload.len());
+    let want_out = format!(
+        "wrongsv_user_bytes_out{{email=\"{email}\"}} {}",
+        payload.len()
+    );
+    assert!(
+        scrape.contains(&want_in),
+        "missing {want_in}\n--- response ---\n{scrape}"
+    );
+    assert!(
+        scrape.contains(&want_out),
+        "missing {want_out}\n--- response ---\n{scrape}"
+    );
+}
