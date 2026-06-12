@@ -1,6 +1,6 @@
 //! HTTPUpgrade transport: HTTP 101 upgrade, then raw VLESS bytes (no WS frames).
 
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,7 +11,7 @@ use super::BoxedIo;
 use super::tls_common;
 
 /// Perform the HTTPUpgrade handshake.
-fn http_upgrade_handshake(stream: &mut dyn ReadWrite, path: &str) -> io::Result<()> {
+fn http_upgrade_handshake(stream: &mut dyn super::ReadWrite, path: &str) -> io::Result<()> {
     let req = format!(
         "GET {path} HTTP/1.1\r\n\
          Host: localhost\r\n\
@@ -116,6 +116,3 @@ pub fn connect_httpupgrade(
         Ok(Box::new(sock))
     }
 }
-
-trait ReadWrite: Read + Write + Send {}
-impl<T: Read + Write + Send> ReadWrite for T {}

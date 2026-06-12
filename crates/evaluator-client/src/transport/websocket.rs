@@ -32,58 +32,23 @@ fn make_ws_frame(payload: &[u8]) -> Vec<u8> {
 
 /// Read a WebSocket header from the server (unmasked).
 /// Uses WouldBlock-tolerant reads for high-RTT paths.
-fn read_ws_header(stream: &mut dyn Read) -> io::Result<(u8, u64)> {
+fn read_ws_header(stream: &mut dyn super::ReadWrite) -> io::Result<(u8, u64)> {
     let mut hdr = [0u8; 2];
-    read_exact_ws(stream, &mut hdr)?;
+    super::read_exact_retry(stream, &mut hdr)?;
     let opcode = hdr[0] & 0x0F;
     let mut len = (hdr[1] & 0x7F) as u64;
 
     if len == 126 {
         let mut buf = [0u8; 2];
-        read_exact_ws(stream, &mut buf)?;
+        super::read_exact_retry(stream, &mut buf)?;
         len = u16::from_be_bytes(buf) as u64;
     } else if len == 127 {
         let mut buf = [0u8; 8];
-        read_exact_ws(stream, &mut buf)?;
+        super::read_exact_retry(stream, &mut buf)?;
         len = u64::from_be_bytes(buf);
     }
 
     Ok((opcode, len))
-}
-
-/// WouldBlock-tolerant read_exact for WebSocket framing.
-fn read_exact_ws(stream: &mut dyn Read, mut buf: &mut [u8]) -> io::Result<()> {
-    let mut retries: u32 = 0;
-    const MAX_RETRIES: u32 = 600;
-    while !buf.is_empty() {
-        match stream.read(buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                let tmp = buf;
-                buf = &mut tmp[n..];
-                retries = 0;
-            }
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                retries += 1;
-                if retries > MAX_RETRIES {
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "ws read_exact: too many WouldBlock retries",
-                    ));
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            Err(e) => return Err(e),
-        }
-    }
-    if buf.is_empty() {
-        Ok(())
-    } else {
-        Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "ws read_exact: failed to fill buffer",
-        ))
-    }
 }
 
 /// WebSocket I/O wrapper: frames outgoing data, deframes incoming data.
@@ -118,7 +83,7 @@ impl Read for WsConnection {
             let (opcode, len) = read_ws_header(self.inner.as_mut())?;
             let mut payload = vec![0u8; len as usize];
             if len > 0 {
-                read_exact_ws(self.inner.as_mut(), &mut payload)?;
+                super::read_exact_retry(self.inner.as_mut(), &mut payload)?;
             }
 
             match opcode {
@@ -172,7 +137,7 @@ impl Write for WsConnection {
 // ── Connection ───────────────────────────────────────────────────────────
 
 /// Perform the HTTP upgrade to WebSocket (with random key per RFC 6455).
-fn ws_upgrade_handshake(stream: &mut dyn ReadWrite, path: &str) -> io::Result<()> {
+fn ws_upgrade_handshake(stream: &mut dyn super::ReadWrite, path: &str) -> io::Result<()> {
     let random_bytes: [u8; 16] = rand::random();
     use base64::Engine;
     let key = base64::engine::general_purpose::STANDARD.encode(random_bytes);
@@ -237,9 +202,6 @@ fn ws_upgrade_handshake(stream: &mut dyn ReadWrite, path: &str) -> io::Result<()
     }
     Ok(())
 }
-
-trait ReadWrite: Read + Write + Send {}
-impl<T: Read + Write + Send> ReadWrite for T {}
 
 /// Connect via WebSocket (with optional TLS).
 pub fn connect_ws(

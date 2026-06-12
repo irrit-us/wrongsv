@@ -11,7 +11,7 @@ pub mod cert;
 mod hello;
 mod tls;
 
-pub use auth::compute_cert_hmac;
+pub use auth::{build_session_id, compute_cert_hmac, derive_client_auth_key};
 pub use cert::generate_reality_cert;
 pub use hello::ParsedClientHello;
 pub use tls::{

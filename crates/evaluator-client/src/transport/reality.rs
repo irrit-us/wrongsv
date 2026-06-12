@@ -19,7 +19,7 @@ use aes_gcm::{Aes128Gcm, Key, KeyInit, Nonce};
 use hkdf::Hkdf;
 use hmac::Mac;
 use rand::RngCore;
-use sha2::{Digest, Sha256, Sha512};
+use sha2::{Digest, Sha256};
 use x25519_dalek::{PublicKey, StaticSecret};
 
 use super::BoxedIo;
@@ -295,26 +295,13 @@ fn parse_server_hello(payload: &[u8]) -> io::Result<([u8; 32], [u8; 32])> {
 
 // ── REALITY auth ────────────────────────────────────────────────────────────
 
-fn derive_auth_key(client_random: &[u8; 32], shared_secret: &[u8]) -> [u8; 32] {
-    let hkdf = Hkdf::<Sha256>::new(Some(&client_random[..20]), shared_secret);
-    let mut auth_key = [0u8; 32];
-    hkdf.expand(b"REALITY", &mut auth_key).unwrap();
-    auth_key
-}
-
-fn verify_reality_cert(
-    auth_key: &[u8; 32],
-    raw_pubkey: &[u8; 32],
-    cert_der: &[u8],
-) -> io::Result<()> {
+fn verify_reality_cert(auth_key: &[u8], raw_pubkey: &[u8; 32], cert_der: &[u8]) -> io::Result<()> {
     if cert_der.len() < 64 {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "cert too short"));
     }
     let sig = &cert_der[cert_der.len() - 64..];
-    let mut mac = <hmac::Hmac<Sha512> as Mac>::new_from_slice(auth_key)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("hmac: {e}")))?;
-    mac.update(raw_pubkey);
-    let expected = mac.finalize().into_bytes();
+    let expected = wrongsv_reality::compute_cert_hmac(auth_key, raw_pubkey)
+        .map_err(|e| io::Error::other(format!("cert hmac: {e}")))?;
     if sig == expected.as_slice() {
         Ok(())
     } else {
@@ -485,46 +472,36 @@ pub fn connect_reality(
     let client_sk = StaticSecret::random_from_rng(rand::rngs::OsRng);
     let client_pk = PublicKey::from(&client_sk);
     let server_pk = PublicKey::from(server_pk_bytes);
+    // Reject all-zero public key (identity element — forces shared secret to zero)
+    if server_pk_bytes == [0u8; 32] {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "REALITY: server public key is identity element",
+        ));
+    }
     let reality_shared = client_sk.diffie_hellman(&server_pk);
 
     // Step 3: Build ClientHello with REALITY auth
     let mut client_random = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut client_random);
 
-    let auth_key = derive_auth_key(&client_random, reality_shared.as_bytes());
+    let auth_key =
+        wrongsv_reality::derive_client_auth_key(&client_random, reality_shared.as_bytes())
+            .map_err(|e| io::Error::other(format!("derive auth key: {e}")))?;
 
-    // REALITY auth plaintext
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| io::Error::other(format!("time: {e}")))?
         .as_secs() as u32;
-    let mut plaintext = [0u8; 16];
-    plaintext[0..3].copy_from_slice(&[1, 2, 3]);
-    plaintext[3] = 0; // padding
-    plaintext[4..8].copy_from_slice(&timestamp.to_be_bytes());
-    plaintext[8..12].copy_from_slice(&short_id);
 
     // Build temp ClientHello for AAD
     let temp_hello =
         build_reality_client_hello(client_random, [0u8; 32], *client_pk.as_bytes(), sni);
     let aad = &temp_hello[5..]; // strip TLS record header
 
-    // Encrypt session_id
-    let key = aes_gcm::Key::<aes_gcm::Aes256Gcm>::from_slice(&auth_key);
-    let cipher = aes_gcm::Aes256Gcm::new(key);
-    let nonce = aes_gcm::Nonce::from_slice(&client_random[20..32]);
-    let ct = cipher
-        .encrypt(
-            nonce,
-            aes_gcm::aead::Payload {
-                msg: &plaintext,
-                aad,
-            },
-        )
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("AES-GCM encrypt: {e}")))?;
-
-    let mut session_id = [0u8; 32];
-    session_id.copy_from_slice(&ct);
+    let session_id =
+        wrongsv_reality::build_session_id(&auth_key, &client_random, timestamp, &short_id, aad)
+            .map_err(|e| io::Error::other(format!("build session id: {e}")))?;
 
     let client_hello =
         build_reality_client_hello(client_random, session_id, *client_pk.as_bytes(), sni);
@@ -550,6 +527,12 @@ pub fn connect_reality(
     server_hello_record.extend_from_slice(&server_hello_payload);
 
     // Step 5: ECDH + derive handshake keys
+    if server_key_share == [0u8; 32] {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "TLS: server key_share is identity element",
+        ));
+    }
     let server_ks_pk = PublicKey::from(server_key_share);
     let tls_shared = client_sk.diffie_hellman(&server_ks_pk);
 

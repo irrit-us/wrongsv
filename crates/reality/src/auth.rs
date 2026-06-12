@@ -167,6 +167,57 @@ pub fn compute_cert_hmac(auth_key: &[u8], raw_pubkey: &[u8; 32]) -> Result<Vec<u
     Ok(mac.finalize().into_bytes().to_vec())
 }
 
+/// Derive REALITY auth key from a pre-computed X25519 shared secret.
+/// Used by clients that perform ECDH externally.
+pub fn derive_client_auth_key(
+    client_random: &[u8; 32],
+    shared_secret: &[u8; 32],
+) -> Result<Vec<u8>, RealityError> {
+    let hkdf = Hkdf::<Sha256>::new(Some(&client_random[..20]), shared_secret);
+    let mut auth_key = vec![0u8; 32];
+    hkdf.expand(b"REALITY", &mut auth_key)
+        .map_err(|e| RealityError::AuthFailed(format!("HKDF expand: {e}")))?;
+    Ok(auth_key)
+}
+
+/// Build an encrypted REALITY SessionID (client side).
+///
+/// The plaintext layout (16 bytes): version[3] | reserved[1] | timestamp[4] | short_id[4] | padding[4]
+/// Encrypted with AES-256-GCM using auth_key and nonce = client_random[20..32].
+/// The resulting 32-byte ciphertext goes into the TLS ClientHello SessionID field.
+pub fn build_session_id(
+    auth_key: &[u8],
+    client_random: &[u8; 32],
+    timestamp: u32,
+    short_id: &[u8; 4],
+    aad: &[u8],
+) -> Result<[u8; 32], RealityError> {
+    let version = [1u8, 2, 3];
+    let mut plaintext = vec![0u8; 16];
+    plaintext[0..3].copy_from_slice(&version);
+    plaintext[3] = 0; // reserved
+    plaintext[4..8].copy_from_slice(&timestamp.to_be_bytes());
+    plaintext[8..12].copy_from_slice(short_id);
+    // bytes 12..16 are padding zeros
+
+    let key = Key::<Aes256Gcm>::from_slice(auth_key);
+    let cipher = Aes256Gcm::new(key);
+    let nonce = Nonce::from_slice(&client_random[20..32]);
+    let ct = cipher
+        .encrypt(
+            nonce,
+            Payload {
+                msg: plaintext.as_slice(),
+                aad,
+            },
+        )
+        .map_err(|e| RealityError::AuthFailed(format!("session_id encrypt: {e}")))?;
+
+    let mut sid = [0u8; 32];
+    sid.copy_from_slice(&ct);
+    Ok(sid)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

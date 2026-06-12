@@ -3263,6 +3263,7 @@ dependencies = [
  "wrongsv-grpc",
  "wrongsv-net-types",
  "wrongsv-protocol",
+ "wrongsv-reality",
  "wrongsv-server",
  "wrongsv-uuid",
  "wrongsv-vless-encoding",
