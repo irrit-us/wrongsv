@@ -338,6 +338,7 @@ fn build_default_config() -> Config {
         webtransport: None,
         shadowtls: None,
         vmess: None,
+        metrics: None,
     }
 }
 

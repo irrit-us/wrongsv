@@ -91,6 +91,11 @@ pub struct Config {
     /// instead of VLESS. Users are authenticated via UUID.
     #[serde(default)]
     pub vmess: Option<VmessServerConfig>,
+    /// Optional metrics endpoint. When set, an HTTP listener exposes a
+    /// Prometheus-format `/metrics` endpoint with per-user (by email) byte
+    /// counters and system stats. Off by default.
+    #[serde(default)]
+    pub metrics: Option<wrongsv_metrics::MetricsConfig>,
 }
 
 /// REALITY server-side configuration.
@@ -1192,6 +1197,7 @@ flow = "xtls-rprx-vision"
             webtransport: None,
             shadowtls: None,
             vmess: None,
+            metrics: None,
         };
         assert!(config.validate().is_err());
     }
@@ -1227,6 +1233,7 @@ flow = "xtls-rprx-vision"
             webtransport: None,
             shadowtls: None,
             vmess: None,
+            metrics: None,
         };
         assert!(config.validate().is_err());
     }

@@ -600,6 +600,7 @@ mod tests {
             webtransport: None,
             shadowtls: None,
             vmess: None,
+            metrics: None,
         }
     }
 

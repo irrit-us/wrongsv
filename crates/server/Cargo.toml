@@ -14,6 +14,7 @@ wrongsv-anytls.workspace = true
 wrongsv-shadowsocks.workspace = true
 wrongsv-websocket.workspace = true
 wrongsv-grpc.workspace = true
+wrongsv-metrics.workspace = true
 rustls = { version = "0.23", default-features = false, features = ["tls12", "std", "aws_lc_rs"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "sync", "macros", "time"] }
 h2 = "0.4"

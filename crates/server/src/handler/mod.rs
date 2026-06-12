@@ -150,6 +150,7 @@ fn hex_val(b: u8) -> Option<u8> {
 pub struct InboundServer {
     config: Config,
     validator: Arc<MemoryValidator>,
+    metrics: Arc<wrongsv_metrics::Registry>,
     kyber_sk: Option<[u8; 64]>,
     reality_config: Option<wrongsv_reality::RealityConfig>,
     anytls_config: Option<wrongsv_anytls::AnyTlsConfig>,
@@ -388,6 +389,7 @@ impl InboundServer {
         Ok(InboundServer {
             config,
             validator,
+            metrics: Arc::new(wrongsv_metrics::Registry::new()),
             kyber_sk,
             reality_config,
             anytls_config,
@@ -433,11 +435,26 @@ impl InboundServer {
         self.run_until_shutdown(shutdown)
     }
 
+    /// If a metrics endpoint is configured, bind the HTTP listener and return
+    /// its handle. The caller holds the handle for the lifetime of the run
+    /// loop; dropping it shuts the listener down.
+    fn start_metrics_listener(
+        &self,
+    ) -> Result<Option<wrongsv_metrics::ServerHandle>, Box<dyn std::error::Error>> {
+        let Some(ref cfg) = self.config.metrics else {
+            return Ok(None);
+        };
+        let addr = cfg.socket_addr();
+        let (_bound, handle) = wrongsv_metrics::serve(&addr, Arc::clone(&self.metrics))?;
+        Ok(Some(handle))
+    }
+
     /// Run the server loop until the provided shutdown signal is set.
     pub fn run_until_shutdown(
         &self,
         shutdown: ShutdownSignal,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let _metrics_handle = self.start_metrics_listener()?;
         if let Some(config) = self.hysteria2_config.clone() {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
