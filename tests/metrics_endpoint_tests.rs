@@ -229,3 +229,99 @@ bind = "127.0.0.1"
         "missing {want_out}\n--- response ---\n{response}"
     );
 }
+
+#[test]
+fn metrics_count_bytes_per_user_through_vmess_relay() {
+    use wrongsv_server::vmess::{
+        self, VmessBodyReader, VmessBodyWriter, VmessCommand, VmessRequest,
+    };
+
+    let listen = reserve_addr();
+    let metrics_addr = reserve_addr();
+    let port = metrics_addr
+        .split(':')
+        .next_back()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap();
+    let user_uuid = Uuid::new_v4();
+    let email = "vmess-user@metrics.test";
+    let config_toml = format!(
+        r#"
+listen = "{listen}"
+
+[vmess]
+
+[[vmess.users]]
+id = "{user_uuid}"
+email = "{email}"
+
+[metrics]
+port = {port}
+bind = "127.0.0.1"
+"#
+    );
+    let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
+    let server = wrongsv_server::InboundServer::new(config).unwrap();
+    let _handle = server.spawn();
+    thread::sleep(Duration::from_millis(200));
+
+    let echo_addr = spawn_echo_target();
+
+    let uuid_bytes: [u8; 16] = *user_uuid.as_bytes();
+    let cmd_key = vmess::derive_cmd_key(&uuid_bytes);
+    let (_plain, eaudid) = vmess::generate_eaudid(&cmd_key);
+
+    let mut body_key = [0u8; 16];
+    let mut body_iv = [0u8; 16];
+    use rand::RngCore;
+    rand::rngs::OsRng.fill_bytes(&mut body_key);
+    rand::rngs::OsRng.fill_bytes(&mut body_iv);
+
+    let request = VmessRequest {
+        command: VmessCommand::Tcp,
+        address: "127.0.0.1".into(),
+        port: echo_addr.port(),
+    };
+    let (header_len, header_payload) =
+        vmess::build_header(&cmd_key, &eaudid, &body_key, &body_iv, &request).unwrap();
+
+    let mut conn = TcpStream::connect(&listen).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    conn.write_all(&eaudid).unwrap();
+    conn.write_all(&header_len.to_be_bytes()).unwrap();
+    conn.write_all(&header_payload).unwrap();
+
+    let response_key = vmess::derive_response_key(&cmd_key);
+    vmess::read_response(&response_key, &mut conn).unwrap();
+
+    let payload = b"vmess-metrics-roundtrip-payload";
+    let mut writer = VmessBodyWriter::new(&body_key, &body_iv);
+    writer.write_chunk(&mut conn, payload).unwrap();
+
+    let mut reader = VmessBodyReader::new(&body_key, &body_iv);
+    let mut plaintext = Vec::with_capacity(payload.len());
+    let got_chunk = reader.read_chunk(&mut conn, &mut plaintext).unwrap();
+    assert!(got_chunk, "expected echoed VMess body chunk");
+    assert_eq!(&plaintext[..], payload, "echo mismatch");
+
+    // Cleanly close to flush counters before scrape.
+    let _ = writer.write_eof(&mut conn);
+    let _ = conn.shutdown(std::net::Shutdown::Write);
+    thread::sleep(Duration::from_millis(200));
+
+    let response = http_get(&metrics_addr, "/metrics");
+    assert!(response.contains("200 OK"), "got: {response}");
+    let want_in = format!("wrongsv_user_bytes_in{{email=\"{email}\"}} {}", payload.len());
+    let want_out = format!(
+        "wrongsv_user_bytes_out{{email=\"{email}\"}} {}",
+        payload.len()
+    );
+    assert!(
+        response.contains(&want_in),
+        "missing {want_in}\n--- response ---\n{response}"
+    );
+    assert!(
+        response.contains(&want_out),
+        "missing {want_out}\n--- response ---\n{response}"
+    );
+}
