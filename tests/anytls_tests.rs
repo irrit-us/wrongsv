@@ -1277,3 +1277,112 @@ fn test_anytls_kyber_combo() {
     let n = tls.tls_read(&mut buf).unwrap();
     assert_eq!(&buf[..n], b"kyber+anytls combo");
 }
+
+fn spawn_anytls_server_with_metrics(
+    listen: &str,
+    user_id: &str,
+    password: &str,
+    metrics_port: u16,
+) -> wrongsv_server::ServerHandle {
+    let config_toml = format!(
+        r#"
+listen = "{listen}"
+
+[[users]]
+id = "{user_id}"
+email = "test@anytls.test"
+flow = ""
+
+[anytls]
+password = "{password}"
+
+[metrics]
+port = {metrics_port}
+bind = "127.0.0.1"
+"#
+    );
+    let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
+    let server = wrongsv_server::InboundServer::new(config).unwrap();
+    server.spawn()
+}
+
+fn http_get(addr: &str, path: &str) -> String {
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    s.write_all(
+        format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").as_bytes(),
+    )
+    .unwrap();
+    let mut out = String::new();
+    s.read_to_string(&mut out).unwrap();
+    out
+}
+
+#[test]
+fn test_anytls_metrics_count_bytes_per_user() {
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
+
+    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let listen_str = reserve.local_addr().unwrap().to_string();
+    drop(reserve);
+
+    let metrics_reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let metrics_addr = metrics_reserve.local_addr().unwrap().to_string();
+    let metrics_port = metrics_reserve.local_addr().unwrap().port();
+    drop(metrics_reserve);
+
+    let (echo_addr, _echo) = spawn_echo_target();
+    let user_uuid = Uuid::new_v4();
+    let password = "anytls-metrics-secret";
+
+    let _server = spawn_anytls_server_with_metrics(
+        &listen_str,
+        &user_uuid.to_string(),
+        password,
+        metrics_port,
+    );
+    thread::sleep(Duration::from_millis(200));
+
+    let mut tls = anytls_connect(
+        &listen_str,
+        &user_uuid,
+        "127.0.0.1",
+        echo_addr.port(),
+        "",
+        password,
+    );
+
+    let payload = b"anytls-metrics-roundtrip-payload";
+    tls.tls_write(payload).unwrap();
+
+    let mut buf = vec![0u8; payload.len()];
+    let mut filled = 0;
+    while filled < payload.len() {
+        let n = tls.tls_read(&mut buf[filled..]).unwrap();
+        if n == 0 {
+            break;
+        }
+        filled += n;
+    }
+    assert_eq!(&buf[..filled], payload, "echo mismatch");
+
+    drop(tls);
+    thread::sleep(Duration::from_millis(200));
+
+    let response = http_get(&metrics_addr, "/metrics");
+    assert!(response.contains("200 OK"), "got: {response}");
+    let email = "test@anytls.test";
+    let want_in = format!("wrongsv_user_bytes_in{{email=\"{email}\"}} {}", payload.len());
+    let want_out = format!(
+        "wrongsv_user_bytes_out{{email=\"{email}\"}} {}",
+        payload.len()
+    );
+    assert!(
+        response.contains(&want_in),
+        "missing {want_in}\n--- response ---\n{response}"
+    );
+    assert!(
+        response.contains(&want_out),
+        "missing {want_out}\n--- response ---\n{response}"
+    );
+}
