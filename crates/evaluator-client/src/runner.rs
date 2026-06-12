@@ -45,6 +45,18 @@ enum ServerMessage {
     Next,
     #[serde(rename = "done")]
     Done,
+    #[serde(rename = "stack_summary")]
+    StackSummary { stacks: Vec<StackResult> },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct StackResult {
+    name: String,
+    description: String,
+    passed: bool,
+    protocols: Vec<String>,
+    #[allow(dead_code)]
+    failing: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -517,7 +529,20 @@ pub fn run_evaluation(
                 continue;
             }
             ServerMessage::Done => {
-                println!("evaluation complete");
+                // After Done, the server may send a StackSummary.
+                // Try to read one more message before breaking.
+                if let Ok(ServerMessage::StackSummary { stacks }) = recv_msg(&mut reader) {
+                    println!();
+                    println!("{:=<70}", "");
+                    println!("Stack Results");
+                    println!("{:-<70}", "");
+                    for s in &stacks {
+                        let status = if s.passed { "PASS" } else { "FAIL" };
+                        println!("  {:<16} {}  {}", s.name, status, s.description);
+                        println!("    protocols: {}", s.protocols.join(", "));
+                    }
+                    println!("{:=<70}", "");
+                }
                 break;
             }
             other => {

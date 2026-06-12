@@ -9,12 +9,15 @@
 //!
 //! ```ignore
 //! use wrongsv_evaluator_server::run_orchestrator;
-//! run_orchestrator("127.0.0.1:19999", "my-token", Some("reality,tls"), 10).await?;
+//! run_orchestrator("127.0.0.1:19999", "my-token", Some("reality,tls"), None, 10, "127.0.0.1", None).await?;
 //! ```
 
 pub mod orchestrator;
 pub mod protocol;
 pub mod target;
 
-pub use orchestrator::{DEFAULT_PROTOCOLS, resolve_protocols, run_orchestrator};
-pub use protocol::{BandwidthStats, LatencyStats, ProtocolMetrics};
+pub use orchestrator::{
+    DEFAULT_PROTOCOLS, STACKS, resolve_protocols, resolve_stacks, run_orchestrator,
+    stack_description,
+};
+pub use protocol::{BandwidthStats, LatencyStats, ProtocolMetrics, StackResult};

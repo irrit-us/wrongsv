@@ -33,6 +33,35 @@ pub const DEFAULT_PROTOCOLS: &[&str] = &[
     "vmess",
 ];
 
+/// Recommended protocol stacks (from PROTOCOL-COVERAGE.md).
+/// Each stack is a named group of protocols that together form a
+/// deployment recommendation. A stack passes only if every constituent
+/// protocol passes.
+pub const STACKS: &[(&str, &[&str])] = &[
+    ("tier1", &["reality"]),
+    // Hysteria2 runs as a separate server instance and is not tested via the
+    // VLESS evaluator path. Tier 2 tests the REALITY (TCP) half; deploy
+    // Hysteria2 alongside on the same port for the full dual-stack.
+    ("tier2", &["reality"]),
+    ("tier3", &["ws+tls"]),
+    ("tier4", &["shadowtls"]),
+    ("post-quantum", &["reality"]),
+    ("legacy", &["vmess"]),
+];
+
+/// Human-readable descriptions for each stack.
+pub fn stack_description(name: &str) -> &'static str {
+    match name {
+        "tier1" => "VLESS + REALITY + XTLS-Vision (TCP/443) — maximum stealth",
+        "tier2" => "REALITY + Hysteria2 dual-stack (TCP+UDP/443) — multi-protocol resilient",
+        "tier3" => "VLESS + WebSocket + TLS (TCP/443 via CDN) — CDN-friendly",
+        "tier4" => "VLESS + ShadowTLS v3 (TCP/443) — TLS mimicry, no pre-shared keys",
+        "post-quantum" => "VLESS + REALITY + Vision + ML-KEM-512 — post-quantum",
+        "legacy" => "VMess AEAD — legacy client compatibility",
+        _ => "Unknown stack",
+    }
+}
+
 /// Build a wrongsv server config TOML for the given protocol.
 /// Extra parameters needed by some transports on the client side.
 #[derive(Default)]
@@ -372,7 +401,46 @@ pub fn resolve_protocols(requested: Option<&str>) -> Vec<String> {
     }
 }
 
+/// Resolve stack names to their constituent protocols.
+/// Returns (ordered_protocols, stack_names_in_order) where protocols are
+/// deduplicated and stack_names preserves the requested order for reporting.
+pub fn resolve_stacks(requested: Option<&str>) -> (Vec<String>, Vec<String>) {
+    let stack_names: Vec<String> = match requested {
+        None | Some("") | Some("all") => STACKS.iter().map(|(n, _)| n.to_string()).collect(),
+        Some(list) => list.split(',').map(|s| s.trim().to_string()).collect(),
+    };
+
+    let mut protocols = Vec::new();
+    let mut valid_names = Vec::new();
+    let stack_map: std::collections::HashMap<&str, &[&str]> = STACKS.iter().copied().collect();
+
+    for name in &stack_names {
+        if let Some(stack_protos) = stack_map.get(name.as_str()) {
+            valid_names.push(name.clone());
+            for p in *stack_protos {
+                let ps = p.to_string();
+                if !protocols.contains(&ps) {
+                    protocols.push(ps);
+                }
+            }
+        } else {
+            warn!(
+                "unknown stack: {name} (valid: {})",
+                STACKS
+                    .iter()
+                    .map(|(n, _)| *n)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+    }
+
+    (protocols, valid_names)
+}
+
 /// Serve a single client connection through the full protocol evaluation cycle.
+/// If `stack_names` is non-empty, a stack-level summary is emitted after all
+/// protocols complete.
 async fn serve_client(
     stream: TcpStream,
     token: &str,
@@ -380,6 +448,7 @@ async fn serve_client(
     duration_secs: u64,
     proxy_bind: &str,
     fixed_proxy_port: Option<u16>,
+    stack_names: &[String],
 ) {
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
@@ -532,6 +601,54 @@ async fn serve_client(
     }
 
     info!("evaluation complete: {} protocols evaluated", results.len());
+
+    // ── stack-level summary ──────────────────────────────────────────
+    if !stack_names.is_empty() {
+        // Build protocol-name → metrics lookup (results are in protocol iteration order)
+        let proto_results: Vec<(&String, &ProtocolMetrics)> =
+            protocols.iter().zip(results.iter()).collect();
+
+        let stack_map: std::collections::HashMap<&str, &[&str]> = STACKS.iter().copied().collect();
+        let mut stack_results = Vec::new();
+
+        for name in stack_names {
+            if let Some(stack_protos) = stack_map.get(name.as_str()) {
+                let failing: Vec<String> = stack_protos
+                    .iter()
+                    .filter(|sp| {
+                        proto_results
+                            .iter()
+                            .any(|(proto, m)| proto.as_str() == **sp && m.packet_loss_pct > 0.0)
+                    })
+                    .map(|s| s.to_string())
+                    .collect();
+
+                let desc = stack_description(name);
+                let passed = failing.is_empty();
+                info!(
+                    "stack {} {} — {}",
+                    name,
+                    if passed { "PASS" } else { "FAIL" },
+                    desc
+                );
+                if !passed {
+                    warn!("  failing protocols: {:?}", failing);
+                }
+                stack_results.push(super::protocol::StackResult {
+                    name: name.clone(),
+                    description: desc.to_string(),
+                    passed,
+                    protocols: stack_protos.iter().map(|s| s.to_string()).collect(),
+                    failing,
+                });
+            }
+        }
+
+        let summary = ServerMessage::StackSummary {
+            stacks: stack_results,
+        };
+        let _ = send_msg(&mut writer, &summary).await;
+    }
 }
 
 async fn send_msg(
@@ -545,19 +662,31 @@ async fn send_msg(
 
 /// Start the evaluator orchestrator. Listens on `listen_addr`, authenticates
 /// clients with `token`, and runs the requested protocol evaluations.
+/// If `requested_stacks` is Some, stack mode is used instead of raw protocol mode.
 pub async fn run_orchestrator(
     listen_addr: &str,
     token: &str,
     requested_protocols: Option<&str>,
+    requested_stacks: Option<&str>,
     duration_secs: u64,
     proxy_bind: &str,
     fixed_proxy_port: Option<u16>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let protocols = resolve_protocols(requested_protocols);
-    info!(
-        "evaluator orchestrator listening on {listen_addr}, token={token}, protocols={:?}, duration={duration_secs}s",
-        protocols
-    );
+    let (protocols, stack_names) = if let Some(stacks) = requested_stacks {
+        let (protos, names) = resolve_stacks(Some(stacks));
+        info!(
+            "evaluator orchestrator listening on {listen_addr}, token={token}, stacks={:?} → protocols={:?}, duration={duration_secs}s",
+            names, protos
+        );
+        (protos, names)
+    } else {
+        let protos = resolve_protocols(requested_protocols);
+        info!(
+            "evaluator orchestrator listening on {listen_addr}, token={token}, protocols={:?}, duration={duration_secs}s",
+            protos
+        );
+        (protos, Vec::new())
+    };
 
     let listener = TcpListener::bind(listen_addr).await?;
     // Accept only one client per invocation
@@ -571,6 +700,7 @@ pub async fn run_orchestrator(
         duration_secs,
         proxy_bind,
         fixed_proxy_port,
+        &stack_names,
     )
     .await;
 

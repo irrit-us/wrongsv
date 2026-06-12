@@ -190,6 +190,7 @@ fn main() {
                     &listen,
                     &token,
                     protocols.as_deref(),
+                    None, // stacks — use --protocols mode
                     duration,
                     &proxy_bind,
                     fixed_proxy_port,

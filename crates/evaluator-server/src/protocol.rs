@@ -62,6 +62,19 @@ pub enum ServerMessage {
     /// All tests complete.
     #[serde(rename = "done")]
     Done,
+    /// Stack-level summary (sent after Done when --stack is used).
+    #[serde(rename = "stack_summary")]
+    StackSummary { stacks: Vec<StackResult> },
+}
+
+/// Per-stack pass/fail result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StackResult {
+    pub name: String,
+    pub description: String,
+    pub passed: bool,
+    pub protocols: Vec<String>,
+    pub failing: Vec<String>,
 }
 
 /// Collected metrics for a single protocol evaluation.

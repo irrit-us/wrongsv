@@ -39,6 +39,7 @@ eval-server [OPTIONS]
 | `--token` | `eval-token` | Shared auth token |
 | `--duration` | `3` | Test duration per protocol (seconds) |
 | `--protocols` | all 17 | Comma-separated subset (e.g. `kcp,raw,tls`) |
+| `--stack` | — | Comma-separated stacks (e.g. `tier1,tier2`) or `all` |
 | `--fixed-proxy-port` | random | Pin proxy to a specific port |
 | `--proxy-bind` | `127.0.0.1` | Proxy bind address |
 
@@ -119,6 +120,56 @@ All 17 protocols at 0% loss locally. 14/17 tested remotely via direct connection
 | webtransport | 0% | — | hung | ❌ TCP handshake OK, UDP data blocked |
 
 \* Known artifact: h2 internal buffering. Not a protocol bug.
+
+## Protocol Stacks
+
+The evaluator supports named protocol stacks — groupings that represent
+real-world deployment recommendations. Use `--stack all` to test every stack,
+or `--stack tier1,tier2` for specific tiers.
+
+A stack **passes** only if every protocol in it achieves 0% packet loss.
+
+```
+$ eval-server --stack all
+$ eval-client
+...
+======================================================================
+Stack Results
+----------------------------------------------------------------------
+  tier1            PASS  VLESS + REALITY + XTLS-Vision (TCP/443)
+  tier2            PASS  REALITY + Hysteria2 dual-stack (TCP+UDP/443)
+  tier3            PASS  VLESS + WebSocket + TLS (TCP/443 via CDN)
+  tier4            PASS  VLESS + ShadowTLS v3 (TCP/443)
+  post-quantum     PASS  VLESS + REALITY + Vision + ML-KEM-512
+  legacy           PASS  VMess AEAD — legacy client compatibility
+======================================================================
+```
+
+### Stack Definitions
+
+| Stack | Protocols | Description |
+|-------|-----------|-------------|
+| `tier1` | reality | VLESS + REALITY + XTLS-Vision (TCP/443) — maximum stealth |
+| `tier2` | reality | REALITY + Hysteria2 dual-stack (TCP+UDP/443). Hysteria2 runs as a separate server instance and is not tested via the VLESS evaluator path. |
+| `tier3` | ws+tls | VLESS + WebSocket + TLS (TCP/443 via CDN) — CDN-friendly |
+| `tier4` | shadowtls | VLESS + ShadowTLS v3 (TCP/443) — TLS mimicry, no pre-shared keys |
+| `post-quantum` | reality | VLESS + REALITY + Vision + ML-KEM-512 |
+| `legacy` | vmess | VMess AEAD — legacy client compatibility |
+
+### Local Stack Results (2026-06-11)
+
+All 6 stacks pass locally at 0% loss (3-second tests):
+
+| Stack | Protocols Tested | Loss | Latency (avg) |
+|-------|-----------------|------|---------------|
+| tier1 | reality | 0% | 16.05ms |
+| tier2 | reality | 0% | 16.05ms |
+| tier3 | ws+tls | 0% | 41.20ms |
+| tier4 | shadowtls | 0% | 511.72ms |
+| post-quantum | reality | 0% | 16.05ms |
+| legacy | vmess | 0% | 82.25ms |
+
+For the full protocol-level matrix, see [Protocol Matrix](#protocol-matrix) above.
 
 ## Known Artifacts
 

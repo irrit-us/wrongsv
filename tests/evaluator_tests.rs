@@ -34,6 +34,7 @@ fn evaluator_end_to_end_small_subset() {
             &listen,
             &server_token,
             Some("raw,tls"),
+            None, // stacks
             duration_secs,
             "127.0.0.1",
             None,
@@ -123,6 +124,7 @@ fn evaluator_rejects_bad_token() {
             &listen,
             &server_token,
             Some("raw"),
+            None, // stacks
             1,
             "127.0.0.1",
             None,
