@@ -166,7 +166,10 @@ fn run_latency_test(stream: &mut dyn transport::ReadWrite, _duration: Duration) 
         };
     }
 
-    rtts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    rtts.sort_by(|a, b| {
+        a.partial_cmp(b)
+            .expect("RTT must be finite (system clock values are never NaN)")
+    });
     let min = rtts[0];
     let max = rtts[rtts.len() - 1];
     let avg = rtts.iter().sum::<f64>() / rtts.len() as f64;

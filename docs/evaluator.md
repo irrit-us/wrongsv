@@ -95,27 +95,28 @@ For paths over 200ms RTT, the client uses WouldBlock-tolerant reads
 
 ## Protocol Matrix
 
-All 17 protocols at 0% loss locally. Remote results via direct connection.
+All 17 protocols at 0% loss locally. 14/17 tested remotely via direct connection
+(13 at 0% loss, 3 UDP blocked by firewall).
 
-| Protocol | Local | Remote | Notes |
-|----------|-------|--------|-------|
-| reality | 0% | 0% | |
-| anytls | 0% | 0% | |
-| tls | 0% | 0% | |
-| raw | 0% | 0% | baseline |
-| ws | 0% | 0% | |
-| ws+tls | 0% | 0% | |
-| httpupgrade | 0% | 0% | |
-| httpupgrade+tls | 0% | 0% | |
-| grpc | 0% | 0% | upload inflated*, download ~0* |
-| grpc+tls | 0% | timeout | h2 stream errors at high RTT |
-| xhttp | 0% | untested | |
-| xhttp+tls | 0% | untested | |
-| quic | 0% | untested | |
-| kcp | 0% | untested | |
-| webtransport | 0% | untested | |
-| shadowtls | 0% | untested | |
-| vmess | 0% | untested | |
+| Protocol | Local | Remote | Loss | Notes |
+|----------|-------|--------|------|-------|
+| reality | 0% | 600ms | 0% | GFW bypass OK |
+| anytls | 0% | 683ms | 0% | |
+| tls | 0% | 512ms | 0% | |
+| raw | 0% | 901ms | 0% | baseline |
+| ws | 0% | 1600ms | 0% | WS overhead visible at high RTT |
+| ws+tls | 0% | 1315ms | 0% | |
+| httpupgrade | 0% | 609ms | 0% | |
+| httpupgrade+tls | 0% | 799ms | 0% | |
+| grpc | 0% | 558ms | 0% | upload inflated*, download ~0* |
+| grpc+tls | 0% | 542ms | 0% | |
+| xhttp | 0% | 583ms | 0% | upload inflated*, download ~0* |
+| xhttp+tls | 0% | 520ms | 0% | |
+| shadowtls | 0% | 957ms | 0% | |
+| vmess | 0% | 1389ms | 12.5% | ⚠️ suspected GFW interference |
+| quic | 0% | — | 100% | ❌ UDP port blocked by firewall |
+| kcp | 0% | — | 100% | ❌ UDP port blocked by firewall |
+| webtransport | 0% | — | hung | ❌ TCP handshake OK, UDP data blocked |
 
 \* Known artifact: h2 internal buffering. Not a protocol bug.
 
@@ -130,6 +131,22 @@ Not bugs — measurement artifacts inherent to the test method:
 - **KCP +72ms**: protocol-level queue delay even in nodelay mode.
 - **ShadowTLS +56ms**: handshake + TLS record crypto.
 - **VMess +82ms**: AEAD body encryption + relay polling loop.
+
+## Architecture
+
+The evaluator imports protocol implementations from actual crates rather than
+reimplementing them:
+
+| Protocol logic | Imported from |
+|----------------|---------------|
+| VLESS header | `wrongsv_vless_encoding::encode_request_header` |
+| WebSocket framing | `wrongsv_websocket::write_frame` |
+| gRPC hunk framing | `wrongsv_grpc::encode_hunk_frame` / `decode_hunk_frame` |
+| VMess crypto + body AEAD | `wrongsv_server::vmess` |
+| TLS config | `tls_common::make_no_verify_config` (shared) |
+
+REALITY client handshake and ShadowTLS HMAC auth remain evaluator-local — the
+`wrongsv-reality` and server crates only expose server-side APIs.
 
 ## Building
 

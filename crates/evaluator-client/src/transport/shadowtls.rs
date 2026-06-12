@@ -67,68 +67,8 @@ impl Write for StlsStream {
     }
 }
 
-// ── TLS verifier ──────────────────────────────────────────────────────
-
-#[derive(Debug)]
-struct SkipVerify;
-
-impl rustls::client::danger::ServerCertVerifier for SkipVerify {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &rustls::pki_types::CertificateDer<'_>,
-        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
-        _server_name: &rustls::pki_types::ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: rustls::pki_types::UnixTime,
-    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rustls::pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rustls::pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        vec![
-            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-            rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
-            rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
-            rustls::SignatureScheme::RSA_PSS_SHA256,
-            rustls::SignatureScheme::RSA_PSS_SHA384,
-            rustls::SignatureScheme::RSA_PSS_SHA512,
-            rustls::SignatureScheme::RSA_PKCS1_SHA256,
-            rustls::SignatureScheme::RSA_PKCS1_SHA384,
-            rustls::SignatureScheme::RSA_PKCS1_SHA512,
-            rustls::SignatureScheme::ED25519,
-        ]
-    }
-}
-
-fn make_stls_tls_config() -> rustls::ClientConfig {
-    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-    let mut config = rustls::ClientConfig::builder_with_provider(provider)
-        .with_protocol_versions(&[&rustls::version::TLS13])
-        .unwrap()
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(SkipVerify))
-        .with_no_client_auth();
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
-    config
-}
+// ── TLS helpers ───────────────────────────────────────────────────────
+// Delegates to tls_common for TLS config (avoids duplicate NoVerify impl).
 
 /// Derive the 32-byte HMAC proof from TLS exporter secret.
 fn derive_client_proof(
@@ -208,7 +148,7 @@ pub fn connect_shadowtls(
 
     let handle = std::thread::spawn(move || {
         // ── TLS handshake ───────────────────────────────────────────
-        let tls_config = make_stls_tls_config();
+        let tls_config = super::tls_common::make_no_verify_config();
         let server_name = match rustls::pki_types::ServerName::try_from("localhost") {
             Ok(sn) => sn,
             Err(e) => {
@@ -216,7 +156,7 @@ pub fn connect_shadowtls(
                 return;
             }
         };
-        let mut conn = match rustls::ClientConnection::new(Arc::new(tls_config), server_name) {
+        let mut conn = match rustls::ClientConnection::new(tls_config, server_name) {
             Ok(c) => c,
             Err(e) => {
                 let _ = hs_tx.send(Err(io::Error::other(format!("stls client conn: {e}"))));

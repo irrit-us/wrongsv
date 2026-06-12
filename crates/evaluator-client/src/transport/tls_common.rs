@@ -10,7 +10,7 @@ use rustls::ClientConfig;
 // ── TLS config ───────────────────────────────────────────────────────────
 
 #[derive(Debug)]
-struct NoVerify;
+pub struct NoVerify;
 
 impl rustls::client::danger::ServerCertVerifier for NoVerify {
     fn verify_server_cert(

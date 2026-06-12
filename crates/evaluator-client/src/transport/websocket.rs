@@ -1,4 +1,7 @@
 //! WebSocket transport: optional TLS + WS upgrade + VLESS in masked frames.
+//!
+//! Frame encoding delegates to the `wrongsv-websocket` crate. Frame decoding
+//! keeps WouldBlock-tolerant reads specific to the evaluator's I/O model.
 
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
@@ -6,31 +9,25 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rustls::ClientConfig;
+use wrongsv_websocket::{Frame, Opcode};
 
 use super::BoxedIo;
 use super::tls_common;
 
-/// WebSocket frame from the client (always masked, random key).
+/// Build a masked client→server WebSocket frame using the websocket crate.
 fn make_ws_frame(payload: &[u8]) -> Vec<u8> {
-    let mask: [u8; 4] = rand::random();
-    let payload_len = payload.len();
-
-    let mut frame = Vec::with_capacity(14 + payload_len);
-    frame.push(0x82); // FIN | Binary opcode
-    if payload_len < 126 {
-        frame.push(0x80 | payload_len as u8);
-    } else if payload_len <= 65535 {
-        frame.push(0x80 | 126u8);
-        frame.extend_from_slice(&(payload_len as u16).to_be_bytes());
-    } else {
-        frame.push(0x80 | 127u8);
-        frame.extend_from_slice(&(payload_len as u64).to_be_bytes());
-    }
-    frame.extend_from_slice(&mask);
-    for (i, b) in payload.iter().enumerate() {
-        frame.push(b ^ mask[i % 4]);
-    }
-    frame
+    let mut buf = Vec::with_capacity(14 + payload.len());
+    wrongsv_websocket::write_frame(
+        &mut buf,
+        &Frame {
+            fin: true,
+            opcode: Opcode::Binary,
+            payload: payload.to_vec(),
+        },
+        true, // masked: client → server
+    )
+    .expect("write to Vec is infallible");
+    buf
 }
 
 /// Read a WebSocket header from the server (unmasked).
@@ -141,15 +138,16 @@ impl Read for WsConnection {
                 0x09 => {
                     // Ping — respond with masked pong per RFC 6455 §5.5.3.
                     // The pong MUST echo the ping's application data.
-                    let mask: [u8; 4] = rand::random();
-                    let plen = payload.len();
-                    let mut pong = Vec::with_capacity(2 + plen + 4);
-                    pong.push(0x8A); // FIN + Pong
-                    pong.push(0x80 | (plen as u8)); // masked + len
-                    pong.extend_from_slice(&mask);
-                    for (i, b) in payload.iter().enumerate() {
-                        pong.push(b ^ mask[i % 4]);
-                    }
+                    let mut pong = Vec::new();
+                    let _ = wrongsv_websocket::write_frame(
+                        &mut pong,
+                        &Frame {
+                            fin: true,
+                            opcode: Opcode::Pong,
+                            payload,
+                        },
+                        true, // masked: client → server
+                    );
                     let _ = self.inner.write_all(&pong);
                 }
                 _ => {} // Skip other frames
@@ -326,7 +324,12 @@ mod tests {
     impl Read for PingMock {
         fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
             if self.pos >= self.frame.len() {
-                return Err(io::Error::new(io::ErrorKind::WouldBlock, "no data"));
+                // Return UnexpectedEof so WouldBlock-tolerant readers stop
+                // immediately instead of retrying for 3 seconds.
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "mock exhausted",
+                ));
             }
             let n = (self.frame.len() - self.pos).min(buf.len());
             buf[..n].copy_from_slice(&self.frame[self.pos..self.pos + n]);
@@ -351,13 +354,14 @@ mod tests {
         let (mock, written) = PingMock::new(ping_payload);
         let mut conn = WsConnection::new(Box::new(mock));
 
-        // Read will process the ping frame and write a pong response
+        // Read will process the ping frame and write a pong response.
+        // After consuming the ping, the mock returns UnexpectedEof (no more frames).
+        // WsConnection::read propagates this to the caller.
         let mut buf = [0u8; 64];
         let result = conn.read(&mut buf);
-        // Should get WouldBlock (ping consumed, no app data available)
         assert!(
-            matches!(&result, Err(e) if e.kind() == io::ErrorKind::WouldBlock),
-            "expected WouldBlock after ping, got {result:?}"
+            matches!(&result, Err(e) if e.kind() == io::ErrorKind::UnexpectedEof),
+            "expected UnexpectedEof after ping (mock exhausted), got {result:?}"
         );
 
         let pong = written.lock().unwrap();
@@ -422,5 +426,43 @@ mod tests {
         for (i, b) in pong[6..].iter().enumerate() {
             assert_eq!(b ^ mask[i % 4], 0xAA, "byte {i} round-trips");
         }
+    }
+
+    /// Verify that `make_ws_frame` (which delegates to the `wrongsv-websocket`
+    /// crate) produces frames the crate can parse back.
+    #[test]
+    fn make_ws_frame_uses_crate_and_roundtrips() {
+        let payload = b"hello crate integration";
+        let frame_bytes = make_ws_frame(payload);
+
+        // The crate's read_frame should parse this back as a masked binary frame.
+        let mut cursor = std::io::Cursor::new(frame_bytes);
+        let frame = wrongsv_websocket::read_frame(&mut cursor, false).unwrap();
+        assert!(frame.fin, "FIN bit must be set");
+        assert_eq!(frame.opcode, Opcode::Binary);
+        assert_eq!(frame.payload, payload);
+    }
+
+    /// Empty payload roundtrip via crate.
+    #[test]
+    fn make_ws_frame_empty_payload_roundtrips() {
+        let frame_bytes = make_ws_frame(b"");
+        let mut cursor = std::io::Cursor::new(frame_bytes);
+        let frame = wrongsv_websocket::read_frame(&mut cursor, false).unwrap();
+        assert!(frame.fin);
+        assert_eq!(frame.opcode, Opcode::Binary);
+        assert!(frame.payload.is_empty());
+    }
+
+    /// Large payload (64 KiB) roundtrip via crate.
+    #[test]
+    fn make_ws_frame_large_payload_roundtrips() {
+        let payload = vec![0xABu8; 65536];
+        let frame_bytes = make_ws_frame(&payload);
+        let mut cursor = std::io::Cursor::new(frame_bytes);
+        let frame = wrongsv_websocket::read_frame(&mut cursor, false).unwrap();
+        assert!(frame.fin);
+        assert_eq!(frame.opcode, Opcode::Binary);
+        assert_eq!(frame.payload, payload);
     }
 }
