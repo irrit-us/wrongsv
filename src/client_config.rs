@@ -54,6 +54,9 @@ pub(crate) fn resolve_client_values(
         Some(cfg) if cfg.xhttp.is_some() => Transport::Xhttp,
         Some(cfg) if cfg.quic.is_some() => Transport::Quic,
         Some(cfg) if cfg.kcp.is_some() => Transport::Kcp,
+        Some(cfg) if cfg.webtransport.is_some() => Transport::WebTransport,
+        Some(cfg) if cfg.shadowtls.is_some() => Transport::ShadowTls,
+        Some(cfg) if cfg.vmess.is_some() => Transport::Vmess,
         Some(cfg) if cfg.tls.is_some() => Transport::Tls,
         _ => Transport::Raw,
     });
@@ -127,7 +130,12 @@ pub(crate) fn resolve_client_values(
             // Detect TLS: true for TLS-layer transports, true for stream
             // transports that have a tls sub-config, true for QUIC (built-in).
             let has_tls = match transport {
-                Transport::Reality | Transport::AnyTls | Transport::Tls | Transport::Quic => true,
+                Transport::Reality
+                | Transport::AnyTls
+                | Transport::Tls
+                | Transport::Quic
+                | Transport::WebTransport
+                | Transport::ShadowTls => true,
                 Transport::WebSocket => cfg
                     .websocket
                     .as_ref()
@@ -140,7 +148,7 @@ pub(crate) fn resolve_client_values(
                     .is_some(),
                 Transport::Grpc => cfg.grpc.as_ref().and_then(|g| g.tls.as_ref()).is_some(),
                 Transport::Xhttp => cfg.xhttp.as_ref().and_then(|x| x.tls.as_ref()).is_some(),
-                Transport::Kcp | Transport::Raw => false,
+                Transport::Kcp | Transport::Raw | Transport::Vmess => false,
             };
 
             ClientConfigValues {
@@ -171,7 +179,12 @@ pub(crate) fn resolve_client_values(
             transport,
             has_tls: matches!(
                 transport,
-                Transport::Reality | Transport::AnyTls | Transport::Tls | Transport::Quic
+                Transport::Reality
+                    | Transport::AnyTls
+                    | Transport::Tls
+                    | Transport::Quic
+                    | Transport::WebTransport
+                    | Transport::ShadowTls
             ),
             ws_path: "/".to_string(),
             grpc_service_name: "GunService".to_string(),
@@ -291,8 +304,37 @@ struct XhttpOpts<'a> {
     host: &'a str,
 }
 
+#[derive(Serialize)]
+struct VmessMihomoConfig<'a> {
+    name: &'a str,
+    #[serde(rename = "type")]
+    proxy_type: &'a str,
+    server: &'a str,
+    port: u16,
+    uuid: &'a str,
+    cipher: &'a str,
+    #[serde(rename = "alterId")]
+    alter_id: u8,
+    udp: bool,
+}
+
 fn mihomo_format(server_host: &str, client_name: &str, vals: &ClientConfigValues) -> String {
     let port: u16 = vals.port.parse().unwrap_or(443);
+
+    // VMess is a separate protocol type
+    if vals.transport == Transport::Vmess {
+        let config = VmessMihomoConfig {
+            name: client_name,
+            proxy_type: "vmess",
+            server: server_host,
+            port,
+            uuid: &vals.uuid,
+            cipher: "auto",
+            alter_id: 0,
+            udp: true,
+        };
+        return serde_json::to_string_pretty(&config).expect("VmessMihomoConfig should serialize");
+    }
 
     let (tls, client_fingerprint, servername, skip_cert_verify, reality_opts) = match vals.transport
     {
@@ -306,7 +348,7 @@ fn mihomo_format(server_host: &str, client_name: &str, vals: &ClientConfigValues
                 short_id: &vals.short_id,
             }),
         ),
-        Transport::AnyTls | Transport::Tls => (
+        Transport::AnyTls | Transport::Tls | Transport::ShadowTls => (
             Some(true),
             Some("chrome"),
             Some(vals.servername.as_str()),
@@ -370,6 +412,7 @@ fn mihomo_format(server_host: &str, client_name: &str, vals: &ClientConfigValues
             None,
         ),
         Transport::Quic => (Some("quic"), None, None, None, Some(QuicOpts {}), None),
+        Transport::WebTransport => (Some("quic"), None, None, None, Some(QuicOpts {}), None),
         Transport::Xhttp => (
             Some("xhttp"),
             None,
@@ -499,6 +542,29 @@ struct SingBoxHttpTransport<'a> {
 fn singbox_format(server_host: &str, client_name: &str, vals: &ClientConfigValues) -> String {
     let port: u16 = vals.port.parse().unwrap_or(443);
 
+    if vals.transport == Transport::Vmess {
+        let vmess_outbound = serde_json::json!({
+            "type": "vmess",
+            "tag": client_name,
+            "server": server_host,
+            "server_port": port,
+            "uuid": vals.uuid,
+            "security": "auto",
+            "alter_id": 0,
+        });
+        let direct_outbound = serde_json::json!({"type": "direct", "tag": "direct"});
+        let config = SingBoxConfig {
+            inbounds: vec![SingBoxInbound {
+                inbound_type: "mixed".into(),
+                tag: "mixed-in".into(),
+                listen: "127.0.0.1".into(),
+                listen_port: 10809,
+            }],
+            outbounds: vec![vmess_outbound, direct_outbound],
+        };
+        return serde_json::to_string_pretty(&config).expect("SingBoxConfig should serialize");
+    }
+
     let tls = if vals.has_tls {
         match vals.transport {
             Transport::Reality => Some(SingBoxTls {
@@ -556,7 +622,9 @@ fn singbox_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
             service_name: &vals.grpc_service_name,
         })
         .ok(),
-        Transport::Quic => serde_json::to_value(serde_json::json!({"type": "quic"})).ok(),
+        Transport::Quic | Transport::WebTransport => {
+            serde_json::to_value(serde_json::json!({"type": "quic"})).ok()
+        }
         Transport::Xhttp => {
             let host = if vals.xhttp_host.is_empty() {
                 vec![]
@@ -739,23 +807,79 @@ struct XrayXhttpSettings<'a> {
     mode: &'a str,
 }
 
+#[derive(Serialize)]
+struct XrayVmessConfig<'a> {
+    outbounds: Vec<XrayVmessOutbound<'a>>,
+}
+
+#[derive(Serialize)]
+struct XrayVmessOutbound<'a> {
+    protocol: &'a str,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    tag: &'a str,
+    settings: XrayVmessSettings<'a>,
+}
+
+#[derive(Serialize)]
+struct XrayVmessSettings<'a> {
+    vnext: Vec<XrayVmessVnext<'a>>,
+}
+
+#[derive(Serialize)]
+struct XrayVmessVnext<'a> {
+    address: &'a str,
+    port: u16,
+    users: Vec<XrayVmessUser<'a>>,
+}
+
+#[derive(Serialize)]
+struct XrayVmessUser<'a> {
+    id: &'a str,
+    security: &'a str,
+}
+
 fn xray_format(server_host: &str, client_name: &str, vals: &ClientConfigValues) -> String {
     let port: u16 = vals.port.parse().unwrap_or(443);
 
+    if vals.transport == Transport::Vmess {
+        let config = XrayVmessConfig {
+            outbounds: vec![XrayVmessOutbound {
+                protocol: "vmess",
+                tag: client_name,
+                settings: XrayVmessSettings {
+                    vnext: vec![XrayVmessVnext {
+                        address: server_host,
+                        port,
+                        users: vec![XrayVmessUser {
+                            id: &vals.uuid,
+                            security: "auto",
+                        }],
+                    }],
+                },
+            }],
+        };
+        return serde_json::to_string_pretty(&config).expect("XrayVmessConfig should serialize");
+    }
+
     // Network name mapping: wrongsv transport → Xray network string
     let xray_network: &str = match vals.transport {
-        Transport::Raw | Transport::Tls | Transport::AnyTls | Transport::Reality => "tcp",
+        Transport::Raw
+        | Transport::Tls
+        | Transport::AnyTls
+        | Transport::Reality
+        | Transport::ShadowTls => "tcp",
         Transport::WebSocket => "ws",
         Transport::Grpc => "grpc",
         Transport::HttpUpgrade => "httpupgrade",
         Transport::Xhttp => "xhttp",
-        Transport::Quic => "quic",
+        Transport::Quic | Transport::WebTransport => "quic",
         Transport::Kcp => "mkcp",
+        Transport::Vmess => unreachable!("VMess handled above"),
     };
 
     let security: Option<&str> = match vals.transport {
         Transport::Reality => Some("reality"),
-        Transport::Tls | Transport::AnyTls => Some("tls"),
+        Transport::Tls | Transport::AnyTls | Transport::ShadowTls => Some("tls"),
         _ if vals.has_tls => Some("tls"),
         _ => None,
     };
@@ -771,7 +895,7 @@ fn xray_format(server_host: &str, client_name: &str, vals: &ClientConfigValues) 
     };
 
     let tls_settings = match vals.transport {
-        Transport::Tls | Transport::AnyTls => Some(XrayTlsSettings {
+        Transport::Tls | Transport::AnyTls | Transport::ShadowTls => Some(XrayTlsSettings {
             server_name: &vals.servername,
             fingerprint: "chrome",
             allow_insecure: true,
@@ -810,7 +934,7 @@ fn xray_format(server_host: &str, client_name: &str, vals: &ClientConfigValues) 
     };
 
     let quic_settings = match vals.transport {
-        Transport::Quic => Some(XrayQuicSettings {
+        Transport::Quic | Transport::WebTransport => Some(XrayQuicSettings {
             security: "none",
             key: "",
             header: XrayQuicHeader {
@@ -886,6 +1010,25 @@ struct HiddifyConfig {
 fn hiddify_format(server_host: &str, client_name: &str, vals: &ClientConfigValues) -> String {
     let port: u16 = vals.port.parse().unwrap_or(443);
 
+    if vals.transport == Transport::Vmess {
+        let vmess_outbound = serde_json::json!({
+            "type": "vmess",
+            "tag": client_name,
+            "server": server_host,
+            "server_port": port,
+            "uuid": vals.uuid,
+            "security": "auto",
+            "alter_id": 0,
+        });
+        let direct_outbound = serde_json::json!({"type": "direct", "tag": "direct"});
+        let config = HiddifyConfig {
+            remarks: client_name.to_string(),
+            subscription: String::new(),
+            configs: vec![vmess_outbound, direct_outbound],
+        };
+        return serde_json::to_string_pretty(&config).expect("HiddifyConfig should serialize");
+    }
+
     let tls = if vals.has_tls {
         match vals.transport {
             Transport::Reality => Some(SingBoxTls {
@@ -943,7 +1086,9 @@ fn hiddify_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
             service_name: &vals.grpc_service_name,
         })
         .ok(),
-        Transport::Quic => serde_json::to_value(serde_json::json!({"type": "quic"})).ok(),
+        Transport::Quic | Transport::WebTransport => {
+            serde_json::to_value(serde_json::json!({"type": "quic"})).ok()
+        }
         Transport::Xhttp => {
             let host = if vals.xhttp_host.is_empty() {
                 vec![]
@@ -1000,7 +1145,12 @@ mod tests {
             transport,
             has_tls: matches!(
                 transport,
-                Transport::Reality | Transport::AnyTls | Transport::Tls | Transport::Quic
+                Transport::Reality
+                    | Transport::AnyTls
+                    | Transport::Tls
+                    | Transport::Quic
+                    | Transport::WebTransport
+                    | Transport::ShadowTls
             ),
             ws_path: "/ws-path".into(),
             grpc_service_name: "TestService".into(),

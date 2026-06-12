@@ -7,6 +7,7 @@ use wrongsv_server::Config;
 mod client_config;
 
 #[derive(Debug, ValueEnum, Clone, Copy, PartialEq)]
+#[allow(clippy::enum_variant_names)]
 enum Transport {
     /// REALITY TLS (X25519 ECDH + HKDF auth)
     Reality,
@@ -35,6 +36,15 @@ enum Transport {
     /// KCP (mKCP) carrier
     #[clap(name = "kcp")]
     Kcp,
+    /// WebTransport carrier (HTTP/3)
+    #[clap(name = "webtransport")]
+    WebTransport,
+    /// ShadowTLS (TLS 1.3 + HMAC auth)
+    #[clap(name = "shadowtls")]
+    ShadowTls,
+    /// VMess AEAD (AES-128-GCM encrypted proxy)
+    #[clap(name = "vmess")]
+    Vmess,
 }
 
 #[derive(ValueEnum, Clone, Copy, PartialEq)]
@@ -123,7 +133,7 @@ struct Cli {
     #[arg(long, default_value = "wrongsv")]
     client_name: String,
 
-    /// Override transport type detection (reality, anytls, tls, raw, ws, httpupgrade, grpc, xhttp, quic, kcp)
+    /// Override transport type detection (reality, anytls, tls, raw, ws, httpupgrade, grpc, xhttp, quic, kcp, webtransport, shadowtls, vmess)
     #[arg(long)]
     transport: Option<Transport>,
 
@@ -324,6 +334,9 @@ fn build_default_config() -> Config {
         tuic: None,
         quic: None,
         kcp: None,
+        webtransport: None,
+        shadowtls: None,
+        vmess: None,
     }
 }
 

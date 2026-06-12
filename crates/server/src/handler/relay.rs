@@ -597,6 +597,9 @@ mod tests {
             tuic: None,
             quic: None,
             kcp: None,
+            webtransport: None,
+            shadowtls: None,
+            vmess: None,
         }
     }
 

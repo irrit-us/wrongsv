@@ -77,6 +77,20 @@ pub struct Config {
     /// VLESS transport layer, not a separate protocol.
     #[serde(default)]
     pub kcp: Option<KcpServerConfig>,
+    /// WebTransport carrier configuration. When set, the listener creates
+    /// an HTTP/3 WebTransport endpoint carrying VLESS over bidirectional
+    /// streams. This is a VLESS transport layer over QUIC.
+    #[serde(default)]
+    pub webtransport: Option<WebTransportServerConfig>,
+    /// ShadowTLS configuration. When set, the listener performs TLS 1.3
+    /// handshake + HMAC authentication (RFC 8446 exporter) before VLESS.
+    /// Failed auth falls through to `dest`.
+    #[serde(default)]
+    pub shadowtls: Option<ShadowTlsServerConfig>,
+    /// VMess AEAD configuration. When set, this listener accepts VMess
+    /// instead of VLESS. Users are authenticated via UUID.
+    #[serde(default)]
+    pub vmess: Option<VmessServerConfig>,
 }
 
 /// REALITY server-side configuration.
@@ -471,6 +485,88 @@ pub struct KcpServerConfig {
     pub write_buffer_size: Option<usize>,
 }
 
+/// WebTransport carrier TLS configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebTransportTlsConfig {
+    #[serde(default)]
+    pub certificate: Option<String>,
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub dest: Option<String>,
+}
+
+/// WebTransport carrier server-side configuration.
+///
+/// When the WebTransport carrier is enabled, the listener creates an
+/// HTTP/3 WebTransport endpoint and carries VLESS over bidirectional
+/// streams. This is a VLESS transport layer, comparable to the QUIC carrier
+/// but with an HTTP/3 WebTransport session negotiation layer.
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebTransportServerConfig {
+    /// URL path for the WebTransport endpoint (default "/wt").
+    #[serde(default = "default_wt_path")]
+    pub path: String,
+    /// Optional Host header to validate on the server side.
+    #[serde(default)]
+    pub host: Option<String>,
+    /// Whether to allow UDP relay (default true).
+    #[serde(default = "default_udp")]
+    pub udp_relay: bool,
+    /// TLS configuration for the QUIC listener (required for HTTP/3).
+    #[serde(default)]
+    pub tls: Option<WebTransportTlsConfig>,
+}
+
+fn default_wt_path() -> String {
+    "/wt".to_string()
+}
+
+/// VMess AEAD user configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct VmessUserConfig {
+    /// VMess user UUID string (standard format).
+    pub id: String,
+    /// Optional email / display name for logs.
+    #[serde(default)]
+    pub email: String,
+}
+
+/// VMess AEAD server-side configuration.
+///
+/// VMess is a standalone encrypted proxy protocol with UUID-based
+/// authentication, AES-128-GCM header encryption, and chunked AES-128-GCM
+/// body encryption. This is a non-VLESS inbound — it cannot be combined
+/// with VLESS users, transport layers, or other non-VLESS inbounds.
+///
+/// Compatible with v2ray-core 4.28.1+ (AEAD) and xray-core VMess outbounds.
+#[derive(Debug, Clone, Deserialize)]
+pub struct VmessServerConfig {
+    /// VMess users (UUIDs). At least one is required.
+    #[serde(default)]
+    pub users: Vec<VmessUserConfig>,
+}
+
+/// ShadowTLS server-side configuration.
+///
+/// ShadowTLS is a TLS 1.3 disguise protocol. After the TLS handshake,
+/// both sides compute an HMAC over the RFC 8446 exporter secret with the
+/// shared password. Valid auth → VLESS relay; invalid → fallback to `dest`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ShadowTlsServerConfig {
+    /// Password for HMAC authentication.
+    pub password: String,
+    /// Fallback destination for unauthenticated probes (e.g. "127.0.0.1:8080").
+    #[serde(default)]
+    pub dest: Option<String>,
+    /// Optional TLS certificate PEM (self-signed if not provided).
+    #[serde(default)]
+    pub certificate: Option<String>,
+    /// Optional TLS key PEM.
+    #[serde(default)]
+    pub key: Option<String>,
+}
+
 pub(crate) fn is_strict_uuid_text(s: &str) -> bool {
     let mut hex_len = 0usize;
     for ch in s.chars() {
@@ -601,6 +697,28 @@ pub enum ConfigError {
     KcpWithVlessTransport,
     #[error("KCP carrier requires VLESS users")]
     KcpMissingUsers,
+    #[error("WebTransport carrier cannot be combined with non-VLESS protocols")]
+    WebTransportWithNonVless,
+    #[error("WebTransport carrier cannot be combined with other VLESS transports")]
+    WebTransportWithVlessTransport,
+    #[error("WebTransport carrier requires VLESS users")]
+    WebTransportMissingUsers,
+    #[error("ShadowTLS cannot be combined with non-VLESS protocols")]
+    ShadowTlsWithNonVless,
+    #[error("ShadowTLS cannot be combined with other VLESS transports")]
+    ShadowTlsWithVlessTransport,
+    #[error("ShadowTLS requires VLESS users")]
+    ShadowTlsMissingUsers,
+    #[error("VMess inbound cannot be combined with VLESS users")]
+    VmessWithVlessUsers,
+    #[error("VMess inbound cannot be combined with VLESS transport layers")]
+    VmessWithVlessTransport,
+    #[error("VMess inbound requires at least one `[[vmess.users]]` entry")]
+    VmessMissingUsers,
+    #[error("VMess user UUID is invalid: {0}")]
+    VmessInvalidUuid(String),
+    #[error("VMess user UUIDs must be unique")]
+    VmessDuplicateUuid,
 }
 
 impl Config {
@@ -622,6 +740,8 @@ impl Config {
             || self.xhttp.is_some()
             || self.quic.is_some()
             || self.kcp.is_some()
+            || self.webtransport.is_some()
+            || self.shadowtls.is_some()
     }
 
     /// True when any non-VLESS standalone inbound (Shadowsocks, Mixed,
@@ -634,6 +754,7 @@ impl Config {
             || self.trojan.is_some()
             || self.hysteria2.is_some()
             || self.tuic.is_some()
+            || self.vmess.is_some()
     }
 
     /// True when any stream-based framing transport (WebSocket,
@@ -649,7 +770,10 @@ impl Config {
     /// True when any TLS-layer transport (REALITY, AnyTLS, plain TLS) is
     /// configured.
     fn has_any_tls_layer(&self) -> bool {
-        self.reality.is_some() || self.anytls.is_some() || self.tls.is_some()
+        self.reality.is_some()
+            || self.anytls.is_some()
+            || self.tls.is_some()
+            || self.shadowtls.is_some()
     }
 
     // ── validate ─────────────────────────────────────────────────────────
@@ -678,6 +802,7 @@ impl Config {
             self.hysteria2.is_some(),
             self.tuic.is_some(),
             self.xhttp.is_some(),
+            self.vmess.is_some(),
         ]
         .into_iter()
         .filter(|&e| e)
@@ -772,6 +897,29 @@ impl Config {
             }
         }
 
+        // -- VMess non-VLESS inbound --
+        if let Some(vmess) = &self.vmess {
+            self.check_non_vless_no_users(ConfigError::VmessWithVlessUsers)?;
+            self.check_non_vless_no_transports(ConfigError::VmessWithVlessTransport)?;
+            if vmess.users.is_empty() {
+                return Err(ConfigError::VmessMissingUsers);
+            }
+            // Validate UUID format
+            for user in &vmess.users {
+                wrongsv_uuid::Uuid::parse_string(&user.id)
+                    .map_err(|e| ConfigError::VmessInvalidUuid(format!("{}: {}", user.id, e)))?;
+            }
+            // Detect duplicate UUIDs
+            if vmess.users.len() > 1 {
+                let mut seen = std::collections::HashSet::new();
+                for u in &vmess.users {
+                    if !seen.insert(&u.id) {
+                        return Err(ConfigError::VmessDuplicateUuid);
+                    }
+                }
+            }
+        }
+
         // -- VLESS framing transports --
         if let Some(_ws) = &self.websocket {
             self.check_framing_transport(
@@ -836,6 +984,36 @@ impl Config {
                 ConfigError::KcpWithVlessTransport,
                 ConfigError::KcpMissingUsers,
             )?;
+        }
+
+        if let Some(_wt) = &self.webtransport {
+            self.check_datagram_transport(
+                "webtransport",
+                ConfigError::WebTransportWithNonVless,
+                ConfigError::WebTransportWithVlessTransport,
+                ConfigError::WebTransportMissingUsers,
+            )?;
+        }
+
+        // -- VLESS TLS-layer transports (ShadowTLS) --
+        if let Some(_st) = &self.shadowtls {
+            // ShadowTLS is a TLS-layer transport. Cannot combine with
+            // non-VLESS inbounds, stream framing, datagram transports, or
+            // other TLS-layer transports.
+            if self.has_any_non_vless_inbound()
+                || self.has_any_stream_framing()
+                || self.quic.is_some()
+                || self.kcp.is_some()
+                || self.webtransport.is_some()
+            {
+                return Err(ConfigError::ShadowTlsWithNonVless);
+            }
+            if self.reality.is_some() || self.anytls.is_some() || self.tls.is_some() {
+                return Err(ConfigError::ShadowTlsWithVlessTransport);
+            }
+            if !self.has_vless_users() {
+                return Err(ConfigError::ShadowTlsMissingUsers);
+            }
         }
 
         Ok(())
@@ -932,8 +1110,9 @@ impl Config {
         }
         // Also reject the other datagram transport
         let datagram_conflict = match name {
-            "quic" => self.kcp.is_some(),
-            "kcp" => self.quic.is_some(),
+            "quic" => self.kcp.is_some() || self.webtransport.is_some(),
+            "kcp" => self.quic.is_some() || self.webtransport.is_some(),
+            "webtransport" => self.quic.is_some() || self.kcp.is_some(),
             _ => unreachable!("unknown datagram transport: {name}"),
         };
         if self.has_any_tls_layer() || datagram_conflict {
@@ -946,7 +1125,10 @@ impl Config {
     }
 
     fn has_any_non_vless_inbound_except_hysteria2(&self) -> bool {
-        self.shadowsocks.is_some() || self.mixed.is_some() || self.trojan.is_some()
+        self.shadowsocks.is_some()
+            || self.mixed.is_some()
+            || self.trojan.is_some()
+            || self.vmess.is_some()
     }
 
     fn has_any_non_vless_inbound_except_tuic(&self) -> bool {
@@ -954,6 +1136,7 @@ impl Config {
             || self.mixed.is_some()
             || self.trojan.is_some()
             || self.hysteria2.is_some()
+            || self.vmess.is_some()
     }
 }
 
@@ -1006,6 +1189,9 @@ flow = "xtls-rprx-vision"
             tuic: None,
             quic: None,
             kcp: None,
+            webtransport: None,
+            shadowtls: None,
+            vmess: None,
         };
         assert!(config.validate().is_err());
     }
@@ -1038,6 +1224,9 @@ flow = "xtls-rprx-vision"
             tuic: None,
             quic: None,
             kcp: None,
+            webtransport: None,
+            shadowtls: None,
+            vmess: None,
         };
         assert!(config.validate().is_err());
     }
@@ -1855,6 +2044,357 @@ id = "12345678-1234-1234-1234-123456789abc"
         assert!(matches!(
             config.validate(),
             Err(ConfigError::KcpWithVlessTransport)
+        ));
+    }
+
+    // ── WebTransport config validation ──────────────────────────────────
+
+    #[test]
+    fn test_parse_webtransport_config() {
+        let toml = r#"
+listen = "0.0.0.0:8388"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[webtransport]
+path = "/wt"
+udp_relay = false
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        let wt = config.webtransport.unwrap();
+        assert_eq!(wt.path, "/wt");
+        assert!(!wt.udp_relay);
+    }
+
+    #[test]
+    fn test_webtransport_accepts_vless_users() {
+        let toml = r#"
+listen = "0.0.0.0:8388"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[webtransport]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn test_webtransport_rejects_missing_users() {
+        let toml = r#"
+listen = "0.0.0.0:8388"
+
+[webtransport]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::WebTransportMissingUsers)
+        ));
+    }
+
+    #[test]
+    fn test_webtransport_rejects_non_vless() {
+        let toml = r#"
+listen = "0.0.0.0:8388"
+
+[webtransport]
+
+[shadowsocks]
+method = "chacha20-ietf-poly1305"
+password = "secret"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::ShadowsocksWithVlessTransport)
+        ));
+    }
+
+    #[test]
+    fn test_webtransport_rejects_other_vless_transport() {
+        let toml = r#"
+listen = "0.0.0.0:8388"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[webtransport]
+
+[tls]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::WebTransportWithVlessTransport)
+        ));
+    }
+
+    #[test]
+    fn test_webtransport_rejects_other_datagram_transport() {
+        let toml = r#"
+listen = "0.0.0.0:8388"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[webtransport]
+
+[quic]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::QuicWithVlessTransport)
+        ));
+    }
+
+    // ── ShadowTLS config validation ──────────────────────────────────────
+
+    #[test]
+    fn test_parse_shadowtls_config() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[shadowtls]
+password = "secret"
+dest = "127.0.0.1:8080"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        let st = config.shadowtls.unwrap();
+        assert_eq!(st.password, "secret");
+        assert_eq!(st.dest.as_deref(), Some("127.0.0.1:8080"));
+    }
+
+    #[test]
+    fn test_shadowtls_accepts_vless_users() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[shadowtls]
+password = "secret"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn test_shadowtls_rejects_missing_users() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[shadowtls]
+password = "secret"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::ShadowTlsMissingUsers)
+        ));
+    }
+
+    #[test]
+    fn test_shadowtls_rejects_non_vless() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[shadowtls]
+password = "secret"
+
+[shadowsocks]
+method = "chacha20-ietf-poly1305"
+password = "secret"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::ShadowsocksWithVlessTransport)
+        ));
+    }
+
+    #[test]
+    fn test_shadowtls_rejects_other_tls_layer() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[shadowtls]
+password = "secret"
+
+[tls]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::ShadowTlsWithVlessTransport)
+        ));
+    }
+
+    #[test]
+    fn test_shadowtls_rejects_framing_transport() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[shadowtls]
+password = "secret"
+
+[websocket]
+path = "/"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        // Websocket validation runs before ShadowTLS — it detects the TLS-layer
+        // conflict via has_any_tls_layer() → WebsocketWithVlessTransport
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::WebsocketWithVlessTransport)
+        ));
+    }
+
+    // ── VMess config validation ────────────────────────────────────────
+
+    #[test]
+    fn test_parse_vmess_config() {
+        let toml = r#"
+listen = "0.0.0.0:16823"
+
+[vmess]
+
+[[vmess.users]]
+id = "12345678-1234-1234-1234-123456789abc"
+email = "user@example.com"
+
+[[vmess.users]]
+id = "87654321-1234-1234-1234-123456789abc"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        let vmess = config.vmess.unwrap();
+        assert_eq!(vmess.users.len(), 2);
+        assert_eq!(vmess.users[0].email, "user@example.com");
+        assert_eq!(vmess.users[1].id, "87654321-1234-1234-1234-123456789abc");
+    }
+
+    #[test]
+    fn test_vmess_rejects_missing_users() {
+        let toml = r#"
+listen = "0.0.0.0:16823"
+
+[vmess]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::VmessMissingUsers)
+        ));
+    }
+
+    #[test]
+    fn test_vmess_rejects_vless_users() {
+        let toml = r#"
+listen = "0.0.0.0:16823"
+
+[vmess]
+
+[[vmess.users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::VmessWithVlessUsers)
+        ));
+    }
+
+    #[test]
+    fn test_vmess_rejects_vless_transport() {
+        let toml = r#"
+listen = "0.0.0.0:16823"
+
+[vmess]
+
+[[vmess.users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[tls]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::VmessWithVlessTransport)
+        ));
+    }
+
+    #[test]
+    fn test_vmess_rejects_other_non_vless_inbound() {
+        let toml = r#"
+listen = "0.0.0.0:16823"
+
+[vmess]
+
+[[vmess.users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[mixed]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::MultipleInboundProtocols)
+        ));
+    }
+
+    #[test]
+    fn test_vmess_rejects_invalid_uuid() {
+        let toml = r#"
+listen = "0.0.0.0:16823"
+
+[vmess]
+
+[[vmess.users]]
+id = "this-is-too-long-to-be-a-short-name-and-also-not-a-valid-uuid"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::VmessInvalidUuid(_))
+        ));
+    }
+
+    #[test]
+    fn test_vmess_rejects_duplicate_uuid() {
+        let toml = r#"
+listen = "0.0.0.0:16823"
+
+[vmess]
+
+[[vmess.users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[[vmess.users]]
+id = "12345678-1234-1234-1234-123456789abc"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::VmessDuplicateUuid)
         ));
     }
 }

@@ -85,7 +85,7 @@ impl TlsConnection {
 
     fn read_tls_inner(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let mut retries: u32 = 0;
-        const MAX_RETRIES: u32 = 6;
+        const MAX_RETRIES: u32 = 20;
         loop {
             match self.conn.reader().read(buf) {
                 Ok(0) => {

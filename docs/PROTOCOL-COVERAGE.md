@@ -26,6 +26,9 @@ documentation and maps it to wrongsv implementation status.
 | Trojan over TLS TCP/UDP | Implemented for TLS-wrapped TCP CONNECT, UDP ASSOCIATE packet relay, SHA224 password authentication, SOCKS5-style address headers, pipelined payload relay, decrypted plaintext fallback for invalid post-TLS probes, and real-client lifecycle coverage. | trojan-gfw, xray, sing-box, mihomo |
 | Hysteria2 | Implemented for HTTP/3 `/auth` authentication, `Hysteria-UDP` negotiation, `Hysteria-CC-RX` bandwidth hints, TCP relay over bidirectional QUIC streams, UDP relay over QUIC datagrams, and fragment reassembly. | sing-box, Hysteria 2 |
 | TUIC | Implemented for HTTP/3 `/auth` authentication, TLS-exporter token derivation, TCP relay over bidirectional QUIC streams, UDP relay over QUIC datagrams, dissociate handling, heartbeat handling, and fragment reassembly. | sing-box |
+| VLESS + WebTransport | Implemented for HTTP/3 WebTransport carrier with bidirectional stream VLESS relay, TLS (self-signed or custom), configurable path, optional host validation, TCP/Vision/UDP relay (GOST-compatible). | GOST |
+| VLESS + ShadowTLS | Implemented for TLS 1.3 + RFC 8446 exporter HMAC-SHA256 authentication with VLESS relay, optional self-signed or custom certificates, fallback destination for unauthenticated probes, TCP/Vision/UDP relay. | sing-box |
+| VMess AEAD | Implemented for standalone proxy protocol with UUID-based EAuID authentication, AES-128-GCM header encryption, chunked AES-128-GCM body encryption, response auth, TCP relay, and real-client lifecycle coverage. | v2ray-core, xray, sing-box |
 
 ## Research Notes
 
@@ -59,6 +62,6 @@ documentation and maps it to wrongsv implementation status.
 ## Priority
 
 1. ~~VLESS WebSocket TCP/raw UDP/Mux.Cool XUDP, packetaddr UDP, HTTPUpgrade TCP/UDP, gRPC, XHTTP, QUIC, and KCP carrier coverage~~ → **Done**.
-2. WebTransport carrier mode.
-3. VMess, ShadowTLS.
+2. ~~WebTransport carrier mode.~~ → **Done**.
+3. ~~ShadowTLS~~ → **Done**. ~~VMess~~ → **Done**.
 4. SoftEther/OpenVPN/SSTP only if the project scope expands from proxy relay to VPN tunneling.

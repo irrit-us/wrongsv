@@ -58,6 +58,12 @@ pub(crate) mod quic;
 pub(crate) use quic::*;
 pub(crate) mod kcp;
 pub(crate) use kcp::*;
+pub(crate) mod webtransport;
+pub(crate) use webtransport::*;
+pub(crate) mod shadowtls;
+pub(crate) use shadowtls::*;
+pub(crate) mod vmess_handler;
+pub(crate) use vmess_handler::*;
 
 #[derive(Clone, Debug)]
 pub struct ShutdownSignal {
@@ -157,6 +163,9 @@ pub struct InboundServer {
     tuic_config: Option<TuicConfig>,
     quic_config: Option<QuicConfig>,
     kcp_config: Option<KcpConfig>,
+    webtransport_config: Option<WebTransportConfig>,
+    shadowtls_config: Option<ShadowTlsConfig>,
+    vmess_config: Option<VmessHandlerConfig>,
 }
 
 impl InboundServer {
@@ -286,6 +295,45 @@ impl InboundServer {
             }
             None => None,
         };
+        let webtransport_config = match &config.webtransport {
+            Some(wc) => {
+                let cfg = parse_webtransport_config(wc)?;
+                info!(
+                    "WebTransport enabled on path '{}'{}",
+                    cfg.path,
+                    if cfg.udp_relay {
+                        " (TCP + UDP)"
+                    } else {
+                        " (TCP only)"
+                    }
+                );
+                Some(cfg)
+            }
+            None => None,
+        };
+        let shadowtls_config = match &config.shadowtls {
+            Some(sc) => {
+                let cfg = parse_shadowtls_config(sc)?;
+                info!(
+                    "ShadowTLS enabled{}",
+                    if cfg.dest.is_some() {
+                        " (with fallback)"
+                    } else {
+                        ""
+                    }
+                );
+                Some(cfg)
+            }
+            None => None,
+        };
+        let vmess_config = match &config.vmess {
+            Some(vc) => {
+                let cfg = parse_vmess_handler_config(vc)?;
+                info!("VMess enabled ({} user(s))", cfg.users.len());
+                Some(cfg)
+            }
+            None => None,
+        };
         if let Some(ref rc) = reality_config {
             let rpk_hex: String = rc
                 .cert_material
@@ -353,6 +401,9 @@ impl InboundServer {
             tuic_config,
             quic_config,
             kcp_config,
+            webtransport_config,
+            shadowtls_config,
+            vmess_config,
         })
     }
 
@@ -437,6 +488,22 @@ impl InboundServer {
                 ))
                 .map_err(|e| std::io::Error::other(e.to_string()).into());
         }
+        if let Some(config) = self.webtransport_config.clone() {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            let validator = Arc::clone(&self.validator);
+            let kyber_sk = self.kyber_sk;
+            return runtime
+                .block_on(run_webtransport_endpoint(
+                    &self.config.listen,
+                    config,
+                    validator,
+                    kyber_sk,
+                    shutdown,
+                ))
+                .map_err(|e| std::io::Error::other(e.to_string()).into());
+        }
         let listener = TcpListener::bind(&self.config.listen)?;
         self.run_with_listener(listener, shutdown)
     }
@@ -453,6 +520,8 @@ impl InboundServer {
             "Mixed proxy"
         } else if self.trojan_config.is_some() {
             "Trojan"
+        } else if self.vmess_config.is_some() {
+            "VMess"
         } else if self.hysteria2_config.is_some() {
             "Hysteria2"
         } else if self.tuic_config.is_some() {
@@ -463,6 +532,8 @@ impl InboundServer {
             "VLESS gRPC"
         } else if self.xhttp_config.is_some() {
             "VLESS XHTTP"
+        } else if self.webtransport_config.is_some() {
+            "VLESS WebTransport"
         } else {
             "VLESS"
         };
@@ -483,8 +554,11 @@ impl InboundServer {
         let httpupgrade_config = self.httpupgrade_config.clone();
         let grpc_config = self.grpc_config.clone();
         let xhttp_config = self.xhttp_config.clone();
+        let shadowtls_config = self.shadowtls_config.clone();
+        let vmess_config = self.vmess_config.clone();
         let hysteria2_enabled = self.hysteria2_config.is_some();
         let tuic_enabled = self.tuic_config.is_some();
+        let webtransport_enabled = self.webtransport_config.is_some();
         let shadowsocks_udp_socket =
             match (&self.shadowsocks_config, self.config.shadowsocks.as_ref()) {
                 (Some(_), Some(raw_config)) if raw_config.udp => {
@@ -520,12 +594,16 @@ impl InboundServer {
                     let huc = httpupgrade_config.clone();
                     let gc = grpc_config.clone();
                     let xc = xhttp_config.clone();
+                    let stc = shadowtls_config.clone();
+                    let vmc = vmess_config.clone();
                     thread::spawn(move || {
                         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                             if let Some(ref rc) = rc {
                                 handle_reality_connection(stream, v, kyber_sk, rc)
                             } else if let Some(ref ac) = ac {
                                 handle_anytls_connection(stream, v, kyber_sk, ac)
+                            } else if let Some(ref stc) = stc {
+                                handle_shadowtls_connection(stream, v, kyber_sk, stc)
                             } else if let Some(ref wc) = wsc {
                                 handle_ws_connection(stream, v, kyber_sk, wc)
                             } else if let Some(ref hc) = huc {
@@ -541,6 +619,8 @@ impl InboundServer {
                                 )
                             } else if tuic_enabled {
                                 Err("TUIC inbound uses QUIC and does not accept TCP sockets".into())
+                            } else if webtransport_enabled {
+                                Err("WebTransport inbound uses QUIC and does not accept TCP sockets".into())
                             } else if let Some(ref tc) = tc {
                                 handle_tls_connection(stream, v, kyber_sk, tc)
                             } else if let Some(ref sc) = sc {
@@ -549,6 +629,8 @@ impl InboundServer {
                                 handle_mixed_proxy_connection(stream, mc)
                             } else if let Some(ref trc) = trc {
                                 handle_trojan_connection(stream, trc)
+                            } else if let Some(ref vmc) = vmc {
+                                handle_vmess_connection(stream, vmc)
                             } else {
                                 handle_connection(stream, v, kyber_sk)
                             }

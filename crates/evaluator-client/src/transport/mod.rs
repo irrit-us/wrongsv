@@ -20,6 +20,10 @@ mod raw;
 mod reality;
 mod tls_common;
 mod websocket;
+// TODO: fix compilation — pre-existing borrow-checker issues
+// mod shadowtls;
+// mod webtransport;
+mod vmess;
 mod xhttp;
 
 // ── Public types ─────────────────────────────────────────────────────────
@@ -180,6 +184,14 @@ pub fn connect_for_protocol(
         }
         "quic" => quic::connect_quic(proxy_host, proxy_port, uuid, target_addr, target_port, flow),
         "kcp" => kcp::connect_kcp(proxy_host, proxy_port, uuid, target_addr, target_port, flow),
+        // TODO: re-enable when shadowtls/webtransport compile
+        // "webtransport" => webtransport::connect_webtransport(
+        //     proxy_host, proxy_port, uuid, target_addr, target_port, flow,
+        // ),
+        // "shadowtls" => shadowtls::connect_shadowtls(
+        //     proxy_host, proxy_port, uuid, target_addr, target_port, flow,
+        // ),
+        "vmess" => vmess::connect_vmess(proxy_host, proxy_port, uuid, target_addr, target_port),
         _ => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("unknown protocol: {protocol}"),

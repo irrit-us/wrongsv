@@ -28,6 +28,9 @@ pub const DEFAULT_PROTOCOLS: &[&str] = &[
     "xhttp+tls",
     "quic",
     "kcp",
+    "webtransport",
+    "shadowtls",
+    "vmess",
 ];
 
 /// Build a wrongsv server config TOML for the given protocol.
@@ -292,6 +295,70 @@ mtu = 1350
 "#
             );
             (config, uid.to_string(), TransportParams::default())
+        }
+        "webtransport" => {
+            let config = format!(
+                r#"
+listen = "{proxy_bind}:{proxy_port}"
+
+[[users]]
+id = "{uid}"
+
+[webtransport]
+path = "/eval"
+
+[webtransport.tls]
+"#
+            );
+            (config, uid.to_string(), TransportParams::default())
+        }
+        "shadowtls" => {
+            let config = format!(
+                r#"
+listen = "{proxy_bind}:{proxy_port}"
+
+[[users]]
+id = "{uid}"
+
+[shadowtls]
+password = "eval-stls-pass"
+"#
+            );
+            (config, uid.to_string(), TransportParams::default())
+        }
+        "vmess" => {
+            // VMess is a standalone protocol, not VLESS. The uuid field in the
+            // VMess user table is the VMess UUID, not a VLESS user ID.
+            let vmess_uid = format!(
+                "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+                rand::random::<u8>(),
+                rand::random::<u8>(),
+                rand::random::<u8>(),
+                rand::random::<u8>(),
+                rand::random::<u8>(),
+                rand::random::<u8>(),
+                0x40 | (rand::random::<u8>() & 0x0f),
+                rand::random::<u8>(),
+                0x80 | (rand::random::<u8>() & 0x3f),
+                rand::random::<u8>(),
+                rand::random::<u8>(),
+                rand::random::<u8>(),
+                rand::random::<u8>(),
+                rand::random::<u8>(),
+                rand::random::<u8>(),
+                rand::random::<u8>(),
+            );
+            let config = format!(
+                r#"
+listen = "{proxy_bind}:{proxy_port}"
+
+[vmess]
+
+[[vmess.users]]
+id = "{vmess_uid}"
+"#
+            );
+            (config, vmess_uid, TransportParams::default())
         }
         _ => panic!("unknown protocol: {protocol}"),
     }

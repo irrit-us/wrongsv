@@ -10,6 +10,7 @@ wrongsv-uuid.workspace = true
 wrongsv-net-types.workspace = true
 wrongsv-websocket.workspace = true
 wrongsv-grpc.workspace = true
+wrongsv-server.workspace = true
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "sync", "macros", "time", "io-util"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -22,6 +23,7 @@ h2 = "0.4"
 http = "1"
 quinn = "0.11"
 kcp = "0.6"
+wtransport.workspace = true
 clap.workspace = true
 sha2.workspace = true
 base64.workspace = true

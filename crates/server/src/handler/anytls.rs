@@ -1,6 +1,6 @@
-use std::io::{Read, Result as IoResult, Write};
+use std::io::{self, Read, Result as IoResult, Write};
 use std::net::{Shutdown, TcpStream, UdpSocket};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use tracing::{debug, info, trace, warn};
@@ -81,7 +81,34 @@ pub(crate) fn handle_anytls_connection(
 
     let mut first = vec![0u8; 8192];
     first[0] = first_byte;
-    let extra = tls_stream.read(&mut first[1..])?;
+    // Blocking read: AnyTlsStream::read() is non-blocking (returns WouldBlock
+    // when no TLS plaintext is available), so we loop with read_tls on the
+    // underlying socket until the VLESS header arrives.  This is critical over
+    // high-latency paths where application data may not have arrived yet.
+    let extra = loop {
+        match tls_stream.read(&mut first[1..]) {
+            Ok(n) => break n,
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                let (conn, sock) = tls_stream.get_mut();
+                match conn.read_tls(sock) {
+                    Ok(0) => {
+                        return Err("connection closed before VLESS header".into());
+                    }
+                    Ok(_) => {
+                        conn.process_new_packets()
+                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                        continue;
+                    }
+                    Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            Err(e) => return Err(e.into()),
+        }
+    };
     first.truncate(1 + extra);
     let n = first.len();
     trace!("{peer} AnyTLS read {n} bytes VLESS header");
@@ -495,80 +522,224 @@ pub(crate) fn relay_sing_udp(
     let _ = writer.send_fin(_stream.id);
     Ok(())
 }
+// ── Two-thread TLS relay helpers ────────────────────────────────────────────
+//
+// The single-threaded alternating loop hits a throughput wall on high-latency
+// paths because read_tls(10ms) WouldBlocks before tunnel data arrives
+// (RTT > 100ms).  relay_raw solves this with two blocking threads.
+//
+// We replicate that here: one thread for client→target, one for
+// target→client.  To avoid holding the Mutex<ServerConnection> during
+// socket I/O we:
+//
+//   reader: sock.read(raw) → lock → read_tls(PreReadBuf) → decrypt → unlock → target.write
+//   writer: target.read(plain) → lock → encrypt → write_tls(VecWriter) → unlock → sock.write(tls_out)
+//
+// The lock is held only for CPU work (TLS encrypt/decrypt), not for socket I/O.
+
+/// Accumulates raw bytes from multiple socket reads so `read_tls` can
+/// consume complete TLS records even when TCP segments arrive fragmented.
+/// Returns `WouldBlock` when empty to signal "need more data from socket".
+struct ReadBuf {
+    data: Vec<u8>,
+    pos: usize,
+}
+
+impl ReadBuf {
+    fn new() -> Self {
+        Self {
+            data: Vec::with_capacity(RELAY_BUF),
+            pos: 0,
+        }
+    }
+
+    fn extend(&mut self, bytes: &[u8]) {
+        // Drop already-consumed bytes before appending.
+        if self.pos > 0 {
+            self.data.drain(..self.pos);
+            self.pos = 0;
+        }
+        self.data.extend_from_slice(bytes);
+    }
+}
+
+impl Read for ReadBuf {
+    fn read(&mut self, buf: &mut [u8]) -> IoResult<usize> {
+        let avail = self.data.len().saturating_sub(self.pos);
+        if avail == 0 {
+            return Err(io::Error::new(io::ErrorKind::WouldBlock, "buffer empty"));
+        }
+        let n = avail.min(buf.len());
+        buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+        self.pos += n;
+        Ok(n)
+    }
+}
+
+/// Collects `write_tls` output into a `Vec` so the lock isn't held during
+/// blocking socket writes.
+struct VecWriter<'a>(&'a mut Vec<u8>);
+
+impl Write for VecWriter<'_> {
+    fn write(&mut self, data: &[u8]) -> IoResult<usize> {
+        self.0.extend_from_slice(data);
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> IoResult<()> {
+        Ok(())
+    }
+}
+
+const RELAY_BUF: usize = 32768;
+
 pub(crate) fn relay_anytls_raw(
-    mut tls: wrongsv_anytls::AnyTlsStream,
+    tls: wrongsv_anytls::AnyTlsStream,
     mut target: TcpStream,
     initial_data: Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut buf = [0u8; 32768];
     target.set_nodelay(true)?;
-    target.set_read_timeout(Some(Duration::from_millis(10)))?;
 
     if !initial_data.is_empty() {
         target.write_all(&initial_data)?;
     }
 
-    let (conn, stream) = tls.get_mut();
-    stream.set_read_timeout(Some(Duration::from_millis(10)))?;
+    // Split TLS stream into connection state + socket, then clone the
+    // socket so reader and writer get independent file descriptors.
+    let (conn, stream) = tls.into_parts();
+    let mut stream_read = stream.try_clone()?;
+    let mut stream_write = stream;
 
-    loop {
-        // Drain target first — it's the fast, low-latency side.
-        // When downloading a large response we want to pull as much
-        // data from the target as we can before checking for new
-        // client requests.
-        match target.read(&mut buf) {
-            Ok(0) => {
-                conn.send_close_notify();
-                while conn.wants_write() {
-                    conn.write_tls(stream)?;
-                }
-                break;
-            }
-            Ok(n) => {
-                conn.writer().write_all(&buf[..n])?;
-                while conn.wants_write() {
-                    conn.write_tls(stream)?;
-                }
-                target.set_read_timeout(Some(Duration::from_millis(10)))?;
-                continue;
-            }
-            Err(ref e)
-                if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut =>
-            {
-                // Keep aggressive polling — 50ms backoff kills upload throughput
-                // (16 KB/50ms ≈ 2.5 Mbps). 10ms gives ~13 Mbps floor per iteration.
-                target.set_read_timeout(Some(Duration::from_millis(10)))?;
-            }
-            Err(e) => return Err(e.into()),
-        }
+    let tls_conn = Arc::new(Mutex::new(conn));
 
-        // Client side
-        match conn.read_tls(stream) {
-            Ok(0) => {
-                let _ = target.shutdown(Shutdown::Write);
-                break;
+    let mut target_w = target.try_clone()?;
+    let mut target_r = target;
+
+    // ── Reader thread: client → target ──────────────────────────────────
+    let tls_reader = Arc::clone(&tls_conn);
+    let t1 = thread::spawn(move || {
+        let mut raw = vec![0u8; RELAY_BUF];
+        let mut plain = vec![0u8; RELAY_BUF];
+        let mut rbuf = ReadBuf::new();
+        loop {
+            // Block on socket read — no lock held.
+            match stream_read.read(&mut raw) {
+                Ok(0) => break,
+                Ok(n) => {
+                    rbuf.extend(&raw[..n]);
+                }
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                Err(_) => break,
             }
-            Ok(_) => {
-                conn.process_new_packets()
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+            // Feed accumulated bytes to TLS.  If a complete TLS record hasn't
+            // arrived yet (WouldBlock), loop back to read more from the socket.
+            loop {
+                let mut conn = match tls_reader.lock() {
+                    Ok(c) => c,
+                    Err(_) => return,
+                };
+                match conn.read_tls(&mut rbuf) {
+                    Ok(_) => {}
+                    Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        // Not enough bytes for a complete TLS record — read
+                        // more from the socket in the outer loop.
+                        break;
+                    }
+                    Err(_) => return,
+                }
+                if conn.process_new_packets().is_err() {
+                    return;
+                }
+                // Drain all decrypted plaintext records.
                 loop {
-                    match conn.reader().read(&mut buf) {
+                    match conn.reader().read(&mut plain) {
                         Ok(0) => break,
-                        Ok(n) => {
-                            target.write_all(&buf[..n])?;
-                            target.set_read_timeout(Some(Duration::from_millis(10)))?;
+                        Ok(m) => {
+                            drop(conn); // release lock before target I/O
+                            if target_w.write_all(&plain[..m]).is_err() {
+                                return;
+                            }
+                            conn = match tls_reader.lock() {
+                                Ok(c) => c,
+                                Err(_) => return,
+                            };
                         }
-                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                        Err(e) => return Err(e.into()),
+                        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                        Err(_) => break,
                     }
                 }
+                drop(conn);
+                // Try more TLS records from the buffer before going
+                // back to the socket for more raw bytes.
+                continue;
             }
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(e) => return Err(e.into()),
         }
-    }
-    let _ = target.shutdown(Shutdown::Write);
+        let _ = target_w.shutdown(Shutdown::Write);
+    });
+
+    // ── Writer thread: target → client ──────────────────────────────────
+    let tls_writer = Arc::clone(&tls_conn);
+    let t2 = thread::spawn(move || {
+        let mut buf = vec![0u8; RELAY_BUF];
+        let mut tls_out = Vec::with_capacity(RELAY_BUF + 16384);
+        loop {
+            match target_r.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    // Encrypt inside the lock (CPU-only, lock held briefly).
+                    let mut conn = match tls_writer.lock() {
+                        Ok(c) => c,
+                        Err(_) => break,
+                    };
+                    if conn.writer().write_all(&buf[..n]).is_err() {
+                        break;
+                    }
+                    tls_out.clear();
+                    while conn.wants_write() {
+                        let mut vw = VecWriter(&mut tls_out);
+                        if conn.write_tls(&mut vw).is_err() {
+                            break;
+                        }
+                    }
+                    drop(conn); // release lock before socket I/O
+                    if !tls_out.is_empty() {
+                        if stream_write.write_all(&tls_out).is_err() {
+                            break;
+                        }
+                        let _ = stream_write.flush();
+                    }
+                }
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                Err(_) => break,
+            }
+        }
+        // Send TLS close_notify (inside lock) then flush to socket.
+        if let Ok(mut conn) = tls_writer.lock() {
+            conn.send_close_notify();
+            tls_out.clear();
+            while conn.wants_write() {
+                let mut vw = VecWriter(&mut tls_out);
+                if conn.write_tls(&mut vw).is_err() {
+                    break;
+                }
+            }
+            drop(conn);
+            if !tls_out.is_empty() {
+                let _ = stream_write.write_all(&tls_out);
+            }
+        }
+        let _ = target_r.shutdown(Shutdown::Write);
+    });
+
+    t1.join().ok();
+    t2.join().ok();
     Ok(())
 }
 
