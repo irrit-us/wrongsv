@@ -1,0 +1,9 @@
+# VMess AEAD standalone proxy (not VLESS — independent protocol stack)
+# Compatible with v2ray-core/xray/sing-box VMess clients
+listen = "0.0.0.0:443"
+
+[vmess]
+
+[[vmess.users]]
+id = "12345678-1234-1234-1234-123456789abc"
+email = "user@example.com"

@@ -83,10 +83,21 @@ Pick an example from [`configs/`](configs/):
 | [`basic-tcp.toml`](configs/basic-tcp.toml) | raw TCP | none | Simplest setup |
 | [`httpupgrade.toml`](configs/httpupgrade.toml) | HTTPUpgrade | none | HTTP/1.1 101 upgrade, raw VLESS stream |
 | [`kyber-vision.toml`](configs/kyber-vision.toml) | raw TCP | Vision | Post-quantum KEM |
+| [`ws-tcp.toml`](configs/ws-tcp.toml) | WebSocket | none | VLESS over WebSocket carrier |
+| [`ws-udp.toml`](configs/ws-udp.toml) | WebSocket | none | VLESS WS + UDP relay |
+| [`grpc.toml`](configs/grpc.toml) | gRPC | none | HTTP/2 gRPC Hunk framing |
+| [`xhttp.toml`](configs/xhttp.toml) | XHTTP | none | HTTP/2 raw byte streaming |
+| [`quic.toml`](configs/quic.toml) | QUIC | none | UDP/TLS 1.3 bidirectional streams |
+| [`kcp.toml`](configs/kcp.toml) | mKCP | none | UDP-based KCP with FNV1a auth |
+| [`webtransport.toml`](configs/webtransport.toml) | WebTransport | none | HTTP/3 WebTransport carrier |
+| [`shadowtls.toml`](configs/shadowtls.toml) | ShadowTLS | none | TLS 1.3 + RFC 8446 HMAC auth |
+| [`vmess.toml`](configs/vmess.toml) | VMess AEAD | n/a | Standalone VMess AEAD proxy |
 | [`shadowsocks-aead.toml`](configs/shadowsocks-aead.toml) | Shadowsocks AEAD | n/a | TCP/UDP relay for Shadowsocks-compatible clients |
 | [`shadowsocks-2022.toml`](configs/shadowsocks-2022.toml) | Shadowsocks AEAD-2022 | n/a | TCP/UDP relay for sing-box/mihomo/xray Shadowsocks 2022 clients |
 | [`mixed-proxy.toml`](configs/mixed-proxy.toml) | SOCKS4/4A / SOCKS5 / HTTP proxy | n/a | Local/LAN mixed proxy inbound |
 | [`trojan-tls.toml`](configs/trojan-tls.toml) | Trojan over TLS | n/a | TCP/UDP relay for Trojan-compatible clients |
+| [`hysteria2.toml`](configs/hysteria2.toml) | Hysteria2 | n/a | QUIC-based Hysteria2 inbound |
+| [`tuic.toml`](configs/tuic.toml) | TUIC | n/a | QUIC-based TUIC v5 inbound |
 
 Or create a minimal config:
 

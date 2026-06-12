@@ -1,0 +1,13 @@
+# VLESS + KCP (mKCP) carrier — UDP-based with FNV1a auth
+# Compatible with xray-core mKCP transport
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+email = "user@example.com"
+flow = ""
+
+[kcp]
+seed = "your-kcp-seed"
+tti = 10
+mtu = 1350

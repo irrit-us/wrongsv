@@ -38,10 +38,10 @@ documentation and maps it to wrongsv implementation status.
 | Shadowsocks | Classic AEAD TCP starts with a random salt, then encrypted length and payload chunks; UDP packets carry a salt plus encrypted address header and payload. SIP022 AEAD-2022 requires fixed-length base64 PSKs, BLAKE3 subkeys, timestamped request/response headers, replay protection, separate AES-encrypted UDP headers, session IDs, and packet counters. Sources: https://shadowsocks.org/doc/aead.html and https://shadowsocks.org/doc/sip022.html | Classic AEAD TCP/UDP and AEAD-2022 TCP/UDP are implemented. | SIP003 plugins. |
 | Outline | Outline access keys are Shadowsocks-based and support optional TCP/UDP prefixes at the start of the salt for disguises. Source: https://developer.getoutline.org/vpn/advanced/prefixing/ | Standard Shadowsocks AEAD TCP/UDP works without prefixes; optional generated TCP/UDP response prefixes are configurable. | WebSocket transport compatibility. |
 | SoftEther | Supports SoftEther VPN over HTTPS, OpenVPN, L2TP/IPsec, MS-SSTP, L2TPv3/IPsec, and EtherIP/IPsec. Source: https://www.softether.org/spec | No direct coverage; these are L2/L3 VPN protocols rather than stream proxy protocols. | Only consider SSTP/OpenVPN if wrongsv expands into VPN tunneling. |
-| mihomo | VLESS supports REALITY, Vision flow, TCP transport, WebSocket/gRPC/XHTTP-style transports, and UDP packet encodings where empty means raw and `packetaddr`/`xudp` select extended encodings; `ws-opts.v2ray-http-upgrade` enables the HTTPUpgrade-style carrier; Shadowsocks supports AEAD and 2022 methods; Trojan proxy entries support TLS, password auth, SNI, certificate verification controls, and UDP. Sources: https://wiki.metacubex.one/en/config/proxies/vless/ and https://wiki.metacubex.one/en/config/proxies/transport/ and https://wiki.metacubex.one/en/config/proxies/ss/ and https://wiki.metacubex.one/en/config/proxies/trojan/ | VLESS + REALITY + Vision lifecycle tests exist; VLESS packetaddr UDP lifecycle tests exist; VLESS + WebSocket TCP, HTTPUpgrade TCP, gRPC TCP, XHTTP TCP, and Mux.Cool/XUDP UDP lifecycle tests exist; Shadowsocks AEAD/AEAD-2022 TCP/UDP real-client lifecycle tests added; Trojan TCP/UDP real-client lifecycle tests added. | VMess. |
+| mihomo | VLESS supports REALITY, Vision flow, TCP transport, WebSocket/gRPC/XHTTP-style transports, and UDP packet encodings where empty means raw and `packetaddr`/`xudp` select extended encodings; `ws-opts.v2ray-http-upgrade` enables the HTTPUpgrade-style carrier; Shadowsocks supports AEAD and 2022 methods; Trojan proxy entries support TLS, password auth, SNI, certificate verification controls, and UDP. Sources: https://wiki.metacubex.one/en/config/proxies/vless/ and https://wiki.metacubex.one/en/config/proxies/transport/ and https://wiki.metacubex.one/en/config/proxies/ss/ and https://wiki.metacubex.one/en/config/proxies/trojan/ | VLESS + REALITY + Vision lifecycle tests exist; VLESS packetaddr UDP lifecycle tests exist; VLESS + WebSocket TCP, HTTPUpgrade TCP, gRPC TCP, XHTTP TCP, and Mux.Cool/XUDP UDP lifecycle tests exist; Shadowsocks AEAD/AEAD-2022 TCP/UDP real-client lifecycle tests added; Trojan TCP/UDP real-client lifecycle tests added; VMess AEAD implemented. | Hysteria2 brate edge cases. |
 | Trojan | The original protocol performs a real TLS handshake, then sends `hex(SHA224(password))`, CRLF, a SOCKS5-like request, CRLF, and optional pipelined payload. Valid TCP requests open a direct tunnel; UDP ASSOCIATE packets carry address, port, length, CRLF, and payload; invalid post-TLS traffic can be relayed to a fallback endpoint. Source: https://trojan-gfw.github.io/trojan/protocol | TLS-wrapped TCP CONNECT, UDP ASSOCIATE packet relay, multi-password auth, pipelined payload, plaintext fallback, and sing-box/mihomo/xray real-client TCP/UDP lifecycle coverage are implemented. | Carrier variants such as WebSocket/gRPC where clients support them. |
-| xray-core | Inbound protocols include HTTP, Shadowsocks, SOCKS, Trojan, VLESS, VMess, WireGuard, Hysteria, and TUN. Transports include raw, XHTTP, mKCP, gRPC, WebSocket, HTTPUpgrade, Hysteria; security includes TLS and REALITY. Mux.Cool can distribute UDP as XUDP over an established stream. Sources: https://xtls.github.io/en/config/inbounds/ and https://xtls.github.io/en/config/transports/ and https://xtls.github.io/en/config/outbounds/trojan.html and https://xtls.github.io/en/development/protocols/vless.html and https://xtls.github.io/en/development/protocols/muxcool.html | VLESS + REALITY + Vision lifecycle tests exist; VLESS + WebSocket TCP, HTTPUpgrade TCP, gRPC TCP, XHTTP TCP, and Mux.Cool/XUDP UDP lifecycle tests exist; Shadowsocks AEAD/AEAD-2022 TCP/UDP with real-client lifecycle tests, mixed SOCKS4/4A/SOCKS5/HTTP proxy, and Trojan TLS TCP/UDP with real-client lifecycle tests added. | VMess. |
-| sing-box | Inbounds include mixed, SOCKS, HTTP, Shadowsocks, VMess, Trojan, Naive, Hysteria, ShadowTLS, VLESS, TUIC, Hysteria2, AnyTLS, tun, redirect, and tproxy. Trojan inbound requires users and TLS; Shadowsocks inbound lists AEAD 2022 and classic AEAD methods. VLESS outbound supports V2Ray transports, defaults UDP packet encoding to `xudp`, and also supports `packetaddr`. Sources: https://sing-box.sagernet.org/configuration/inbound/ and https://sing-box.sagernet.org/configuration/inbound/trojan/ and https://sing-box.sagernet.org/configuration/inbound/shadowsocks/ and https://sing-box.sagernet.org/configuration/outbound/trojan/ and https://sing-box.sagernet.org/configuration/outbound/vless/ | VLESS + REALITY lifecycle tests, VLESS packetaddr UDP lifecycle tests, VLESS + WebSocket TCP, HTTPUpgrade TCP, gRPC TCP, XHTTP TCP, and Mux.Cool/XUDP UDP lifecycle tests, AnyTLS/sing-anytls tests, Shadowsocks AEAD/AEAD-2022 TCP/UDP with real-client lifecycle tests, mixed SOCKS4/4A/SOCKS5/HTTP proxy, Trojan TLS TCP/UDP with real-client lifecycle tests, and TUIC/Hysteria2 server-side coverage added. | VMess. |
+| xray-core | Inbound protocols include HTTP, Shadowsocks, SOCKS, Trojan, VLESS, VMess, WireGuard, Hysteria, and TUN. Transports include raw, XHTTP, mKCP, gRPC, WebSocket, HTTPUpgrade, Hysteria; security includes TLS and REALITY. Mux.Cool can distribute UDP as XUDP over an established stream. Sources: https://xtls.github.io/en/config/inbounds/ and https://xtls.github.io/en/config/transports/ and https://xtls.github.io/en/config/outbounds/trojan.html and https://xtls.github.io/en/development/protocols/vless.html and https://xtls.github.io/en/development/protocols/muxcool.html | VLESS + REALITY + Vision lifecycle tests exist; VLESS + WebSocket TCP, HTTPUpgrade TCP, gRPC TCP, XHTTP TCP, and Mux.Cool/XUDP UDP lifecycle tests exist; Shadowsocks AEAD/AEAD-2022 TCP/UDP with real-client lifecycle tests, mixed SOCKS4/4A/SOCKS5/HTTP proxy, and Trojan TLS TCP/UDP with real-client lifecycle tests added; VMess AEAD implemented. | WireGuard inbound. |
+| sing-box | Inbounds include mixed, SOCKS, HTTP, Shadowsocks, VMess, Trojan, Naive, Hysteria, ShadowTLS, VLESS, TUIC, Hysteria2, AnyTLS, tun, redirect, and tproxy. Trojan inbound requires users and TLS; Shadowsocks inbound lists AEAD 2022 and classic AEAD methods. VLESS outbound supports V2Ray transports, defaults UDP packet encoding to `xudp`, and also supports `packetaddr`. Sources: https://sing-box.sagernet.org/configuration/inbound/ and https://sing-box.sagernet.org/configuration/inbound/trojan/ and https://sing-box.sagernet.org/configuration/inbound/shadowsocks/ and https://sing-box.sagernet.org/configuration/outbound/trojan/ and https://sing-box.sagernet.org/configuration/outbound/vless/ | VLESS + REALITY lifecycle tests, VLESS packetaddr UDP lifecycle tests, VLESS + WebSocket TCP, HTTPUpgrade TCP, gRPC TCP, XHTTP TCP, and Mux.Cool/XUDP UDP lifecycle tests, AnyTLS/sing-anytls tests, Shadowsocks AEAD/AEAD-2022 TCP/UDP with real-client lifecycle tests, mixed SOCKS4/4A/SOCKS5/HTTP proxy, Trojan TLS TCP/UDP with real-client lifecycle tests, and TUIC/Hysteria2 server-side coverage added; VMess AEAD implemented. | Naive inbound, tun/redirect/tproxy modes. |
 | Hysteria2 | Official docs describe a QUIC transport with HTTP/3-style `/auth` handshake, UDP enablement flag, bandwidth negotiation, TCP stream requests, UDP datagrams, and fragmenting support. Source: https://v2.hysteria.network/docs/developers/Protocol/ and https://v2.hysteria.network/docs/advanced/Full-Server-Config/ | HTTP/3 auth, QUIC stream TCP relay, QUIC datagram UDP relay, auth response headers, and config validation are implemented. | Future obfuscation features. |
 | TUIC | TUIC v5 uses QUIC over TLS with a client-authenticate stream, a TLS exporter-derived token, TCP CONNECT over bidirectional streams, UDP packet relay over datagrams or streams, dissociate messages, and heartbeat support. Source: https://github.com/EAimTY/tuic/blob/main/spec.md | HTTP/3 auth, TLS exporter token validation, TCP stream relay, UDP datagram relay, dissociate handling, and fragment reassembly are implemented. | Real-client lifecycle coverage and any optional extensions not exercised yet. |
 
@@ -58,6 +58,94 @@ documentation and maps it to wrongsv implementation status.
 - Mux.Cool/XUDP framing follows Xray's Mux.Cool protocol: https://xtls.github.io/en/development/protocols/muxcool.html
 - Shadowsocks AEAD-2022 follows SIP022: https://shadowsocks.org/doc/sip022.html
 - Trojan over TLS follows the original trojan-gfw protocol: https://trojan-gfw.github.io/trojan/protocol
+
+## Recommended Protocol Stacks (2026)
+
+Based on current GFW bypass research and community practice, the following
+protocol stack combinations provide optimal stealth + resilience. The
+gold standard is a **dual-protocol setup** on the same port (TCP+UDP/443)
+with automatic failover.
+
+### Tier 1 — Stealth General Purpose
+
+```
+VLESS + REALITY + XTLS-Vision (TCP/443)
+```
+
+| Component | Config file | Rationale |
+|-----------|------------|-----------|
+| VLESS | — | Stateless, no handshake fingerprint |
+| REALITY | `reality-vision.toml` | Active probe resistance via TLS hijacking + spider fallback |
+| XTLS Vision | flow=`xtls-rprx-vision` | Traffic analysis resistance (padding/unpadding) |
+
+SNI should be a major CDN-backed domain (e.g. `www.microsoft.com`, `www.apple.com`)
+— never the default `www.google.com`. Use uTLS Chrome fingerprint for browser mimicry.
+
+### Tier 2 — Multi-Protocol Resilient (Recommended)
+
+```
+Primary:   VLESS + REALITY + Vision (TCP/443)
+Fallback:  Hysteria2 + Salamander (UDP/443)
+```
+
+Run both on the same server. URLTest failover selects the fastest working path
+every 5 minutes. When REALITY's TLS handshake gets fingerprinted by whitelist DPI,
+Hysteria2's XOR-obfuscated QUIC stream defeats it because the first packet looks
+like random bytes.
+
+| Config | Transport | Protocol |
+|--------|-----------|----------|
+| `reality-vision.toml` | TCP/443 | VLESS + REALITY + Vision |
+| `hysteria2.toml` | UDP/443 | Hysteria2 + Salamander obfuscation |
+
+### Tier 3 — CDN-Friendly (WebSocket behind Nginx/Caddy)
+
+```
+VLESS + WebSocket + TLS (TCP/443 via CDN)
+```
+
+For deployments behind Cloudflare/Akamai. REALITY is **incompatible** with CDN
+(requires TLS termination). Use Let's Encrypt certificates + standard TLS.
+
+| Config | Transport | CDN |
+|--------|-----------|-----|
+| `ws-tcp.toml` + TLS cert | WebSocket + TLS | ✅ CDN-compatible |
+
+### Tier 4 — TLS Mimicry (No Pre-Shared Keys)
+
+```
+VLESS + ShadowTLS v3 (TCP/443)
+```
+
+ShadowTLS performs a REAL TLS 1.3 handshake to a real website, then switches to
+proxy mode after HMAC auth. Unlike REALITY, it doesn't need X25519 key
+distribution — just a shared password. Wildcard SNI mode (v3) adds multi-domain
+mimicry.
+
+| Config | Auth | TLS |
+|--------|------|-----|
+| `shadowtls.toml` | RFC 8446 exporter HMAC-SHA256 | TLS 1.3 |
+
+### Protocol Stack Decision Matrix
+
+| Use Case | Primary Protocol | Fallback | Key Config |
+|----------|-----------------|----------|------------|
+| Maximum stealth | VLESS + REALITY + Vision | Hysteria2 + Salamander | `reality-vision.toml` + `hysteria2.toml` |
+| CDN fronting | VLESS + WS + TLS | — | Custom TLS cert + `[websocket]` |
+| No key distribution | ShadowTLS v3 | AnyTLS | `shadowtls.toml` + `anytls-vision.toml` |
+| Post-quantum | VLESS + REALITY + Vision + ML-KEM-512 | — | `kyber-vision.toml` |
+| Legacy client compat | VMess AEAD | Shadowsocks AEAD-2022 | `vmess.toml` + `shadowsocks-2022.toml` |
+
+### Critical Deployment Rules
+
+- **Port 443 only** — non-standard ports are immediate red flags
+- **Major cloud IPs** — AWS/GCP/Oracle. Small VPS ranges are cataloged and
+  blanket-blocked at the country edge with zero collateral damage
+- **Split DNS** — DoH/DoQ for foreign domains, direct resolution for domestic
+- **Health-check failover** — URLTest outbounds re-evaluate every 5 minutes
+- **Rotate short IDs periodically** — if packet loss or RSTs appear, rotate
+- **Never use Shadowsocks (original)** alone in 2026 — deeply analyzed by GFW
+- **Never use WireGuard/OpenVPN** — DPI signatures are well-known
 
 ## Priority
 

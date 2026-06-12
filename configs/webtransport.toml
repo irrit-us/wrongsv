@@ -1,0 +1,13 @@
+# VLESS + WebTransport carrier (HTTP/3 WebTransport with bidirectional streams)
+# Compatible with GOST WebTransport transport
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+email = "user@example.com"
+flow = ""
+
+[webtransport]
+path = "/wt"
+
+[webtransport.tls]

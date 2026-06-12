@@ -1,0 +1,11 @@
+# VLESS + WebSocket carrier (raw WS, no TLS)
+# Compatible with sing-box/mihomo/xray-core WebSocket transport
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+email = "user@example.com"
+flow = ""
+
+[websocket]
+path = "/ws"
