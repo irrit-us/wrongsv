@@ -231,6 +231,109 @@ bind = "127.0.0.1"
 }
 
 #[test]
+fn metrics_count_bytes_per_user_through_reality_relay() {
+    use base64::Engine;
+    use x25519_dalek::{PublicKey, StaticSecret};
+
+    let listen = reserve_addr();
+    let metrics_addr = reserve_addr();
+    let port = metrics_addr
+        .split(':')
+        .next_back()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap();
+    let user_uuid = Uuid::new_v4();
+    let email = "test@reality.test";
+
+    // Generate REALITY X25519 keypair; configure server with the private key,
+    // hand the client the base64-encoded public key.
+    let sk = StaticSecret::random_from_rng(rand::rngs::OsRng);
+    let pk = PublicKey::from(&sk);
+    let sk_hex = hex::encode(sk.as_bytes());
+    let pk_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(pk.as_bytes());
+    let short_id = "01234567";
+
+    let config_toml = format!(
+        r#"
+listen = "{listen}"
+
+[[users]]
+id = "{user_uuid}"
+email = "{email}"
+flow = ""
+
+[reality]
+private_key = "{sk_hex}"
+short_ids = ["{short_id}"]
+max_time_diff = 300
+
+[metrics]
+port = {port}
+bind = "127.0.0.1"
+"#
+    );
+    let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
+    let server = wrongsv_server::InboundServer::new(config).unwrap();
+    let _handle = server.spawn();
+    thread::sleep(Duration::from_millis(200));
+
+    let echo_addr = spawn_echo_target();
+
+    // raw_pubkey "00...0" disables client-side cert HMAC verification — we
+    // only care that bytes flow through `relay_reality_raw` so MetricsTap
+    // can record them.
+    let proxy_host = listen.split(':').next().unwrap();
+    let proxy_port: u16 = listen.split(':').next_back().unwrap().parse().unwrap();
+    let mut conn = wrongsv_evaluator_client::transport::connect_for_protocol(
+        "reality",
+        proxy_host,
+        proxy_port,
+        echo_addr.port(),
+        &user_uuid.to_string(),
+        "",
+        Some(&pk_b64),
+        Some(short_id),
+        Some(&"00".repeat(32)),
+    )
+    .expect("REALITY handshake should succeed");
+
+    let payload = b"reality-metrics-roundtrip-payload";
+    conn.write_all(payload).unwrap();
+    conn.flush().unwrap();
+
+    let mut got = vec![0u8; payload.len()];
+    let mut filled = 0;
+    while filled < payload.len() {
+        match conn.read(&mut got[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Err(e) => panic!("REALITY read error: {e}"),
+        }
+    }
+    assert_eq!(&got[..filled], payload, "echo mismatch");
+
+    drop(conn);
+    thread::sleep(Duration::from_millis(200));
+
+    let response = http_get(&metrics_addr, "/metrics");
+    assert!(response.contains("200 OK"), "got: {response}");
+    let want_in = format!("wrongsv_user_bytes_in{{email=\"{email}\"}} {}", payload.len());
+    let want_out = format!(
+        "wrongsv_user_bytes_out{{email=\"{email}\"}} {}",
+        payload.len()
+    );
+    assert!(
+        response.contains(&want_in),
+        "missing {want_in}\n--- response ---\n{response}"
+    );
+    assert!(
+        response.contains(&want_out),
+        "missing {want_out}\n--- response ---\n{response}"
+    );
+}
+
+#[test]
 fn metrics_count_bytes_per_user_through_vmess_relay() {
     use wrongsv_server::vmess::{
         self, VmessBodyReader, VmessBodyWriter, VmessCommand, VmessRequest,
