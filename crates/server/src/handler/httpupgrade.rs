@@ -457,7 +457,7 @@ fn handle_vless_over_httpupgrade_tls(
         if !account.udp {
             return Err("UDP not enabled for this user".into());
         }
-        relay_anytls_udp(tls_stream, request, remaining_body)?;
+        relay_anytls_udp(tls_stream, request, remaining_body, tap)?;
         debug!("{peer} TLS+HTTPUpgrade UDP relay finished");
         return Ok(());
     }
@@ -473,9 +473,10 @@ fn handle_vless_over_httpupgrade_tls(
             &decoded.user_sent_id,
             &account.testseed,
             remaining_body,
+            tap,
         )?;
     } else {
-        relay_anytls_raw(tls_stream, target, remaining_body)?;
+        relay_anytls_raw(tls_stream, target, remaining_body, tap)?;
     }
     debug!("{peer} TLS+HTTPUpgrade TCP relay finished");
     Ok(())

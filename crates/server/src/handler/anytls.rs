@@ -48,6 +48,7 @@ pub(crate) fn handle_anytls_connection(
     validator: Arc<MemoryValidator>,
     kyber_sk: Option<[u8; 64]>,
     anytls_config: &wrongsv_anytls::AnyTlsConfig,
+    metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let peer = stream.peer_addr()?;
     trace!("{peer} AnyTLS connection");
@@ -72,7 +73,7 @@ pub(crate) fn handle_anytls_connection(
         wrongsv_anytls::detect_post_auth_protocol(&mut conn, &mut stream_sock)?;
 
     if proto == wrongsv_anytls::PostAuthProtocol::SingAnyTls {
-        return handle_sing_anytls_session(conn, stream_sock, peer, validator, kyber_sk);
+        return handle_sing_anytls_session(conn, stream_sock, peer, validator, kyber_sk, metrics);
     }
 
     // VLESS path: reconstruct AnyTlsStream and read the full header.
@@ -120,6 +121,8 @@ pub(crate) fn handle_anytls_connection(
     } = decode_vless_request(first, &validator, peer)?;
     let request = &decoded.header;
     let account = &request.user.account;
+    let tap = wrongsv_metrics::MetricsTap::new(metrics, request.user.email.clone());
+    let _conn_guard = tap.track_connection();
 
     log_vless_request(peer, request);
     handle_kyber_addons(peer, &decoded, kyber_sk);
@@ -137,7 +140,7 @@ pub(crate) fn handle_anytls_connection(
         if !account.udp {
             return Err("UDP not enabled for this user".into());
         }
-        relay_anytls_udp(tls_stream, request, remaining_body)?;
+        relay_anytls_udp(tls_stream, request, remaining_body, tap)?;
         debug!("{peer} AnyTLS UDP relay finished");
         return Ok(());
     }
@@ -157,9 +160,10 @@ pub(crate) fn handle_anytls_connection(
             user_sent_id,
             &account.testseed,
             remaining_body,
+            tap,
         )?;
     } else {
-        relay_anytls_raw(tls_stream, target, remaining_body)?;
+        relay_anytls_raw(tls_stream, target, remaining_body, tap)?;
     }
     debug!("{peer} TCP relay finished");
     Ok(())
@@ -173,6 +177,7 @@ pub(crate) fn handle_sing_anytls_session(
     peer: std::net::SocketAddr,
     validator: Arc<MemoryValidator>,
     kyber_sk: Option<[u8; 64]>,
+    metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use wrongsv_anytls::session::{self, SessionWriter, WriteJob};
 
@@ -191,7 +196,14 @@ pub(crate) fn handle_sing_anytls_session(
         write_rx,
         writer.clone(),
         move |stream, w| {
-            handle_sing_stream(stream, w, peer, validator.clone(), kyber_sk);
+            handle_sing_stream(
+                stream,
+                w,
+                peer,
+                validator.clone(),
+                kyber_sk,
+                Arc::clone(&metrics),
+            );
         },
     )?;
 
@@ -205,6 +217,7 @@ pub(crate) fn handle_sing_stream(
     peer: std::net::SocketAddr,
     validator: Arc<MemoryValidator>,
     kyber_sk: Option<[u8; 64]>,
+    metrics: Arc<wrongsv_metrics::Registry>,
 ) {
     let sid = stream.id;
 
@@ -225,7 +238,7 @@ pub(crate) fn handle_sing_stream(
     // 0x00 = VLESS header (anytls-as-transport mode)
     // 0x01/0x03/0x04 = SOCKS5 address (standalone anytls protocol)
     let result = if first_data[0] == 0x00 {
-        handle_sing_stream_vless(stream, writer, first_data, peer, validator, kyber_sk)
+        handle_sing_stream_vless(stream, writer, first_data, peer, validator, kyber_sk, metrics)
     } else {
         handle_sing_stream_socks(stream, writer, first_data, peer)
     };
@@ -263,7 +276,13 @@ pub(crate) fn handle_sing_stream_socks(
         Vec::new()
     };
 
-    relay_sing_raw(stream, writer, target, remaining)?;
+    relay_sing_raw(
+        stream,
+        writer,
+        target,
+        remaining,
+        wrongsv_metrics::MetricsTap::disabled(),
+    )?;
     Ok(())
 }
 
@@ -274,6 +293,7 @@ pub(crate) fn handle_sing_stream_vless(
     peer: std::net::SocketAddr,
     validator: Arc<MemoryValidator>,
     kyber_sk: Option<[u8; 64]>,
+    metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let sid = stream.id;
 
@@ -284,6 +304,8 @@ pub(crate) fn handle_sing_stream_vless(
     } = decode_vless_request(first_data, &validator, peer)?;
     let request = &decoded.header;
     let account = &request.user.account;
+    let tap = wrongsv_metrics::MetricsTap::new(metrics, request.user.email.clone());
+    let _conn_guard = tap.track_connection();
 
     info!(
         "{peer} sing-anytls {} {} -> {}:{}",
@@ -340,9 +362,10 @@ pub(crate) fn handle_sing_stream_vless(
             user_sent_id,
             &account.testseed,
             remaining_body,
+            tap,
         )?;
     } else {
-        relay_sing_raw(stream, writer, target, remaining_body)?;
+        relay_sing_raw(stream, writer, target, remaining_body, tap)?;
     }
 
     debug!("{peer} sing-anytls stream sid={sid} relay finished");
@@ -353,6 +376,7 @@ pub(crate) fn relay_sing_raw(
     writer: wrongsv_anytls::session::SessionWriter,
     mut target: TcpStream,
     initial_data: Vec<u8>,
+    metrics: wrongsv_metrics::MetricsTap,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let sid = stream.id;
     let mut buf = [0u8; 32768];
@@ -360,6 +384,7 @@ pub(crate) fn relay_sing_raw(
     target.set_read_timeout(Some(Duration::from_secs(2)))?;
 
     if !initial_data.is_empty() {
+        metrics.record_in(initial_data.len() as u64);
         target.write_all(&initial_data)?;
     }
 
@@ -371,6 +396,7 @@ pub(crate) fn relay_sing_raw(
                 break;
             }
             Ok(n) => {
+                metrics.record_out(n as u64);
                 writer.send_psh(sid, &buf[..n])?;
                 target.set_read_timeout(Some(Duration::from_millis(10)))?;
             }
@@ -386,6 +412,7 @@ pub(crate) fn relay_sing_raw(
         // Client → target (from SingStream channel)
         match stream.try_read_chunk() {
             Some(data) => {
+                metrics.record_in(data.len() as u64);
                 target.write_all(&data)?;
                 target.set_read_timeout(Some(Duration::from_millis(10)))?;
             }
@@ -409,6 +436,7 @@ pub(crate) fn relay_sing_vision(
     user_sent_id: &[u8],
     testseed: &[u32],
     initial_data: Vec<u8>,
+    metrics: wrongsv_metrics::MetricsTap,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let sid = stream.id;
     let up_seed = if testseed.len() >= 4 {
@@ -423,6 +451,7 @@ pub(crate) fn relay_sing_vision(
     if !initial_data.is_empty() {
         let unpadded = wrongsv_vless::vision::xtls_unpadding(&initial_data, &mut up_state, true);
         if !unpadded.is_empty() {
+            metrics.record_in(unpadded.len() as u64);
             target.write_all(&unpadded)?;
         }
     }
@@ -437,6 +466,7 @@ pub(crate) fn relay_sing_vision(
             match target.read(&mut buf) {
                 Ok(0) => break true,
                 Ok(n) => {
+                    metrics.record_out(n as u64);
                     let mut encoded = Vec::with_capacity(n + 256);
                     {
                         struct BufWriter<'a>(&'a mut Vec<u8>);
@@ -485,6 +515,7 @@ pub(crate) fn relay_sing_vision(
                     let unpadded =
                         wrongsv_vless::vision::xtls_unpadding(&data, &mut up_state, true);
                     if !unpadded.is_empty() {
+                        metrics.record_in(unpadded.len() as u64);
                         target.write_all(&unpadded)?;
                         target.set_read_timeout(Some(Duration::from_millis(10)))?;
                     }
@@ -597,10 +628,12 @@ pub(crate) fn relay_anytls_raw(
     tls: wrongsv_anytls::AnyTlsStream,
     mut target: TcpStream,
     initial_data: Vec<u8>,
+    metrics: wrongsv_metrics::MetricsTap,
 ) -> Result<(), Box<dyn std::error::Error>> {
     target.set_nodelay(true)?;
 
     if !initial_data.is_empty() {
+        metrics.record_in(initial_data.len() as u64);
         target.write_all(&initial_data)?;
     }
 
@@ -614,6 +647,9 @@ pub(crate) fn relay_anytls_raw(
 
     let mut target_w = target.try_clone()?;
     let mut target_r = target;
+
+    let metrics_up = metrics.clone();
+    let metrics_down = metrics;
 
     // ── Reader thread: client → target ──────────────────────────────────
     let tls_reader = Arc::clone(&tls_conn);
@@ -660,6 +696,7 @@ pub(crate) fn relay_anytls_raw(
                         Ok(0) => break,
                         Ok(m) => {
                             drop(conn); // release lock before target I/O
+                            metrics_up.record_in(m as u64);
                             if target_w.write_all(&plain[..m]).is_err() {
                                 return;
                             }
@@ -690,6 +727,7 @@ pub(crate) fn relay_anytls_raw(
             match target_r.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    metrics_down.record_out(n as u64);
                     // Encrypt inside the lock (CPU-only, lock held briefly).
                     let mut conn = match tls_writer.lock() {
                         Ok(c) => c,
@@ -749,6 +787,7 @@ pub(crate) fn relay_anytls_vision(
     user_sent_id: &[u8],
     testseed: &[u32],
     initial_data: Vec<u8>,
+    metrics: wrongsv_metrics::MetricsTap,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let up_seed = if testseed.len() >= 4 {
         testseed.to_vec()
@@ -763,6 +802,7 @@ pub(crate) fn relay_anytls_vision(
         use wrongsv_vless::vision::xtls_unpadding;
         let unpadded = xtls_unpadding(&initial_data, &mut up_state, true);
         if !unpadded.is_empty() {
+            metrics.record_in(unpadded.len() as u64);
             target.write_all(&unpadded)?;
         }
     }
@@ -779,6 +819,7 @@ pub(crate) fn relay_anytls_vision(
             match target.read(&mut buf) {
                 Ok(0) => break true,
                 Ok(n) => {
+                    metrics.record_out(n as u64);
                     let mut encoded = Vec::with_capacity(n + 256);
                     {
                         use wrongsv_vless::vision::VisionWriter;
@@ -840,6 +881,7 @@ pub(crate) fn relay_anytls_vision(
                                     true,
                                 );
                                 if !unpadded.is_empty() {
+                                    metrics.record_in(unpadded.len() as u64);
                                     target.write_all(&unpadded)?;
                                     target.set_read_timeout(Some(Duration::from_millis(10)))?;
                                 }
@@ -886,6 +928,7 @@ pub(crate) fn relay_anytls_udp(
     mut tls: wrongsv_anytls::AnyTlsStream,
     request: &RequestHeader,
     remaining: Vec<u8>,
+    metrics: wrongsv_metrics::MetricsTap,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if is_packetaddr_request(request) {
         debug!("AnyTLS packetaddr UDP relay");
@@ -948,12 +991,14 @@ pub(crate) fn relay_anytls_udp(
             }
             let pkt = tls_buf[2..2 + len].to_vec();
             tls_buf.drain(..2 + len);
+            metrics.record_in(pkt.len() as u64);
             socket.send(&pkt)?;
             did_work = true;
         }
 
         match socket.recv(&mut udp_buf) {
             Ok(n) if n > 0 => {
+                metrics.record_out(n as u64);
                 conn.writer().write_all(&(n as u16).to_be_bytes())?;
                 conn.writer().write_all(&udp_buf[..n])?;
                 while conn.wants_write() {

@@ -35,6 +35,7 @@ pub(crate) fn handle_reality_connection(
     validator: Arc<MemoryValidator>,
     kyber_sk: Option<[u8; 64]>,
     reality_config: &wrongsv_reality::RealityConfig,
+    metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let peer = stream.peer_addr()?;
     trace!("{peer} REALITY connection");
@@ -105,6 +106,8 @@ pub(crate) fn handle_reality_connection(
 
     let request = &decoded.header;
     let account = &request.user.account;
+    let tap = wrongsv_metrics::MetricsTap::new(metrics, request.user.email.clone());
+    let _conn_guard = tap.track_connection();
 
     log_vless_request(peer, request);
     trace!(
@@ -126,7 +129,7 @@ pub(crate) fn handle_reality_connection(
         if !account.udp {
             return Err("UDP not enabled for this user".into());
         }
-        relay_reality_udp(tls_stream, request, remaining_body)?;
+        relay_reality_udp(tls_stream, request, remaining_body, tap)?;
         debug!("{peer} REALITY UDP relay finished");
         return Ok(());
     }
@@ -154,13 +157,14 @@ pub(crate) fn handle_reality_connection(
             &decoded.user_sent_id,
             &account.testseed,
             remaining_body,
+            tap,
         )?;
     } else {
         trace!(
             "{peer} starting REALITY raw relay (initial={}B)",
             remaining_body.len()
         );
-        relay_reality(tls_stream, target, remaining_body)?;
+        relay_reality(tls_stream, target, remaining_body, tap)?;
     }
     trace!("{peer} REALITY relay finished");
 
@@ -171,12 +175,14 @@ pub(crate) fn relay_reality(
     mut tls: wrongsv_reality::RealityTlsStream,
     mut target: TcpStream,
     initial_data: Vec<u8>,
+    metrics: wrongsv_metrics::MetricsTap,
 ) -> Result<(), Box<dyn std::error::Error>> {
     trace!("relay_reality: start, initial_data={}B", initial_data.len());
     let mut buf = [0u8; 32768];
     target.set_read_timeout(Some(Duration::from_millis(10)))?;
 
     if !initial_data.is_empty() {
+        metrics.record_in(initial_data.len() as u64);
         target.write_all(&initial_data)?;
         trace!(
             "relay_reality: wrote {}B initial data to target",
@@ -207,6 +213,7 @@ pub(crate) fn relay_reality(
                         Ok(0) => break,
                         Ok(n) => {
                             target.write_all(&buf[..n])?;
+                            metrics.record_in(n as u64);
                             c2t_bytes += n as u64;
                         }
                         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
@@ -229,6 +236,7 @@ pub(crate) fn relay_reality(
                 while conn.wants_write() {
                     conn.write_tls(stream)?;
                 }
+                metrics.record_out(n as u64);
                 t2c_bytes += n as u64;
             }
             Err(ref e)
@@ -296,6 +304,7 @@ pub(crate) fn relay_reality_vision(
     user_sent_id: &[u8],
     testseed: &[u32],
     initial_data: Vec<u8>,
+    metrics: wrongsv_metrics::MetricsTap,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Blocking client TCP with 1s timeout — inherited from listener's
     // non-blocking mode via Linux socket propagation.
@@ -319,15 +328,19 @@ pub(crate) fn relay_reality_vision(
     };
 
     let tls1 = Arc::clone(&tls);
+    let metrics_up = metrics.clone();
     let t1 = thread::spawn(move || {
         let mut tgt = t_write;
         if !initial_data.is_empty() {
             use wrongsv_vless::vision::xtls_unpadding;
             let mut init_state = up_state.clone();
             let unpadded = xtls_unpadding(&initial_data, &mut init_state, true);
-            if !unpadded.is_empty() && tgt.write_all(&unpadded).is_err() {
-                let _ = tgt.shutdown(Shutdown::Write);
-                return;
+            if !unpadded.is_empty() {
+                metrics_up.record_in(unpadded.len() as u64);
+                if tgt.write_all(&unpadded).is_err() {
+                    let _ = tgt.shutdown(Shutdown::Write);
+                    return;
+                }
             }
             up_state = init_state;
         }
@@ -338,6 +351,7 @@ pub(crate) fn relay_reality_vision(
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    metrics_up.record_in(n as u64);
                     if tgt.write_all(&buf[..n]).is_err() {
                         break;
                     }
@@ -353,6 +367,7 @@ pub(crate) fn relay_reality_vision(
     });
 
     let down_state = TrafficState::new(user_sent_id);
+    let metrics_down = metrics;
     let t2 = thread::spawn(move || {
         let inner = TlsWriteHandle::<wrongsv_reality::RealityTlsStream> { inner: tls };
         let mut writer = VisionWriter::new(inner, down_state, false, up_seed);
@@ -362,6 +377,7 @@ pub(crate) fn relay_reality_vision(
             match tgt.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    metrics_down.record_out(n as u64);
                     if writer.write(&buf[..n]).is_err() {
                         break;
                     }
@@ -383,6 +399,7 @@ pub(crate) fn relay_reality_udp(
     mut tls: wrongsv_reality::RealityTlsStream,
     request: &RequestHeader,
     remaining: Vec<u8>,
+    metrics: wrongsv_metrics::MetricsTap,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if is_packetaddr_request(request) {
         debug!("REALITY packetaddr UDP relay");
@@ -432,6 +449,7 @@ pub(crate) fn relay_reality_udp(
             }
             let pkt = tls_buf[2..2 + len].to_vec();
             tls_buf.drain(..2 + len);
+            metrics.record_in(pkt.len() as u64);
             socket.send(&pkt)?;
             did_work = true;
         }
@@ -440,6 +458,7 @@ pub(crate) fn relay_reality_udp(
         match socket.recv(&mut udp_buf) {
             Ok(n) => {
                 if n > 0 {
+                    metrics.record_out(n as u64);
                     tls.write_all(&(n as u16).to_be_bytes())?;
                     tls.write_all(&udp_buf[..n])?;
                     tls.flush()?;

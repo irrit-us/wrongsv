@@ -620,11 +620,11 @@ impl InboundServer {
                     thread::spawn(move || {
                         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                             if let Some(ref rc) = rc {
-                                handle_reality_connection(stream, v, kyber_sk, rc)
+                                handle_reality_connection(stream, v, kyber_sk, rc, m)
                             } else if let Some(ref ac) = ac {
-                                handle_anytls_connection(stream, v, kyber_sk, ac)
+                                handle_anytls_connection(stream, v, kyber_sk, ac, m)
                             } else if let Some(ref stc) = stc {
-                                handle_shadowtls_connection(stream, v, kyber_sk, stc)
+                                handle_shadowtls_connection(stream, v, kyber_sk, stc, m)
                             } else if let Some(ref wc) = wsc {
                                 handle_ws_connection(stream, v, kyber_sk, wc)
                             } else if let Some(ref hc) = huc {
@@ -643,13 +643,13 @@ impl InboundServer {
                             } else if webtransport_enabled {
                                 Err("WebTransport inbound uses QUIC and does not accept TCP sockets".into())
                             } else if let Some(ref tc) = tc {
-                                handle_tls_connection(stream, v, kyber_sk, tc)
+                                handle_tls_connection(stream, v, kyber_sk, tc, m)
                             } else if let Some(ref sc) = sc {
                                 handle_shadowsocks_connection(stream, sc)
                             } else if let Some(ref mc) = mc {
                                 handle_mixed_proxy_connection(stream, mc)
                             } else if let Some(ref trc) = trc {
-                                handle_trojan_connection(stream, trc)
+                                handle_trojan_connection(stream, trc, m)
                             } else if let Some(ref vmc) = vmc {
                                 handle_vmess_connection(stream, vmc)
                             } else {

@@ -12,9 +12,15 @@ const MAX_REQUEST_HEAD_LEN: usize = 8192;
 
 #[derive(Clone)]
 pub struct TrojanConfig {
-    pub password_hashes: Vec<[u8; PASSWORD_HASH_HEX_LEN]>,
+    pub passwords: Vec<TrojanPasswordEntry>,
     pub tls_config: Arc<rustls::ServerConfig>,
     pub dest: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct TrojanPasswordEntry {
+    pub hash: [u8; PASSWORD_HASH_HEX_LEN],
+    pub email: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +29,8 @@ pub struct TrojanRequest {
     pub address: Address,
     pub port: Port,
     pub initial_data: Vec<u8>,
+    /// Email of the matched user (None for legacy unnamed password).
+    pub email: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,7 +119,7 @@ pub fn read_request(
     let mut buf = [0u8; 1024];
 
     loop {
-        match parse_request(&data, &config.password_hashes) {
+        match parse_request(&data, &config.passwords) {
             Ok(Some(request)) => return Ok(request),
             Ok(None) => {}
             Err(error) => {
@@ -155,7 +163,7 @@ pub fn read_request(
 
 fn parse_request(
     data: &[u8],
-    password_hashes: &[[u8; PASSWORD_HASH_HEX_LEN]],
+    passwords: &[TrojanPasswordEntry],
 ) -> Result<Option<TrojanRequest>, TrojanError> {
     if has_non_hex_password_prefix(data) {
         return Err(TrojanError::InvalidRequest);
@@ -166,12 +174,11 @@ fn parse_request(
     if &data[PASSWORD_HASH_HEX_LEN..PASSWORD_HASH_HEX_LEN + 2] != b"\r\n" {
         return Err(TrojanError::InvalidRequest);
     }
-    if !password_hashes
+    let matched = passwords
         .iter()
-        .any(|expected| hash_eq_ignore_ascii_case(&data[..PASSWORD_HASH_HEX_LEN], expected))
-    {
-        return Err(TrojanError::AuthFailed);
-    }
+        .find(|entry| hash_eq_ignore_ascii_case(&data[..PASSWORD_HASH_HEX_LEN], &entry.hash))
+        .ok_or(TrojanError::AuthFailed)?;
+    let email = matched.email.clone();
 
     let mut pos = PASSWORD_HASH_HEX_LEN + 2;
     if data.len() < pos + 2 {
@@ -204,6 +211,7 @@ fn parse_request(
         address,
         port: Port(port),
         initial_data: data[pos..].to_vec(),
+        email,
     }))
 }
 
@@ -367,6 +375,16 @@ mod tests {
         data
     }
 
+    fn entries(passwords: &[&str]) -> Vec<TrojanPasswordEntry> {
+        passwords
+            .iter()
+            .map(|p| TrojanPasswordEntry {
+                hash: password_hash_hex(p),
+                email: None,
+            })
+            .collect()
+    }
+
     #[test]
     fn test_password_hash_hex_sha224() {
         assert_eq!(
@@ -383,7 +401,7 @@ mod tests {
         data.extend_from_slice(&443u16.to_be_bytes());
         data.extend_from_slice(b"\r\nhello");
 
-        let request = parse_request(&data, &[password_hash_hex("secret")])
+        let request = parse_request(&data, &entries(&["secret"]))
             .unwrap()
             .unwrap();
 
@@ -400,7 +418,7 @@ mod tests {
         data.extend_from_slice(&80u16.to_be_bytes());
         data.extend_from_slice(b"\r\n");
 
-        let request = parse_request(&data, &[password_hash_hex("secret")])
+        let request = parse_request(&data, &entries(&["secret"]))
             .unwrap()
             .unwrap();
 
@@ -417,7 +435,7 @@ mod tests {
         data.extend_from_slice(&443u16.to_be_bytes());
         data.extend_from_slice(b"\r\n");
 
-        let request = parse_request(&data, &[password_hash_hex("secret")])
+        let request = parse_request(&data, &entries(&["secret"]))
             .unwrap()
             .unwrap();
 
@@ -432,7 +450,7 @@ mod tests {
         data.extend_from_slice(&0u16.to_be_bytes());
         data.extend_from_slice(b"\r\n");
 
-        let request = parse_request(&data, &[password_hash_hex("secret")])
+        let request = parse_request(&data, &entries(&["secret"]))
             .unwrap()
             .unwrap();
 
@@ -477,7 +495,7 @@ mod tests {
         data.extend_from_slice(b"\r\n");
 
         assert!(matches!(
-            parse_request(&data, &[password_hash_hex("secret")]),
+            parse_request(&data, &entries(&["secret"])),
             Err(TrojanError::AuthFailed)
         ));
     }
@@ -485,7 +503,7 @@ mod tests {
     #[test]
     fn test_parse_rejects_plain_http_probe() {
         assert!(matches!(
-            parse_request(b"GET / HTTP/1.1\r\n\r\n", &[password_hash_hex("secret")]),
+            parse_request(b"GET / HTTP/1.1\r\n\r\n", &entries(&["secret"])),
             Err(TrojanError::InvalidRequest)
         ));
     }
@@ -498,7 +516,7 @@ mod tests {
         data.extend_from_slice(b"\r\n");
 
         assert!(matches!(
-            parse_request(&data, &[password_hash_hex("secret")]),
+            parse_request(&data, &entries(&["secret"])),
             Err(TrojanError::UnsupportedCommand(0x02))
         ));
     }

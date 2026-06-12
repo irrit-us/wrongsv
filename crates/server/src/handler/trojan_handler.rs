@@ -22,16 +22,22 @@ pub(crate) fn parse_trojan_config(tc: &TrojanServerConfig) -> Result<trojan::Tro
     let tls_config = wrongsv_anytls::build_tls_config(&cert_pem, &key_pem)
         .map_err(|e| format!("trojan tls: {e}"))?;
 
-    let mut password_hashes = Vec::new();
+    let mut passwords = Vec::new();
     if let Some(password) = &tc.password {
-        password_hashes.push(trojan::password_hash_hex(password));
+        passwords.push(trojan::TrojanPasswordEntry {
+            hash: trojan::password_hash_hex(password),
+            email: None,
+        });
     }
     for user in &tc.users {
-        password_hashes.push(trojan::password_hash_hex(&user.password));
+        passwords.push(trojan::TrojanPasswordEntry {
+            hash: trojan::password_hash_hex(&user.password),
+            email: Some(user.email.clone()),
+        });
     }
 
     Ok(trojan::TrojanConfig {
-        password_hashes,
+        passwords,
         tls_config: Arc::new(tls_config),
         dest: tc.dest.clone(),
     })
@@ -39,6 +45,7 @@ pub(crate) fn parse_trojan_config(tc: &TrojanServerConfig) -> Result<trojan::Tro
 pub(crate) fn handle_trojan_connection(
     stream: TcpStream,
     config: &trojan::TrojanConfig,
+    metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let peer = stream.peer_addr()?;
     trace!("{peer} Trojan connection");
@@ -57,16 +64,24 @@ pub(crate) fn handle_trojan_connection(
             if let Some(dest) = &config.dest {
                 let target = TcpStream::connect(dest)?;
                 target.set_nodelay(true)?;
-                relay_anytls_raw(tls_stream, target, accept_err.buffered_data)?;
+                relay_anytls_raw(
+                    tls_stream,
+                    target,
+                    accept_err.buffered_data,
+                    wrongsv_metrics::MetricsTap::disabled(),
+                )?;
                 return Ok(());
             }
             return Err(Box::new(accept_err.error));
         }
     };
 
+    let tap = wrongsv_metrics::MetricsTap::new(metrics, request.email.clone().unwrap_or_default());
+    let _conn_guard = tap.track_connection();
+
     if request.command == TrojanCommand::UdpAssociate {
         info!("{peer} Trojan UDP associate");
-        relay_trojan_udp(tls_stream, request.initial_data)?;
+        relay_trojan_udp(tls_stream, request.initial_data, tap)?;
         debug!("{peer} Trojan UDP relay finished");
         return Ok(());
     }
@@ -77,7 +92,7 @@ pub(crate) fn handle_trojan_connection(
     target.set_nodelay(true)?;
     target.set_read_timeout(Some(Duration::from_secs(60)))?;
 
-    relay_anytls_raw(tls_stream, target, request.initial_data)?;
+    relay_anytls_raw(tls_stream, target, request.initial_data, tap)?;
     debug!("{peer} Trojan TCP relay finished");
     Ok(())
 }
@@ -85,6 +100,7 @@ pub(crate) fn handle_trojan_connection(
 pub(crate) fn relay_trojan_udp(
     mut tls: wrongsv_anytls::AnyTlsStream,
     initial_data: Vec<u8>,
+    metrics: wrongsv_metrics::MetricsTap,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let socket = UdpSocket::bind("0.0.0.0:0")?;
     socket.set_read_timeout(Some(Duration::from_millis(200)))?;
@@ -99,6 +115,7 @@ pub(crate) fn relay_trojan_udp(
         let mut did_work = false;
 
         while let Some(packet) = trojan::parse_udp_packet(&tls_buf)? {
+            metrics.record_in(packet.payload.len() as u64);
             send_trojan_udp_packet_to_target(
                 &socket,
                 &packet.address,
@@ -111,6 +128,7 @@ pub(crate) fn relay_trojan_udp(
 
         match socket.recv_from(&mut udp_buf) {
             Ok((n, source)) if n > 0 => {
+                metrics.record_out(n as u64);
                 let (address, port) = socket_addr_to_destination(source);
                 let mut response = Vec::with_capacity(32 + n);
                 trojan::write_udp_packet(&mut response, &address, port, &udp_buf[..n])?;

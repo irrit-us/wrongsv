@@ -104,6 +104,7 @@ pub(crate) fn handle_shadowtls_connection(
     validator: Arc<MemoryValidator>,
     kyber_sk: Option<[u8; 64]>,
     shadowtls_config: &ShadowTlsConfig,
+    metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let peer = stream.peer_addr()?;
     trace!("{peer} ShadowTLS connection");
@@ -220,6 +221,8 @@ pub(crate) fn handle_shadowtls_connection(
     } = decode_vless_request(first, &validator, peer)?;
     let request = &decoded.header;
     let account = &request.user.account;
+    let tap = wrongsv_metrics::MetricsTap::new(metrics, request.user.email.clone());
+    let _conn_guard = tap.track_connection();
 
     log_vless_request(peer, request);
     handle_kyber_addons(peer, &decoded, kyber_sk);
@@ -238,7 +241,7 @@ pub(crate) fn handle_shadowtls_connection(
         if !account.udp {
             return Err("UDP not enabled for this user".into());
         }
-        relay_anytls_udp(tls_stream, request, remaining_body)?;
+        relay_anytls_udp(tls_stream, request, remaining_body, tap)?;
         debug!("{peer} ShadowTLS UDP relay finished");
         return Ok(());
     }
@@ -258,9 +261,10 @@ pub(crate) fn handle_shadowtls_connection(
             user_sent_id,
             &account.testseed,
             remaining_body,
+            tap,
         )?;
     } else {
-        relay_anytls_raw(tls_stream, target, remaining_body)?;
+        relay_anytls_raw(tls_stream, target, remaining_body, tap)?;
     }
     debug!("{peer} ShadowTLS TCP relay finished");
     Ok(())
