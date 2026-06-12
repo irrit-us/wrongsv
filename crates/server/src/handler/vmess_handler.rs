@@ -297,7 +297,7 @@ mod tests {
             cmd_key: vmess::derive_cmd_key(&[1u8; 16]),
         };
         let (_plain, eaudid) = generate_eaudid(&user.cmd_key);
-        let result = authenticate(&eaudid, &[user.clone()]).unwrap();
+        let result = authenticate(&eaudid, std::slice::from_ref(&user)).unwrap();
         assert_eq!(result.1, "alice");
     }
 
