@@ -58,6 +58,11 @@ pub struct Config {
     /// HTTP/2 streams (V2Ray xray-compatible, stream-one mode).
     #[serde(default)]
     pub xhttp: Option<XhttpServerConfig>,
+    /// Meek carrier configuration. When set, the listener accepts HTTP
+    /// POST round-trips with `X-Session-ID` headers and carries VLESS
+    /// over V2Ray-compatible request sessions.
+    #[serde(default)]
+    pub meek: Option<MeekServerConfig>,
     /// Hysteria2 inbound configuration. When set, the listener accepts
     /// Hysteria2 QUIC/TCP/UDP traffic instead of VLESS.
     #[serde(default)]
@@ -318,6 +323,51 @@ pub struct XhttpServerConfig {
     /// Optional TLS configuration for HTTPS+XHTTP mode.
     #[serde(default)]
     pub tls: Option<GrpcTlsConfig>,
+}
+
+/// Meek carrier TLS configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MeekTlsConfig {
+    #[serde(default)]
+    pub certificate: Option<String>,
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub dest: Option<String>,
+}
+
+/// Meek carrier server-side configuration.
+///
+/// Meek carries VLESS over stateless HTTP POST requests keyed by
+/// `X-Session-ID`, compatible with the V2Ray meek transport.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MeekServerConfig {
+    /// URL path prefix for the meek endpoint (default "/").
+    #[serde(default = "default_ws_path")]
+    pub path: String,
+    /// Optional Host header to validate on the server side.
+    #[serde(default)]
+    pub host: Option<String>,
+    /// Maximum accepted request body size per HTTP round-trip.
+    #[serde(default = "default_meek_body_bytes")]
+    pub max_request_bytes: usize,
+    /// Maximum response payload emitted per HTTP round-trip.
+    #[serde(default = "default_meek_body_bytes")]
+    pub max_response_bytes: usize,
+    /// Idle session timeout in seconds.
+    #[serde(default = "default_meek_idle_timeout")]
+    pub idle_timeout: u64,
+    /// Optional TLS configuration for HTTPS meek mode.
+    #[serde(default)]
+    pub tls: Option<MeekTlsConfig>,
+}
+
+fn default_meek_body_bytes() -> usize {
+    65_536
+}
+
+fn default_meek_idle_timeout() -> u64 {
+    300
 }
 
 /// Hysteria2 authentication user.
@@ -670,6 +720,12 @@ pub enum ConfigError {
     XhttpMissingUsers,
     #[error("XHTTP inbound cannot be combined with gRPC")]
     XhttpWithGrpc,
+    #[error("Meek inbound cannot be combined with other VLESS transport layers")]
+    MeekWithVlessTransport,
+    #[error("Meek inbound cannot be combined with non-VLESS protocols")]
+    MeekWithNonVless,
+    #[error("Meek inbound requires VLESS users")]
+    MeekMissingUsers,
     #[error("Hysteria2 inbound cannot be combined with VLESS users")]
     Hysteria2WithVlessUsers,
     #[error("Hysteria2 inbound cannot be combined with VLESS transport layers")]
@@ -749,6 +805,7 @@ impl Config {
             || self.httpupgrade.is_some()
             || self.grpc.is_some()
             || self.xhttp.is_some()
+            || self.meek.is_some()
             || self.quic.is_some()
             || self.kcp.is_some()
             || self.webtransport.is_some()
@@ -776,6 +833,7 @@ impl Config {
             || self.httpupgrade.is_some()
             || self.grpc.is_some()
             || self.xhttp.is_some()
+            || self.meek.is_some()
     }
 
     /// True when any TLS-layer transport (REALITY, AnyTLS, plain TLS) is
@@ -978,6 +1036,17 @@ impl Config {
             }
         }
 
+        if let Some(_meek) = &self.meek {
+            self.check_framing_transport(
+                "meek",
+                ConfigError::MeekWithNonVless,
+                ConfigError::MeekWithVlessTransport,
+            )?;
+            if !self.has_vless_users() {
+                return Err(ConfigError::MeekMissingUsers);
+            }
+        }
+
         // -- VLESS datagram transports --
         if let Some(_quic) = &self.quic {
             self.check_datagram_transport(
@@ -1065,6 +1134,7 @@ impl Config {
                     || self.httpupgrade.is_some()
                     || self.grpc.is_some()
                     || self.xhttp.is_some()
+                    || self.meek.is_some()
                     || self.quic.is_some()
                     || self.kcp.is_some()
             }
@@ -1073,6 +1143,7 @@ impl Config {
                     || self.websocket.is_some()
                     || self.grpc.is_some()
                     || self.xhttp.is_some()
+                    || self.meek.is_some()
                     || self.quic.is_some()
                     || self.kcp.is_some()
             }
@@ -1081,6 +1152,7 @@ impl Config {
                     || self.websocket.is_some()
                     || self.httpupgrade.is_some()
                     || self.xhttp.is_some()
+                    || self.meek.is_some()
                     || self.quic.is_some()
                     || self.kcp.is_some()
             }
@@ -1089,6 +1161,16 @@ impl Config {
                     || self.websocket.is_some()
                     || self.httpupgrade.is_some()
                     || self.grpc.is_some()
+                    || self.meek.is_some()
+                    || self.quic.is_some()
+                    || self.kcp.is_some()
+            }
+            "meek" => {
+                self.has_any_non_vless_inbound()
+                    || self.websocket.is_some()
+                    || self.httpupgrade.is_some()
+                    || self.grpc.is_some()
+                    || self.xhttp.is_some()
                     || self.quic.is_some()
                     || self.kcp.is_some()
             }
@@ -1196,6 +1278,7 @@ flow = "xtls-rprx-vision"
             httpupgrade: None,
             grpc: None,
             xhttp: None,
+            meek: None,
             hysteria2: None,
             tuic: None,
             quic: None,
@@ -1232,6 +1315,7 @@ flow = "xtls-rprx-vision"
             httpupgrade: None,
             grpc: None,
             xhttp: None,
+            meek: None,
             hysteria2: None,
             tuic: None,
             quic: None,

@@ -14,6 +14,7 @@ documentation and maps it to wrongsv implementation status.
 | VLESS + HTTPUpgrade | Implemented for raw HTTPUpgrade and optional TLS-wrapped HTTPUpgrade, including raw VLESS TCP/UDP and packetaddr UDP relay | xray, sing-box, mihomo |
 | VLESS + gRPC | Implemented for HTTP/2 gRPC transport with protobuf Hunk framing, configurable service name, optional TLS, TCP/Vision/UDP relay (V2Ray-compatible) | xray, sing-box, mihomo |
 | VLESS + XHTTP (SplitHTTP) | Implemented for HTTP/2 raw byte streaming (stream-one mode), configurable path prefix, optional host validation, optional TLS, TCP/Vision/UDP relay (xray-compatible) | xray, sing-box |
+| VLESS + Meek | Implemented for V2Ray-compatible HTTPS request sessions using `X-Session-ID`-keyed HTTP POST polling, configurable path/host validation, static or generated TLS, TCP/Vision/UDP relay, and reusable request-session buffering. | v2ray-core |
 | VLESS + QUIC | Implemented for QUIC transport with bidirectional stream VLESS relay, TLS (self-signed or custom), TCP/Vision/UDP relay (xray-compatible) | xray, sing-box |
 | VLESS + KCP (mKCP) | Implemented for UDP-based mKCP transport with FNV1a authentication, KCP session multiplexing, TCP/Vision/UDP relay (xray-compatible) | xray |
 | XTLS Vision | Implemented for TCP | xray, sing-box, mihomo |

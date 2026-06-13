@@ -610,6 +610,7 @@ mod tests {
             httpupgrade: None,
             grpc: None,
             xhttp: None,
+            meek: None,
             hysteria2: None,
             tuic: None,
             quic: None,
@@ -666,7 +667,7 @@ mod tests {
             ..Default::default()
         };
         let body = b"pipelined-request-body";
-        let peer = "127.0.0.1:10000".parse().unwrap();
+        let peer: std::net::SocketAddr = "127.0.0.1:10000".parse().unwrap();
 
         let mut first = bytes::BytesMut::new();
         encoding::encode_request_header(&mut first, &request, &addons).unwrap();
@@ -683,7 +684,7 @@ mod tests {
     #[test]
     fn decode_vless_request_rejects_short_headers() {
         let validator = test_validator(test_user(""));
-        let peer = "127.0.0.1:10001".parse().unwrap();
+        let peer: std::net::SocketAddr = "127.0.0.1:10001".parse().unwrap();
 
         let err = match decode_vless_request(vec![0; 17], &validator, peer) {
             Ok(_) => panic!("short VLESS header decoded successfully"),

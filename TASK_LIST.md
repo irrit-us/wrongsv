@@ -497,6 +497,28 @@ standard xray/v2fly AEAD path. `spawn_vmess_server` remains in
   `type: "anytls"` as an unknown outbound type, so this remains a
   Hiddify-specific client/runtime gap rather than a wrongsv server defect.
 
+### 2026-06-14 — V2Ray Meek transport implemented and externally verified
+
+- Added a reusable request-session carrier core in
+  `crates/server/src/handler/request_transport.rs`: shared session registry,
+  bounded response buffering, session idle cleanup, and a `Read`/`Write`
+  stream bridge that can carry VLESS over stateless HTTP polling transports.
+- Added `crates/server/src/handler/meek.rs` plus `[meek]` config support,
+  including optional TLS, host/path validation, HTTP/1.1 POST parsing with
+  `X-Session-ID`, chunked/content-length body handling, and per-session VLESS
+  relay through the shared request carrier.
+- Added in-tree coverage for the new server path:
+  `cargo test -p wrongsv-server meek -- --nocapture` and the full
+  `cargo test -p wrongsv-server -- --nocapture` suite now pass with the new
+  Meek parser and a live TCP echo roundtrip regression.
+- Added a dedicated V2Ray external Meek scenario plus native `jsonv5`
+  runtime shaping for this transport in `wrongsv-external-tests`, including a
+  pinned TLS certificate path that matches V2Ray's own Meek test style.
+- External verification now passes at
+  `wrongsv-external-tests/results/v2ray-meek-check-11/vless_meek/report.json`
+  with successful compatibility probes and sustained traffic through the
+  `vless_meek` stack, so `server.v2ray_meek_transport` is no longer open.
+
 ### 2026-06-13 — ShadowTLS v3 interop fixed for sing-box / Hiddify
 
 - Replaced wrongsv's old exporter-HMAC ShadowTLS path with a ShadowTLS v3 server

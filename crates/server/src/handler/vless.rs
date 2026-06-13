@@ -2,6 +2,7 @@ use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
+use std::{fmt::Display};
 use tracing::{debug, info, trace, warn};
 use wrongsv_protocol::{RequestCommand, RequestHeader};
 use wrongsv_vless::{MemoryValidator, Validator, XRV};
@@ -18,7 +19,7 @@ pub(crate) struct VlessRequest {
 pub(crate) fn decode_vless_request(
     first: Vec<u8>,
     validator: &Arc<MemoryValidator>,
-    peer: std::net::SocketAddr,
+    peer: impl Display,
 ) -> Result<VlessRequest, Box<dyn std::error::Error>> {
     let n = first.len();
     if n < 18 {
@@ -45,7 +46,7 @@ pub(crate) fn decode_vless_request(
     })
 }
 
-pub(crate) fn log_vless_request(peer: std::net::SocketAddr, request: &RequestHeader) {
+pub(crate) fn log_vless_request(peer: impl Display, request: &RequestHeader) {
     info!(
         "{} {} {} -> {}:{}",
         peer,
@@ -62,7 +63,7 @@ pub(crate) fn log_vless_request(peer: std::net::SocketAddr, request: &RequestHea
 }
 
 pub(crate) fn handle_kyber_addons(
-    peer: std::net::SocketAddr,
+    peer: impl Display,
     decoded: &encoding::DecodedRequest,
     kyber_sk: Option<[u8; 64]>,
 ) {

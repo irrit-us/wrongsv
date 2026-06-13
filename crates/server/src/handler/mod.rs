@@ -42,6 +42,10 @@ pub(crate) mod grpc;
 pub(crate) use grpc::*;
 pub(crate) mod xhttp;
 pub(crate) use xhttp::*;
+pub(crate) mod request_transport;
+pub(crate) use request_transport::*;
+pub(crate) mod meek;
+pub(crate) use meek::*;
 pub(crate) mod hysteria2;
 pub(crate) use hysteria2::*;
 pub(crate) mod tuic;
@@ -162,6 +166,7 @@ pub struct InboundServer {
     httpupgrade_config: Option<HttpUpgradeConfig>,
     grpc_config: Option<GrpcConfig>,
     xhttp_config: Option<XhttpConfig>,
+    meek_config: Option<MeekConfig>,
     hysteria2_config: Option<Hysteria2Config>,
     tuic_config: Option<TuicConfig>,
     quic_config: Option<QuicConfig>,
@@ -247,6 +252,22 @@ impl InboundServer {
                         " (TLS + XHTTP)"
                     } else {
                         " (XHTTP)"
+                    }
+                );
+                Some(cfg)
+            }
+            None => None,
+        };
+        let meek_config = match &config.meek {
+            Some(mc) => {
+                let cfg = parse_meek_config(mc)?;
+                info!(
+                    "Meek enabled on {}{}",
+                    cfg.path,
+                    if cfg.tls_config.is_some() {
+                        " (TLS + Meek)"
+                    } else {
+                        " (Meek)"
                     }
                 );
                 Some(cfg)
@@ -401,6 +422,7 @@ impl InboundServer {
             httpupgrade_config,
             grpc_config,
             xhttp_config,
+            meek_config,
             hysteria2_config,
             tuic_config,
             quic_config,
@@ -568,6 +590,8 @@ impl InboundServer {
             "VLESS gRPC"
         } else if self.xhttp_config.is_some() {
             "VLESS XHTTP"
+        } else if self.meek_config.is_some() {
+            "VLESS Meek"
         } else if self.webtransport_config.is_some() {
             "VLESS WebTransport"
         } else {
@@ -591,6 +615,7 @@ impl InboundServer {
         let httpupgrade_config = self.httpupgrade_config.clone();
         let grpc_config = self.grpc_config.clone();
         let xhttp_config = self.xhttp_config.clone();
+        let meek_config = self.meek_config.clone();
         let shadowtls_config = self.shadowtls_config.clone();
         let vmess_config = self.vmess_config.clone();
         let hysteria2_enabled = self.hysteria2_config.is_some();
@@ -632,6 +657,7 @@ impl InboundServer {
                     let huc = httpupgrade_config.clone();
                     let gc = grpc_config.clone();
                     let xc = xhttp_config.clone();
+                    let mkc = meek_config.clone();
                     let stc = shadowtls_config.clone();
                     let vmc = vmess_config.clone();
                     thread::spawn(move || {
@@ -650,6 +676,8 @@ impl InboundServer {
                                 handle_grpc_connection(stream, v, kyber_sk, gc, m)
                             } else if let Some(ref xc) = xc {
                                 handle_xhttp_connection(stream, v, kyber_sk, xc, m)
+                            } else if let Some(ref mkc) = mkc {
+                                handle_meek_connection(stream, v, kyber_sk, mkc, m)
                             } else if hysteria2_enabled {
                                 Err(
                                     "Hysteria2 inbound uses QUIC and does not accept TCP sockets"

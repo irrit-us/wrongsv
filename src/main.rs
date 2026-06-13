@@ -336,6 +336,7 @@ fn build_default_config() -> Config {
         httpupgrade: None,
         grpc: None,
         xhttp: None,
+        meek: None,
         hysteria2: None,
         tuic: None,
         quic: None,
