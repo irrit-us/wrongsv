@@ -557,6 +557,19 @@ standard xray/v2fly AEAD path. `spawn_vmess_server` remains in
   `wrongsv-external-tests/results/flclash-wireguard-check-2/matrix.json`,
   so `server.mihomo_wireguard_protocol` is no longer open.
 
+### 2026-06-14 — Protocol component model refactor started
+
+- Added `src/protocol_model.rs` as the first normalized endpoint-layer model
+  following `docs/design_constraint.md`, separating:
+  `protocol`, `payload_networks`, `transport`, `outer_security`,
+  `protocol_internal_security`, `base_carrier`, and cross-cutting components.
+- `src/client_config.rs` now resolves that normalized model alongside the
+  legacy transport hint and uses it directly for protocol-level generation
+  decisions, including new Mihomo WireGuard output and derived component tests.
+- Added binary-side regression coverage for the new model:
+  `cargo test --bin wrongsv -- --nocapture` now includes protocol-model tests
+  plus a WireGuard config-generation assertion.
+
 ### 2026-06-13 — ShadowTLS v3 interop fixed for sing-box / Hiddify
 
 - Replaced wrongsv's old exporter-HMAC ShadowTLS path with a ShadowTLS v3 server

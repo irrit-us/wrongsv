@@ -373,12 +373,17 @@ Generate client config JSON in mihomo/FlClash format (default) or sing-box forma
 ./target/release/wrongsv --config configs/tls-vision.toml \
     --print-client-config --server-host YOUR_IP --servername cloudfront.net
 
-# Explicit transport override (reality, anytls, tls, raw, ws, httpupgrade)
+# Explicit profile override (reality, anytls, tls, raw, ws, httpupgrade,
+# grpc, xhttp, meek, gdocsviewer, quic, kcp, webtransport, shadowtls,
+# vmess, wireguard)
 ./target/release/wrongsv --transport httpupgrade \
     --print-client-config --server-host YOUR_IP --servername cloudfront.net
 ```
 
-Transport type is auto-detected from the TOML config file (reality → `reality-opts`, tls/anytls → `tls`, websocket → `ws`, httpupgrade → HTTPUpgrade transport fields, none → raw). Use `--transport` to override.
+The client-profile detection now resolves the effective protocol stack from the
+TOML config and maps it onto the normalized endpoint-layer model in
+`docs/design_constraint.md`. Use `--transport` to override that detection when
+you need a specific output profile.
 
 The generated JSON keys match Go struct tags in mihomo/sing-box (`client-fingerprint`, `public-key`, `short-id` in kebab-case). For REALITY transport, `reality-opts` block is included.
 

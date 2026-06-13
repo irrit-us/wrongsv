@@ -1,5 +1,6 @@
 use serde::Serialize;
 
+use crate::protocol_model::{Component, EndpointModel, OuterSecurity, ProxyProtocol, TransportMethod};
 use crate::{ClientFormat, Transport};
 
 // ---------------------------------------------------------------------------
@@ -10,6 +11,7 @@ use crate::{ClientFormat, Transport};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ClientConfigValues {
+    pub endpoint: EndpointModel,
     pub uuid: String,
     pub flow: String,
     pub port: String,
@@ -26,6 +28,11 @@ pub(crate) struct ClientConfigValues {
     pub xhttp_path: String,
     pub xhttp_host: String,
     pub shadowtls_password: String,
+    pub wireguard_private_key: String,
+    pub wireguard_public_key: String,
+    pub wireguard_client_ip: String,
+    pub wireguard_allowed_ips: Vec<String>,
+    pub wireguard_mtu: u32,
 }
 
 /// Resolve values for the generated client config from TOML config or defaults.
@@ -53,11 +60,14 @@ pub(crate) fn resolve_client_values(
         Some(cfg) if cfg.httpupgrade.is_some() => Transport::HttpUpgrade,
         Some(cfg) if cfg.grpc.is_some() => Transport::Grpc,
         Some(cfg) if cfg.xhttp.is_some() => Transport::Xhttp,
+        Some(cfg) if cfg.meek.is_some() => Transport::Meek,
+        Some(cfg) if cfg.gdocsviewer.is_some() => Transport::GdocsViewer,
         Some(cfg) if cfg.quic.is_some() => Transport::Quic,
         Some(cfg) if cfg.kcp.is_some() => Transport::Kcp,
         Some(cfg) if cfg.webtransport.is_some() => Transport::WebTransport,
         Some(cfg) if cfg.shadowtls.is_some() => Transport::ShadowTls,
         Some(cfg) if cfg.vmess.is_some() => Transport::Vmess,
+        Some(cfg) if cfg.wireguard.is_some() => Transport::WireGuard,
         Some(cfg) if cfg.tls.is_some() => Transport::Tls,
         _ => Transport::Raw,
     });
@@ -71,6 +81,7 @@ pub(crate) fn resolve_client_values(
                     .and_then(|v| v.users.first())
                     .map(|u| u.id.as_str())
                     .unwrap_or(build_uuid()),
+                Transport::WireGuard => build_uuid(),
                 _ => cfg
                     .users
                     .first()
@@ -141,6 +152,38 @@ pub(crate) fn resolve_client_values(
                 .as_ref()
                 .map(|s| s.password.clone())
                 .unwrap_or_default();
+            let wireguard_private_key = cfg
+                .wireguard
+                .as_ref()
+                .map(|wg| wg.private_key.clone())
+                .unwrap_or_default();
+            let wireguard_public_key = cfg
+                .wireguard
+                .as_ref()
+                .and_then(|wg| wg.peers.first())
+                .map(|peer| peer.public_key.clone())
+                .unwrap_or_default();
+            let wireguard_client_ip = cfg
+                .wireguard
+                .as_ref()
+                .and_then(|wg| wg.peers.first())
+                .and_then(|peer| peer.allowed_ips.first())
+                .cloned()
+                .unwrap_or_else(|| "10.66.66.2/32".to_string());
+            let wireguard_allowed_ips = cfg
+                .wireguard
+                .as_ref()
+                .and_then(|wg| wg.forwards.first())
+                .map(|forward| {
+                    let service = forward.service.split(':').next().unwrap_or("10.66.66.1");
+                    vec![format!("{service}/32")]
+                })
+                .unwrap_or_else(|| vec!["10.66.66.1/32".to_string()]);
+            let wireguard_mtu = cfg
+                .wireguard
+                .as_ref()
+                .map(|wg| wg.mtu)
+                .unwrap_or(1400);
             // Detect TLS: true for TLS-layer transports, true for stream
             // transports that have a tls sub-config, true for QUIC (built-in).
             let has_tls = match transport {
@@ -149,7 +192,8 @@ pub(crate) fn resolve_client_values(
                 | Transport::Tls
                 | Transport::Quic
                 | Transport::WebTransport
-                | Transport::ShadowTls => true,
+                | Transport::ShadowTls
+                | Transport::WireGuard => true,
                 Transport::WebSocket => cfg
                     .websocket
                     .as_ref()
@@ -162,10 +206,14 @@ pub(crate) fn resolve_client_values(
                     .is_some(),
                 Transport::Grpc => cfg.grpc.as_ref().and_then(|g| g.tls.as_ref()).is_some(),
                 Transport::Xhttp => cfg.xhttp.as_ref().and_then(|x| x.tls.as_ref()).is_some(),
+                Transport::Meek => false,
+                Transport::GdocsViewer => false,
                 Transport::Kcp | Transport::Raw | Transport::Vmess => false,
             };
+            let endpoint = EndpointModel::from_transport_profile(transport, has_tls, flow);
 
             ClientConfigValues {
+                endpoint,
                 uuid: uuid.to_string(),
                 flow: flow.to_string(),
                 port: port.to_string(),
@@ -182,9 +230,28 @@ pub(crate) fn resolve_client_values(
                 xhttp_path,
                 xhttp_host,
                 shadowtls_password,
+                wireguard_private_key,
+                wireguard_public_key,
+                wireguard_client_ip,
+                wireguard_allowed_ips,
+                wireguard_mtu,
             }
         }
         None => ClientConfigValues {
+            endpoint: EndpointModel::from_transport_profile(
+                transport,
+                matches!(
+                    transport,
+                    Transport::Reality
+                        | Transport::AnyTls
+                        | Transport::Tls
+                        | Transport::Quic
+                        | Transport::WebTransport
+                        | Transport::ShadowTls
+                        | Transport::WireGuard
+                ),
+                "xtls-rprx-vision",
+            ),
             uuid: build_uuid().to_string(),
             flow: "xtls-rprx-vision".to_string(),
             port: build_port().to_string(),
@@ -200,6 +267,7 @@ pub(crate) fn resolve_client_values(
                     | Transport::Quic
                     | Transport::WebTransport
                     | Transport::ShadowTls
+                    | Transport::WireGuard
             ),
             ws_path: "/".to_string(),
             grpc_service_name: "GunService".to_string(),
@@ -209,6 +277,11 @@ pub(crate) fn resolve_client_values(
             xhttp_path: "/xhttp".to_string(),
             xhttp_host: String::new(),
             shadowtls_password: String::new(),
+            wireguard_private_key: String::new(),
+            wireguard_public_key: String::new(),
+            wireguard_client_ip: "10.66.66.2/32".to_string(),
+            wireguard_allowed_ips: vec!["10.66.66.1/32".to_string()],
+            wireguard_mtu: 1400,
         },
     }
 }
@@ -232,6 +305,24 @@ pub(crate) fn generate_client_config(
         ClientFormat::SingBox => singbox_format(server_host, client_name, vals),
         ClientFormat::Xray => xray_format(server_host, client_name, vals),
         ClientFormat::Hiddify => hiddify_format(server_host, client_name, vals),
+    }
+}
+
+impl ClientConfigValues {
+    fn protocol(&self) -> ProxyProtocol {
+        self.endpoint.protocol
+    }
+
+    fn transport_method(&self) -> Option<TransportMethod> {
+        self.endpoint.transport
+    }
+
+    fn outer_security(&self) -> Option<OuterSecurity> {
+        self.endpoint.outer_security
+    }
+
+    fn has_component(&self, component: Component) -> bool {
+        self.endpoint.has_component(component)
     }
 }
 
@@ -335,11 +426,29 @@ struct VmessMihomoConfig<'a> {
     udp: bool,
 }
 
+#[derive(Serialize)]
+struct WireGuardMihomoConfig<'a> {
+    name: &'a str,
+    #[serde(rename = "type")]
+    proxy_type: &'a str,
+    server: &'a str,
+    port: u16,
+    ip: &'a str,
+    #[serde(rename = "private-key")]
+    private_key: &'a str,
+    #[serde(rename = "public-key")]
+    public_key: &'a str,
+    #[serde(rename = "allowed-ips")]
+    allowed_ips: &'a [String],
+    mtu: u32,
+    udp: bool,
+}
+
 fn mihomo_format(server_host: &str, client_name: &str, vals: &ClientConfigValues) -> String {
     let port: u16 = vals.port.parse().unwrap_or(443);
 
     // VMess is a separate protocol type
-    if vals.transport == Transport::Vmess {
+    if vals.protocol() == ProxyProtocol::Vmess {
         let config = VmessMihomoConfig {
             name: client_name,
             proxy_type: "vmess",
@@ -352,10 +461,27 @@ fn mihomo_format(server_host: &str, client_name: &str, vals: &ClientConfigValues
         };
         return serde_json::to_string_pretty(&config).expect("VmessMihomoConfig should serialize");
     }
+    if vals.protocol() == ProxyProtocol::WireGuard {
+        let config = WireGuardMihomoConfig {
+            name: client_name,
+            proxy_type: "wireguard",
+            server: server_host,
+            port,
+            ip: &vals.wireguard_client_ip,
+            private_key: &vals.wireguard_private_key,
+            public_key: &vals.wireguard_public_key,
+            allowed_ips: &vals.wireguard_allowed_ips,
+            mtu: vals.wireguard_mtu,
+            udp: true,
+        };
+        return serde_json::to_string_pretty(&config)
+            .expect("WireGuardMihomoConfig should serialize");
+    }
 
-    let (tls, client_fingerprint, servername, skip_cert_verify, reality_opts) = match vals.transport
+    let (tls, client_fingerprint, servername, skip_cert_verify, reality_opts) = match vals
+        .outer_security()
     {
-        Transport::Reality => (
+        Some(OuterSecurity::Reality) => (
             Some(true),
             Some("chrome"),
             Some(vals.servername.as_str()),
@@ -365,7 +491,7 @@ fn mihomo_format(server_host: &str, client_name: &str, vals: &ClientConfigValues
                 short_id: &vals.short_id,
             }),
         ),
-        Transport::AnyTls | Transport::Tls | Transport::ShadowTls => (
+        Some(OuterSecurity::Tls) => (
             Some(true),
             Some("chrome"),
             Some(vals.servername.as_str()),
@@ -383,8 +509,10 @@ fn mihomo_format(server_host: &str, client_name: &str, vals: &ClientConfigValues
     };
 
     // If a stream transport is used, TLS comes from the transport, not separately
-    let (network, ws_opts, grpc_opts, mkcp_opts, quic_opts, xhttp_opts) = match vals.transport {
-        Transport::WebSocket => (
+    let (network, ws_opts, grpc_opts, mkcp_opts, quic_opts, xhttp_opts) = match vals
+        .transport_method()
+    {
+        Some(TransportMethod::WebSocket) => (
             Some("ws"),
             Some(WsOpts {
                 path: &vals.ws_path,
@@ -395,7 +523,7 @@ fn mihomo_format(server_host: &str, client_name: &str, vals: &ClientConfigValues
             None,
             None,
         ),
-        Transport::HttpUpgrade => (
+        Some(TransportMethod::HttpUpgrade) => (
             Some("ws"),
             Some(WsOpts {
                 path: &vals.ws_path,
@@ -406,7 +534,7 @@ fn mihomo_format(server_host: &str, client_name: &str, vals: &ClientConfigValues
             None,
             None,
         ),
-        Transport::Grpc => (
+        Some(TransportMethod::Grpc) => (
             Some("grpc"),
             None,
             Some(GrpcOpts {
@@ -416,7 +544,7 @@ fn mihomo_format(server_host: &str, client_name: &str, vals: &ClientConfigValues
             None,
             None,
         ),
-        Transport::Kcp => (
+        Some(TransportMethod::Kcp) => (
             Some("mkcp"),
             None,
             None,
@@ -428,9 +556,11 @@ fn mihomo_format(server_host: &str, client_name: &str, vals: &ClientConfigValues
             None,
             None,
         ),
-        Transport::Quic => (Some("quic"), None, None, None, Some(QuicOpts {}), None),
-        Transport::WebTransport => (Some("quic"), None, None, None, Some(QuicOpts {}), None),
-        Transport::Xhttp => (
+        Some(TransportMethod::Quic) => (Some("quic"), None, None, None, Some(QuicOpts {}), None),
+        Some(TransportMethod::WebTransport) => {
+            (Some("quic"), None, None, None, Some(QuicOpts {}), None)
+        }
+        Some(TransportMethod::Xhttp) => (
             Some("xhttp"),
             None,
             None,
@@ -562,7 +692,7 @@ struct SingBoxHttpTransport<'a> {
 fn singbox_format(server_host: &str, client_name: &str, vals: &ClientConfigValues) -> String {
     let port: u16 = vals.port.parse().unwrap_or(443);
 
-    if vals.transport == Transport::Vmess {
+    if vals.protocol() == ProxyProtocol::Vmess {
         let vmess_outbound = serde_json::json!({
             "type": "vmess",
             "tag": client_name,
@@ -616,36 +746,36 @@ fn singbox_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
         None
     };
 
-    let network: Option<&str> = match vals.transport {
-        Transport::Quic | Transport::Kcp => None, // QUIC/KCP don't use tcp/udp network
-        _ => Some(match vals.transport {
-            Transport::Kcp => "udp",
+    let network: Option<&str> = match vals.transport_method() {
+        Some(TransportMethod::Quic) | Some(TransportMethod::Kcp) => None, // QUIC/KCP don't use tcp/udp network
+        _ => Some(match vals.transport_method() {
+            Some(TransportMethod::Kcp) => "udp",
             _ => "tcp",
         }),
     };
 
     let packet_encoding: Option<&str> = Some("packetaddr");
 
-    let transport: Option<serde_json::Value> = match vals.transport {
-        Transport::WebSocket => serde_json::to_value(SingBoxWsTransport {
+    let transport: Option<serde_json::Value> = match vals.transport_method() {
+        Some(TransportMethod::WebSocket) => serde_json::to_value(SingBoxWsTransport {
             transport_type: "ws",
             path: Some(&vals.ws_path),
         })
         .ok(),
-        Transport::HttpUpgrade => serde_json::to_value(SingBoxWsTransport {
+        Some(TransportMethod::HttpUpgrade) => serde_json::to_value(SingBoxWsTransport {
             transport_type: "httpupgrade",
             path: Some(&vals.ws_path),
         })
         .ok(),
-        Transport::Grpc => serde_json::to_value(SingBoxGrpcTransport {
+        Some(TransportMethod::Grpc) => serde_json::to_value(SingBoxGrpcTransport {
             transport_type: "grpc",
             service_name: &vals.grpc_service_name,
         })
         .ok(),
-        Transport::Quic | Transport::WebTransport => {
+        Some(TransportMethod::Quic) | Some(TransportMethod::WebTransport) => {
             serde_json::to_value(serde_json::json!({"type": "quic"})).ok()
         }
-        Transport::Xhttp => {
+        Some(TransportMethod::Xhttp) => {
             let host = if vals.xhttp_host.is_empty() {
                 vec![]
             } else {
@@ -661,7 +791,7 @@ fn singbox_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
         _ => None,
     };
 
-    let shadowtls_detour = if vals.transport == Transport::ShadowTls {
+    let shadowtls_detour = if vals.has_component(Component::ShadowTls) {
         Some(format!("{client_name}-shadowtls"))
     } else {
         None
@@ -677,7 +807,7 @@ fn singbox_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
         network,
         packet_encoding,
         detour: shadowtls_detour.as_deref(),
-        tls: if vals.transport == Transport::ShadowTls {
+        tls: if vals.has_component(Component::ShadowTls) {
             None
         } else {
             tls
@@ -911,7 +1041,7 @@ struct XrayVmessUser<'a> {
 fn xray_format(server_host: &str, client_name: &str, vals: &ClientConfigValues) -> String {
     let port: u16 = vals.port.parse().unwrap_or(443);
 
-    if vals.transport == Transport::Vmess {
+    if vals.protocol() == ProxyProtocol::Vmess {
         let config = XrayVmessConfig {
             outbounds: vec![XrayVmessOutbound {
                 protocol: "vmess",
@@ -944,6 +1074,8 @@ fn xray_format(server_host: &str, client_name: &str, vals: &ClientConfigValues) 
         Transport::Xhttp => "xhttp",
         Transport::Quic | Transport::WebTransport => "quic",
         Transport::Kcp => "mkcp",
+        Transport::Meek | Transport::GdocsViewer => "tcp",
+        Transport::WireGuard => "tcp",
         Transport::Vmess => unreachable!("VMess handled above"),
     };
 
@@ -1100,7 +1232,7 @@ struct HiddifyConfig {
 fn hiddify_format(server_host: &str, client_name: &str, vals: &ClientConfigValues) -> String {
     let port: u16 = vals.port.parse().unwrap_or(443);
 
-    if vals.transport == Transport::Vmess {
+    if vals.protocol() == ProxyProtocol::Vmess {
         let vmess_outbound = serde_json::json!({
             "type": "vmess",
             "tag": client_name,
@@ -1119,7 +1251,7 @@ fn hiddify_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
         return serde_json::to_string_pretty(&config).expect("HiddifyConfig should serialize");
     }
 
-    if vals.transport == Transport::Xhttp {
+    if vals.transport_method() == Some(TransportMethod::Xhttp) {
         let xray_config: serde_json::Value =
             serde_json::from_str(&xray_format(server_host, client_name, vals))
                 .expect("XrayConfig should parse as JSON");
@@ -1215,7 +1347,7 @@ fn hiddify_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
         _ => None,
     };
 
-    let shadowtls_detour = if vals.transport == Transport::ShadowTls {
+    let shadowtls_detour = if vals.has_component(Component::ShadowTls) {
         Some(format!("{client_name}-shadowtls"))
     } else {
         None
@@ -1231,7 +1363,7 @@ fn hiddify_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
         network,
         packet_encoding,
         detour: shadowtls_detour.as_deref(),
-        tls: if vals.transport == Transport::ShadowTls {
+        tls: if vals.has_component(Component::ShadowTls) {
             None
         } else {
             tls
@@ -1276,7 +1408,22 @@ mod tests {
     use super::*;
 
     fn test_vals(transport: Transport) -> ClientConfigValues {
+        let has_tls = matches!(
+            transport,
+            Transport::Reality
+                | Transport::AnyTls
+                | Transport::Tls
+                | Transport::Quic
+                | Transport::WebTransport
+                | Transport::ShadowTls
+                | Transport::WireGuard
+        );
         ClientConfigValues {
+            endpoint: EndpointModel::from_transport_profile(
+                transport,
+                has_tls,
+                "xtls-rprx-vision",
+            ),
             uuid: "test-uuid-1234".into(),
             flow: "xtls-rprx-vision".into(),
             port: "443".into(),
@@ -1284,15 +1431,7 @@ mod tests {
             x25519_pk: "test-pubkey-base64".into(),
             servername: "example.com".into(),
             transport,
-            has_tls: matches!(
-                transport,
-                Transport::Reality
-                    | Transport::AnyTls
-                    | Transport::Tls
-                    | Transport::Quic
-                    | Transport::WebTransport
-                    | Transport::ShadowTls
-            ),
+            has_tls,
             ws_path: "/ws-path".into(),
             grpc_service_name: "TestService".into(),
             kcp_seed: "test-seed".into(),
@@ -1301,6 +1440,11 @@ mod tests {
             xhttp_path: "/xhttp-path".into(),
             xhttp_host: "xhost.example.com".into(),
             shadowtls_password: "shadow-pass".into(),
+            wireguard_private_key: "wireguard-private-key".into(),
+            wireguard_public_key: "wireguard-public-key".into(),
+            wireguard_client_ip: "10.66.66.2/32".into(),
+            wireguard_allowed_ips: vec!["10.66.66.1/32".into()],
+            wireguard_mtu: 1400,
         }
     }
 
@@ -1424,6 +1568,17 @@ mod tests {
         assert!(json.contains(r#""xhttp-opts""#));
         assert!(json.contains(r#""path": "/xhttp-path""#));
         assert!(json.contains(r#""mode": "stream-one""#));
+    }
+
+    #[test]
+    fn mihomo_wireguard_uses_normalized_protocol_model() {
+        let mut vals = test_vals(Transport::WireGuard);
+        vals.endpoint = EndpointModel::from_transport_profile(Transport::WireGuard, true, "");
+        let json = mihomo_format("1.2.3.4", "test", &vals);
+        assert!(json.contains(r#""type": "wireguard""#));
+        assert!(json.contains(r#""private-key": "wireguard-private-key""#));
+        assert!(json.contains(r#""public-key": "wireguard-public-key""#));
+        assert!(json.contains(r#""allowed-ips""#));
     }
 
     #[test]

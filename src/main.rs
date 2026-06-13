@@ -5,6 +5,7 @@ use tracing::{error, info};
 use wrongsv_server::Config;
 
 mod client_config;
+mod protocol_model;
 
 #[derive(Debug, ValueEnum, Clone, Copy, PartialEq)]
 #[allow(clippy::enum_variant_names)]
@@ -30,6 +31,12 @@ enum Transport {
     /// XHTTP (SplitHTTP) carrier
     #[clap(name = "xhttp")]
     Xhttp,
+    /// Meek request transport
+    #[clap(name = "meek")]
+    Meek,
+    /// Google Docs Viewer request transport
+    #[clap(name = "gdocsviewer")]
+    GdocsViewer,
     /// QUIC carrier
     #[clap(name = "quic")]
     Quic,
@@ -45,6 +52,9 @@ enum Transport {
     /// VMess AEAD (AES-128-GCM encrypted proxy)
     #[clap(name = "vmess")]
     Vmess,
+    /// WireGuard tunnel service
+    #[clap(name = "wireguard")]
+    WireGuard,
 }
 
 #[derive(ValueEnum, Clone, Copy, PartialEq)]
@@ -133,7 +143,7 @@ struct Cli {
     #[arg(long, default_value = "wrongsv")]
     client_name: String,
 
-    /// Override transport type detection (reality, anytls, tls, raw, ws, httpupgrade, grpc, xhttp, quic, kcp, webtransport, shadowtls, vmess)
+    /// Override profile detection (reality, anytls, tls, raw, ws, httpupgrade, grpc, xhttp, meek, gdocsviewer, quic, kcp, webtransport, shadowtls, vmess, wireguard)
     #[arg(long)]
     transport: Option<Transport>,
 
