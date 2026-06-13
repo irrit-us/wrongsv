@@ -15,6 +15,16 @@ use crate::config::GrpcServerConfig;
 
 use super::*;
 
+fn is_graceful_h2_stream_end(error: &h2::Error) -> bool {
+    matches!(
+        error.reason(),
+        Some(reason)
+            if reason == h2::Reason::CANCEL
+                || reason == h2::Reason::NO_ERROR
+                || reason == h2::Reason::STREAM_CLOSED
+    )
+}
+
 // ── Config ────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -332,6 +342,7 @@ async fn drive_incoming(
                     }
                 }
             }
+            Some(Err(e)) if is_graceful_h2_stream_end(&e) => return Ok(()),
             Some(Err(e)) => return Err(format!("h2 stream error: {e}").into()),
             None => {
                 if !buf.is_empty() {
@@ -352,8 +363,11 @@ async fn drive_outgoing(
         match outgoing_rx.recv().await {
             Some(data) => {
                 let frame = wrongsv_grpc::encode_hunk_frame(&data);
-                send.send_data(frame, false)
-                    .map_err(|e| format!("h2 send data: {e}"))?;
+                match send.send_data(frame, false) {
+                    Ok(()) => {}
+                    Err(e) if is_graceful_h2_stream_end(&e) => return Ok(()),
+                    Err(e) => return Err(format!("h2 send data: {e}").into()),
+                }
             }
             None => {
                 // Channel closed — relay finished

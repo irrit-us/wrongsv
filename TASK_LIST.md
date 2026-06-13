@@ -156,7 +156,7 @@ Executed matrices:
 - `results/clash-verge-matrix`
   covered: VLESS raw TCP, WebSocket, HTTPUpgrade, Shadowsocks AEAD, Shadowsocks 2022, Trojan TLS
   confirmed defect: VMess standard interop
-  newly surfaced defect: Mihomo gRPC interop
+  newly surfaced defect: Mihomo gRPC interop (resolved later, see below)
 - `results/singbox-matrix-2` + `results/singbox-quic-check-2`
   covered: VLESS REALITY Vision, HTTPUpgrade, QUIC, Shadowsocks 2022, Trojan TLS
   confirmed defect: VMess standard interop
@@ -164,22 +164,25 @@ Executed matrices:
 - `results/xray-matrix`
   covered: VLESS REALITY Vision, HTTPUpgrade, Shadowsocks 2022
   confirmed defect: VMess standard interop
-  newly surfaced defect: xray-core gRPC interop instability
+  newly surfaced defect: xray-core gRPC interop instability (resolved later, see below)
   harness gap: latest xray 26.5.9 mKCP config migration breaks our current KCP runtime builder
 - `results/v2ray-matrix-check-2` + `results/v2ray-extra-check`
   covered: VLESS raw TCP, WebSocket, Shadowsocks AEAD
   confirmed defect: VMess standard interop
-  newly surfaced defect: V2Fly gRPC interop instability
+  newly surfaced defect: V2Fly gRPC interop instability (resolved later, see below)
   client-side note: tested V2Ray 5.49.0 does not accept `httpupgrade` as a transport keyword, so
   it was removed from the runnable capability set
 
 New server-side defects recorded from client-capability sweeps:
 
-- `server.mihomo_grpc_interop`
+- ~~`server.mihomo_grpc_interop`~~ resolved later on 2026-06-13 by graceful h2 stream-reset
+  handling on reused gRPC connections
 - ~~`server.xray_xhttp_interop`~~ resolved later on 2026-06-13 by adding plaintext HTTP/1.1
   stream-one support to wrongsv's XHTTP server
-- `server.xray_grpc_interop`
-- `server.v2ray_grpc_interop`
+- ~~`server.xray_grpc_interop`~~ resolved later on 2026-06-13 by graceful h2 stream-reset
+  handling on reused gRPC connections
+- ~~`server.v2ray_grpc_interop`~~ resolved later on 2026-06-13 by graceful h2 stream-reset
+  handling on reused gRPC connections
 - `server.vmess_standard_interop`
 
 Non-server gaps identified during the sweep:
@@ -204,6 +207,23 @@ Non-server gaps identified during the sweep:
   not fully clean in external runs (`Empty reply from server` / stream reset
   after some successful requests), so those defects remain open despite the
   server-side improvement.
+
+### 2026-06-13 — gRPC interop defects resolved across Mihomo / xray-core / V2Fly
+
+- Root cause of the remaining gRPC failures: wrongsv still treated graceful
+  `RST_STREAM(CANCEL/NO_ERROR/STREAM_CLOSED)` on completed h2 streams as fatal,
+  which tore down the shared gRPC connection after otherwise successful
+  requests.
+- Hardened both gRPC and XHTTP h2 stream drivers so graceful client-side stream
+  cancellation is treated as normal EOF instead of a connection error.
+- External rechecks after that change:
+  `wrongsv-external-tests/results/clash-verge-grpc-recheck-3`,
+  `wrongsv-external-tests/results/xray-grpc-recheck-6`, and
+  `wrongsv-external-tests/results/v2ray-grpc-recheck-4` all pass compatibility
+  probes and sustained traffic while also reporting per-user metrics deltas.
+- Remaining caveat: xray-core and V2Ray/V2Fly still show materially higher
+  latency on gRPC than Mihomo in these local runs, but the earlier
+  empty-reply/follow-on-request interop defect is no longer reproducible.
 
 ### 2026-06-13 — XHTTP still fails real-client interop
 
