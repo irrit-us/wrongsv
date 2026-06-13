@@ -7,7 +7,7 @@ use std::time::Duration;
 use tokio::sync::mpsc as tokio_mpsc;
 
 use http::StatusCode;
-use tracing::{debug, error, trace};
+use tracing::{debug, trace};
 use wrongsv_protocol::{RequestCommand, RequestHeader};
 use wrongsv_vless::MemoryValidator;
 
@@ -60,42 +60,19 @@ pub(crate) struct GrpcStream {
     pending: Vec<u8>,
     outgoing_tx: tokio_mpsc::Sender<Vec<u8>>,
     eof: bool,
-    _thread: std::thread::JoinHandle<()>,
 }
 
 impl GrpcStream {
-    pub fn accept(
-        tcp: TcpStream,
-        peer: std::net::SocketAddr,
-        config: &GrpcConfig,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let service_path = format!("/{}/Tun", config.service_name);
-        let (incoming_tx, incoming_rx) = mpsc::sync_channel::<Vec<u8>>(32);
-        let (outgoing_tx, outgoing_rx) = tokio_mpsc::channel::<Vec<u8>>(256);
-
-        let svc = service_path;
-        let thread = std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_all()
-                .build()
-                .expect("grpc tokio runtime");
-            rt.block_on(async move {
-                if let Err(e) =
-                    drive_grpc_connection(tcp, peer, &svc, incoming_tx, outgoing_rx).await
-                {
-                    error!("{peer} gRPC connection error: {e}");
-                }
-            });
-        });
-
-        Ok(GrpcStream {
+    fn from_channels(
+        incoming_rx: Receiver<Vec<u8>>,
+        outgoing_tx: tokio_mpsc::Sender<Vec<u8>>,
+    ) -> Self {
+        GrpcStream {
             incoming_rx,
             pending: Vec::new(),
             outgoing_tx,
             eof: false,
-            _thread: thread,
-        })
+        }
     }
 }
 
@@ -156,8 +133,8 @@ async fn drive_grpc_connection(
     tcp: TcpStream,
     peer: std::net::SocketAddr,
     service_path: &str,
-    incoming_tx: mpsc::SyncSender<Vec<u8>>,
-    outgoing_rx: tokio_mpsc::Receiver<Vec<u8>>,
+    validator: Arc<MemoryValidator>,
+    kyber_sk: Option<[u8; 64]>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tcp.set_nonblocking(true)?;
     let tcp = tokio::net::TcpStream::from_std(tcp)?;
@@ -170,83 +147,39 @@ async fn drive_grpc_connection(
         .map_err(|e| format!("h2 handshake: {e}"))?;
     trace!("{peer} HTTP/2 handshake done");
 
-    // Accept the gRPC request (h2 0.4: accept() -> Option<Result<...>>)
-    let (request, mut respond) = match conn.accept().await {
-        Some(Ok(r)) => r,
-        Some(Err(e)) => return Err(format!("h2 accept: {e}").into()),
-        None => return Err("h2: connection closed before request".into()),
-    };
-
-    let (parts, body) = request.into_parts();
-
-    if parts.method != http::Method::POST {
-        reject_grpc(respond);
-        // Drive the connection briefly to flush the rejection response.
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            drive_conn_to_close(&mut conn),
-        )
-        .await;
-        return Ok(());
-    }
-    if parts.uri.path() != service_path {
-        debug!(
-            "{peer} gRPC path mismatch: expected {service_path}, got {}",
-            parts.uri.path()
-        );
-        reject_grpc(respond);
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            drive_conn_to_close(&mut conn),
-        )
-        .await;
-        return Ok(());
-    }
-
-    trace!("{peer} gRPC stream accepted at {service_path}");
-
-    // Spawn connection driver for the accepted stream.
-    // Must store the handle — the connection must be polled to flush
-    // response DATA frames, and spawned tasks are cancelled when block_on
-    // returns.  We drive it until the end.
+    let (request_tx, mut request_rx) = tokio_mpsc::channel(32);
     let conn_handle = tokio::spawn(async move {
-        while let Some(Ok((_req, respond))) = conn.accept().await {
-            reject_grpc(respond);
+        loop {
+            match conn.accept().await {
+                Some(Ok(stream)) => {
+                    if request_tx.send(Ok(stream)).await.is_err() {
+                        break;
+                    }
+                }
+                Some(Err(e)) => {
+                    let _ = request_tx.send(Err(format!("h2 accept: {e}"))).await;
+                    break;
+                }
+                None => break,
+            }
         }
     });
 
-    // Let the connection driver start polling before we queue the response.
-    tokio::task::yield_now().await;
-
-    // Send 200 response with gRPC headers
-    let resp = http::Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/grpc")
-        .body(())
-        .unwrap();
-    let mut send = respond
-        .send_response(resp, false)
-        .map_err(|e| format!("send response: {e}"))?;
-
-    // Spawn outgoing task
-    let outgoing_handle =
-        tokio::spawn(async move { drive_outgoing(&mut send, outgoing_rx, peer).await });
-
-    // Drive incoming on current task
-    let incoming_result = drive_incoming(body, &incoming_tx).await;
-
-    // Wait for the outgoing task to finish flushing all data.
-    match outgoing_handle.await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => error!("{peer} gRPC outgoing error: {e}"),
-        Err(e) => error!("{peer} gRPC outgoing panic: {e}"),
+    while let Some(item) = request_rx.recv().await {
+        let (request, respond) = item.map_err(|e| format!("gRPC connection error: {e}"))?;
+        handle_grpc_request_stream(
+            request,
+            respond,
+            peer,
+            service_path,
+            Arc::clone(&validator),
+            kyber_sk,
+        )
+        .await?;
     }
 
-    // Give the connection driver a moment to flush the final frames before
-    // block_on returns and cancels spawned tasks.
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(3), conn_handle).await;
-
-    incoming_result
+    let _ = conn_handle.await;
+    Ok(())
 }
 
 fn reject_grpc(mut respond: h2::server::SendResponse<bytes::Bytes>) {
@@ -257,14 +190,64 @@ fn reject_grpc(mut respond: h2::server::SendResponse<bytes::Bytes>) {
     let _ = respond.send_response(resp, true);
 }
 
-/// Drive the server connection until it closes, rejecting any extra requests.
-/// Used after sending a rejection response to ensure the client receives it.
-async fn drive_conn_to_close(
-    conn: &mut h2::server::Connection<tokio::net::TcpStream, bytes::Bytes>,
-) {
-    while let Some(Ok((_req, respond))) = conn.accept().await {
+async fn handle_grpc_request_stream(
+    request: http::Request<h2::RecvStream>,
+    mut respond: h2::server::SendResponse<bytes::Bytes>,
+    peer: std::net::SocketAddr,
+    service_path: &str,
+    validator: Arc<MemoryValidator>,
+    kyber_sk: Option<[u8; 64]>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (parts, body) = request.into_parts();
+
+    if parts.method != http::Method::POST {
         reject_grpc(respond);
+        return Ok(());
     }
+    if parts.uri.path() != service_path {
+        debug!(
+            "{peer} gRPC path mismatch: expected {service_path}, got {}",
+            parts.uri.path()
+        );
+        reject_grpc(respond);
+        return Ok(());
+    }
+
+    trace!("{peer} gRPC stream accepted at {service_path}");
+
+    let resp = http::Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/grpc")
+        .body(())
+        .unwrap();
+    let mut send = respond
+        .send_response(resp, false)
+        .map_err(|e| format!("send response: {e}"))?;
+
+    let (incoming_tx, incoming_rx) = mpsc::sync_channel::<Vec<u8>>(32);
+    let (outgoing_tx, outgoing_rx) = tokio_mpsc::channel::<Vec<u8>>(256);
+
+    let relay_handle = tokio::task::spawn_blocking(move || {
+        let mut grpc_stream = GrpcStream::from_channels(incoming_rx, outgoing_tx);
+        handle_vless_over_grpc(&mut grpc_stream, validator, kyber_sk, peer)
+            .map_err(|e| e.to_string())
+    });
+    let outgoing_handle =
+        tokio::spawn(async move { drive_outgoing(&mut send, outgoing_rx, peer).await });
+
+    let incoming_result = drive_incoming(body, &incoming_tx).await;
+    drop(incoming_tx);
+
+    let relay_result = relay_handle
+        .await
+        .map_err(|e| format!("gRPC relay panic: {e}"))?;
+    let outgoing_result = outgoing_handle
+        .await
+        .map_err(|e| format!("gRPC outgoing panic: {e}"))?;
+
+    outgoing_result?;
+    relay_result.map_err(|e| format!("gRPC relay: {e}"))?;
+    incoming_result
 }
 
 async fn drive_incoming(
@@ -347,9 +330,19 @@ pub(crate) fn handle_grpc_connection(
         }
         None => {
             stream.set_read_timeout(Some(Duration::from_secs(30)))?;
-            let mut grpc_stream =
-                GrpcStream::accept(stream, peer, grpc_config).map_err(|e| format!("gRPC: {e}"))?;
-            handle_vless_over_grpc(&mut grpc_stream, validator, kyber_sk, peer)
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .map_err(|e| format!("gRPC runtime: {e}"))?;
+            rt.block_on(drive_grpc_connection(
+                stream,
+                peer,
+                &format!("/{}/Tun", grpc_config.service_name),
+                validator,
+                kyber_sk,
+            ))
+            .map_err(|e| format!("gRPC: {e}").into())
         }
     }
 }

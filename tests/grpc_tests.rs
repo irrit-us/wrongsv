@@ -286,6 +286,82 @@ fn test_grpc_tcp_echo() {
     });
 }
 
+/// A single HTTP/2 gRPC connection should be able to carry more than one
+/// request stream. Real clients (mihomo/xray/v2ray) reuse the same h2
+/// connection for sequential proxy requests, so rejecting every stream after
+/// the first breaks compatibility even when the first request succeeds.
+#[test]
+fn test_grpc_multiple_streams_same_h2_connection() {
+    init_logging();
+    let port = pick_port();
+    let _guard = spawn_grpc_server(port, TEST_UUID, XRV, "GunService");
+    let echo_addr = spawn_tcp_echo_target();
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    rt.block_on(async {
+        let tcp = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}"))
+            .await
+            .unwrap();
+        tcp.set_nodelay(true).unwrap();
+
+        let (client, conn) = h2::client::handshake(tcp).await.unwrap();
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+
+        for payload in [b"grpc-stream-one".as_slice(), b"grpc-stream-two".as_slice()] {
+            let request = http::Request::builder()
+                .method(http::Method::POST)
+                .uri("https://grpc.local/GunService/Tun")
+                .header("content-type", "application/grpc")
+                .header("te", "trailers")
+                .header("grpc-accept-encoding", "identity")
+                .body(())
+                .unwrap();
+
+            let mut client_ready = client.clone().ready().await.unwrap();
+            let (response, mut send_stream) = client_ready.send_request(request, false).unwrap();
+            let response = response.await.unwrap();
+            assert_eq!(response.status(), http::StatusCode::OK);
+            let mut body = response.into_body();
+
+            let vless_header = encode_vless_request(
+                TEST_UUID,
+                "127.0.0.1",
+                echo_addr.port(),
+                RequestCommand::Tcp,
+                "",
+            );
+            send_stream
+                .send_data(wrongsv_grpc::encode_hunk_frame(&vless_header), false)
+                .unwrap();
+
+            let vless_resp = read_grpc_frame(&mut body)
+                .await
+                .unwrap()
+                .expect("expected VLESS response");
+            assert!(!vless_resp.is_empty(), "VLESS response should not be empty");
+
+            send_stream
+                .send_data(wrongsv_grpc::encode_hunk_frame(payload), false)
+                .unwrap();
+            let echoed = read_grpc_frame(&mut body).await.unwrap();
+            assert_eq!(echoed.as_deref(), Some(payload));
+
+            send_stream.send_data(Bytes::new(), true).unwrap();
+            while let Some(frame) = body.data().await {
+                let _ = frame.unwrap();
+            }
+            let _ = body.trailers().await.unwrap();
+        }
+    });
+}
+
 /// Verify the server rejects a request to the wrong service path.
 #[test]
 fn test_grpc_rejects_wrong_path() {

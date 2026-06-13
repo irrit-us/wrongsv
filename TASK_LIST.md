@@ -184,6 +184,21 @@ Non-server gaps identified during the sweep:
 - sing-box / Hiddify AnyTLS, ShadowTLS, Hysteria2, and TUIC are still harness gaps even though
   wrongsv already implements those server-side protocols
 
+### 2026-06-13 — gRPC server path partly hardened
+
+- Investigated the gRPC matrix failures and confirmed at least one real
+  server-side bug: wrongsv's gRPC handler only serviced the first HTTP/2
+  request stream on a connection and rejected follow-on streams.
+- Refactored `crates/server/src/handler/grpc.rs` so one h2 connection can
+  process multiple gRPC request streams, and added
+  `test_grpc_multiple_streams_same_h2_connection` to lock that behavior in.
+- Result: the in-tree multi-stream gRPC regression test now passes, so the
+  old one-stream-only bug is fixed.
+- Residual reality: Mihomo / xray-core / V2Fly gRPC interoperability is still
+  not fully clean in external runs (`Empty reply from server` / stream reset
+  after some successful requests), so those defects remain open despite the
+  server-side improvement.
+
 ### 2026-06-13 — Metrics endpoint live
 
 - `wrongsv-metrics` crate built and tested (13 unit tests pass).
