@@ -1,10 +1,12 @@
 //! XHTTP (SplitHTTP) carrier integration tests.
 //!
-//! These tests verify HTTP/2 handshake + raw byte streaming + VLESS relay
-//! without external client binaries, by using the h2 crate as an HTTP/2
-//! client. XHTTP uses no protobuf framing — just raw bytes over HTTP/2.
+//! These tests verify both HTTP/2 and raw HTTP/1.1 stream-one behavior plus
+//! VLESS relay semantics without external client binaries. XHTTP uses no
+//! protobuf framing — just raw bytes over the HTTP body stream.
 
 use bytes::Bytes;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
 use wrongsv_protocol::RequestCommand;
 
 mod common;
@@ -75,6 +77,81 @@ async fn read_xhttp_data(
         Some(Err(e)) => Err(format!("h2 stream error: {e}").into()),
         None => Ok(None),
     }
+}
+
+fn write_http1_chunk(
+    stream: &mut TcpStream,
+    payload: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    write!(stream, "{:X}\r\n", payload.len())?;
+    stream.write_all(payload)?;
+    stream.write_all(b"\r\n")?;
+    stream.flush()?;
+    Ok(())
+}
+
+fn finish_http1_chunks(stream: &mut TcpStream) -> Result<(), Box<dyn std::error::Error>> {
+    stream.write_all(b"0\r\n\r\n")?;
+    stream.flush()?;
+    Ok(())
+}
+
+fn read_http1_response_status(
+    reader: &mut BufReader<TcpStream>,
+) -> Result<u16, Box<dyn std::error::Error>> {
+    let mut status_line = String::new();
+    reader.read_line(&mut status_line)?;
+    let mut parts = status_line.split_whitespace();
+    let version = parts.next().ok_or("missing HTTP version")?;
+    assert_eq!(version, "HTTP/1.1");
+    let status = parts
+        .next()
+        .ok_or("missing HTTP status")?
+        .parse::<u16>()?;
+
+    loop {
+        let mut header = String::new();
+        reader.read_line(&mut header)?;
+        if header == "\r\n" || header.is_empty() {
+            break;
+        }
+    }
+
+    Ok(status)
+}
+
+fn read_http1_chunk(
+    reader: &mut BufReader<TcpStream>,
+) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
+    let mut len_line = String::new();
+    reader.read_line(&mut len_line)?;
+    if len_line.is_empty() {
+        return Err("unexpected EOF while reading chunk size".into());
+    }
+
+    let chunk_len = len_line
+        .trim()
+        .split(';')
+        .next()
+        .ok_or("missing chunk length")?;
+    let chunk_len = usize::from_str_radix(chunk_len, 16)?;
+    if chunk_len == 0 {
+        loop {
+            let mut trailer = String::new();
+            reader.read_line(&mut trailer)?;
+            if trailer == "\r\n" || trailer.is_empty() {
+                break;
+            }
+        }
+        return Ok(None);
+    }
+
+    let mut data = vec![0u8; chunk_len];
+    reader.read_exact(&mut data)?;
+    let mut crlf = [0u8; 2];
+    reader.read_exact(&mut crlf)?;
+    assert_eq!(&crlf, b"\r\n");
+    Ok(Some(data))
 }
 
 // ── tests ──────────────────────────────────────────────────────────────
@@ -415,6 +492,61 @@ fn test_xhttp_tcp_echo() {
         // End the stream.
         send_stream.send_data(Bytes::new(), true).unwrap();
     });
+}
+
+/// Full TCP echo through the HTTP/1.1 stream-one XHTTP path used by xray-core.
+#[test]
+fn test_xhttp_http1_chunked_tcp_echo() {
+    init_logging();
+    let port = pick_port();
+    let _guard = spawn_xhttp_server(port, TEST_UUID, XRV, "/xhttp");
+    let echo_addr = spawn_tcp_echo_target();
+
+    let mut writer = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+    writer.set_nodelay(true).unwrap();
+    let reader_stream = writer.try_clone().unwrap();
+    let mut reader = BufReader::new(reader_stream);
+
+    writer
+        .write_all(
+            b"POST /xhttp HTTP/1.1\r\n\
+Host: xhttp.local\r\n\
+Transfer-Encoding: chunked\r\n\
+Content-Type: application/grpc\r\n\
+\r\n",
+        )
+        .unwrap();
+
+    let vless_header = encode_vless_request(
+        TEST_UUID,
+        "127.0.0.1",
+        echo_addr.port(),
+        RequestCommand::Tcp,
+        "",
+    );
+    write_http1_chunk(&mut writer, &vless_header).unwrap();
+
+    let status = read_http1_response_status(&mut reader).unwrap();
+    assert_eq!(status, http::StatusCode::OK.as_u16());
+
+    let vless_resp = read_http1_chunk(&mut reader)
+        .unwrap()
+        .expect("expected VLESS response");
+    assert!(!vless_resp.is_empty(), "VLESS response should not be empty");
+
+    let payload = b"hello XHTTP HTTP/1.1 chunked echo";
+    write_http1_chunk(&mut writer, payload).unwrap();
+
+    let echoed = read_http1_chunk(&mut reader)
+        .unwrap()
+        .expect("expected echoed payload");
+    assert_eq!(echoed, payload);
+
+    finish_http1_chunks(&mut writer).unwrap();
+    assert!(
+        read_http1_chunk(&mut reader).unwrap().is_none(),
+        "response should terminate with a zero chunk"
+    );
 }
 
 /// Verify host validation rejects mismatched hosts.

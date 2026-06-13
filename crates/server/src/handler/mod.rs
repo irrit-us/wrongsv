@@ -644,9 +644,9 @@ impl InboundServer {
                             } else if let Some(ref hc) = huc {
                                 handle_httpupgrade_connection(stream, v, kyber_sk, hc, m)
                             } else if let Some(ref gc) = gc {
-                                handle_grpc_connection(stream, v, kyber_sk, gc)
+                                handle_grpc_connection(stream, v, kyber_sk, gc, m)
                             } else if let Some(ref xc) = xc {
-                                handle_xhttp_connection(stream, v, kyber_sk, xc)
+                                handle_xhttp_connection(stream, v, kyber_sk, xc, m)
                             } else if hysteria2_enabled {
                                 Err(
                                     "Hysteria2 inbound uses QUIC and does not accept TCP sockets"

@@ -15,6 +15,9 @@ use crate::config::XhttpServerConfig;
 
 use super::*;
 
+const MAX_XHTTP_HEADER_SIZE: usize = 16 * 1024;
+const H2_PREFACE_PREFIX: &[u8; 3] = b"PRI";
+
 // ── Config ────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -50,6 +53,457 @@ pub(crate) fn parse_xhttp_config(xc: &XhttpServerConfig) -> Result<XhttpConfig, 
         tls_config,
         tls_dest,
     })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum XhttpWireProtocol {
+    Http1,
+    Http2,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Http1BodyKind {
+    Chunked,
+    ContentLength(usize),
+    UntilEof,
+}
+
+#[derive(Debug)]
+struct Http1XhttpRequest {
+    path: String,
+    body_kind: Http1BodyKind,
+}
+
+struct PrefixedReader<R> {
+    prefix: Vec<u8>,
+    offset: usize,
+    inner: R,
+}
+
+impl<R> PrefixedReader<R> {
+    fn new(prefix: Vec<u8>, inner: R) -> Self {
+        Self {
+            prefix,
+            offset: 0,
+            inner,
+        }
+    }
+}
+
+impl<R: Read> Read for PrefixedReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.offset < self.prefix.len() {
+            let available = self.prefix.len() - self.offset;
+            let n = available.min(buf.len());
+            buf[..n].copy_from_slice(&self.prefix[self.offset..self.offset + n]);
+            self.offset += n;
+            return Ok(n);
+        }
+        self.inner.read(buf)
+    }
+}
+
+struct Http1BodyReader<R> {
+    inner: R,
+    mode: Http1BodyKind,
+    chunk_remaining: usize,
+    finished: bool,
+}
+
+impl<R> Http1BodyReader<R> {
+    fn new(inner: R, mode: Http1BodyKind) -> Self {
+        Self {
+            inner,
+            mode,
+            chunk_remaining: 0,
+            finished: false,
+        }
+    }
+}
+
+impl<R: Read> Http1BodyReader<R> {
+    fn read_chunk_size(&mut self) -> io::Result<Option<usize>> {
+        let mut line = Vec::new();
+        if try_read_http1_line(&mut self.inner, &mut line)?.is_none() {
+            return Ok(None);
+        }
+        let line = std::str::from_utf8(&line)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid chunk-size line"))?;
+        let chunk_len = line
+            .trim()
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim();
+        if chunk_len.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "missing chunk size",
+            ));
+        }
+        usize::from_str_radix(chunk_len, 16)
+            .map(Some)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid chunk size"))
+    }
+
+    fn consume_crlf(&mut self) -> io::Result<()> {
+        let mut tail = [0u8; 2];
+        self.inner.read_exact(&mut tail)?;
+        if tail != *b"\r\n" {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "missing chunk terminator",
+            ));
+        }
+        Ok(())
+    }
+
+    fn consume_trailers(&mut self) -> io::Result<()> {
+        let mut line = Vec::new();
+        loop {
+            read_http1_line(&mut self.inner, &mut line)?;
+            if line == b"\r\n" {
+                return Ok(());
+            }
+        }
+    }
+}
+
+impl<R: Read> Read for Http1BodyReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.finished {
+            return Ok(0);
+        }
+        match self.mode {
+            Http1BodyKind::ContentLength(ref mut remaining) => {
+                if *remaining == 0 {
+                    self.finished = true;
+                    return Ok(0);
+                }
+                let limit = (*remaining).min(buf.len());
+                let n = self.inner.read(&mut buf[..limit])?;
+                if n == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "connection closed during request body",
+                    ));
+                }
+                *remaining -= n;
+                if *remaining == 0 {
+                    self.finished = true;
+                }
+                Ok(n)
+            }
+            Http1BodyKind::UntilEof => {
+                let n = self.inner.read(buf)?;
+                if n == 0 {
+                    self.finished = true;
+                }
+                Ok(n)
+            }
+            Http1BodyKind::Chunked => {
+                if self.chunk_remaining == 0 {
+                    let Some(chunk_size) = self.read_chunk_size()? else {
+                        self.finished = true;
+                        return Ok(0);
+                    };
+                    if chunk_size == 0 {
+                        self.consume_trailers()?;
+                        self.finished = true;
+                        return Ok(0);
+                    }
+                    self.chunk_remaining = chunk_size;
+                }
+
+                let limit = self.chunk_remaining.min(buf.len());
+                let n = self.inner.read(&mut buf[..limit])?;
+                if n == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "connection closed during chunked request body",
+                    ));
+                }
+                self.chunk_remaining -= n;
+                if self.chunk_remaining == 0 {
+                    self.consume_crlf()?;
+                }
+                Ok(n)
+            }
+        }
+    }
+}
+
+struct Http1ChunkedWriter {
+    stream: TcpStream,
+    finished: bool,
+}
+
+impl Http1ChunkedWriter {
+    fn new(stream: TcpStream) -> Self {
+        Self {
+            stream,
+            finished: false,
+        }
+    }
+
+    fn finish(&mut self) -> io::Result<()> {
+        if self.finished {
+            return Ok(());
+        }
+        self.stream.write_all(b"0\r\n\r\n")?;
+        self.stream.flush()?;
+        self.finished = true;
+        Ok(())
+    }
+}
+
+impl Write for Http1ChunkedWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if self.finished {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "XHTTP HTTP/1.1 response already finished",
+            ));
+        }
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        self.stream
+            .write_all(format!("{:X}\r\n", buf.len()).as_bytes())?;
+        self.stream.write_all(buf)?;
+        self.stream.write_all(b"\r\n")?;
+        self.stream.flush()?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.stream.flush()
+    }
+}
+
+fn read_http1_line<R: Read>(reader: &mut R, buf: &mut Vec<u8>) -> io::Result<()> {
+    match try_read_http1_line(reader, buf)? {
+        Some(()) => Ok(()),
+        None => Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "connection closed while reading HTTP/1.1 line",
+        )),
+    }
+}
+
+fn try_read_http1_line<R: Read>(reader: &mut R, buf: &mut Vec<u8>) -> io::Result<Option<()>> {
+    buf.clear();
+    let mut byte = [0u8; 1];
+    loop {
+        let n = reader.read(&mut byte)?;
+        if n == 0 {
+            return if buf.is_empty() {
+                Ok(None)
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "connection closed while reading HTTP/1.1 line",
+                ))
+            };
+        }
+        buf.push(byte[0]);
+        if buf.len() > MAX_XHTTP_HEADER_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "HTTP/1.1 line too large",
+            ));
+        }
+        if byte[0] == b'\n' {
+            return Ok(Some(()));
+        }
+    }
+}
+
+fn normalize_xhttp_host(value: &str) -> String {
+    let value = value.trim();
+    if let Some(rest) = value.strip_prefix('[')
+        && let Some(end) = rest.find(']')
+    {
+        return rest[..end].to_ascii_lowercase();
+    }
+    value
+        .split(':')
+        .next()
+        .unwrap_or(value)
+        .to_ascii_lowercase()
+}
+
+fn xhttp_host_matches(expected: &str, actual: &str) -> bool {
+    normalize_xhttp_host(expected) == normalize_xhttp_host(actual)
+}
+
+fn detect_xhttp_wire_protocol(stream: &TcpStream) -> io::Result<XhttpWireProtocol> {
+    let mut peek = [0u8; H2_PREFACE_PREFIX.len()];
+    let start = std::time::Instant::now();
+    loop {
+        match stream.peek(&mut peek) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "connection closed before XHTTP preface",
+                ));
+            }
+            Ok(n) if n >= H2_PREFACE_PREFIX.len() => {
+                return if &peek[..H2_PREFACE_PREFIX.len()] == H2_PREFACE_PREFIX {
+                    Ok(XhttpWireProtocol::Http2)
+                } else {
+                    Ok(XhttpWireProtocol::Http1)
+                };
+            }
+            Ok(_) => {
+                if start.elapsed() >= Duration::from_secs(30) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "timed out waiting for XHTTP preface",
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                if start.elapsed() >= Duration::from_secs(30) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "timed out waiting for XHTTP preface",
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+fn parse_xhttp_http1_request(
+    buf: &[u8],
+    path: &str,
+    host: Option<&str>,
+) -> Result<(Http1XhttpRequest, Vec<u8>), String> {
+    let header_end = buf
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| "incomplete HTTP/1.1 headers".to_string())?;
+    if header_end + 4 > MAX_XHTTP_HEADER_SIZE {
+        return Err(format!("header too large (>{MAX_XHTTP_HEADER_SIZE}B)"));
+    }
+
+    let headers_buf = &buf[..header_end];
+    let pipelined = buf[header_end + 4..].to_vec();
+    let headers_str =
+        std::str::from_utf8(headers_buf).map_err(|_| "invalid HTTP/1.1 headers".to_string())?;
+    let mut lines = headers_str.lines();
+    let request_line = lines
+        .next()
+        .ok_or_else(|| "missing HTTP/1.1 request line".to_string())?;
+
+    let mut parts = request_line.split_whitespace();
+    let method = parts
+        .next()
+        .ok_or_else(|| "invalid HTTP/1.1 request line".to_string())?;
+    if method != "POST" {
+        return Err(format!("unsupported HTTP/1.1 method: {method}"));
+    }
+    let raw_path = parts
+        .next()
+        .ok_or_else(|| "invalid HTTP/1.1 request line".to_string())?;
+    let version = parts
+        .next()
+        .ok_or_else(|| "invalid HTTP/1.1 request line".to_string())?;
+    if !version.starts_with("HTTP/1.") {
+        return Err(format!("unsupported HTTP version: {version}"));
+    }
+
+    let request_path = raw_path.split('?').next().unwrap_or(raw_path);
+    let normalized_path = if request_path.starts_with('/') {
+        request_path.to_string()
+    } else {
+        format!("/{request_path}")
+    };
+    if !normalized_path.starts_with(path) {
+        return Err(format!(
+            "path mismatch: expected prefix {path}, got {normalized_path}"
+        ));
+    }
+
+    let mut request_host: Option<String> = None;
+    let mut has_chunked_encoding = false;
+    let mut content_length = None;
+
+    for line in lines {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim();
+        match key.to_ascii_lowercase().as_str() {
+            "host" => request_host = Some(normalize_xhttp_host(value)),
+            "transfer-encoding" => {
+                has_chunked_encoding = value
+                    .split(',')
+                    .any(|token| token.trim().eq_ignore_ascii_case("chunked"));
+            }
+            "content-length" => {
+                let parsed = value
+                    .parse::<usize>()
+                    .map_err(|_| format!("invalid content-length: {value}"))?;
+                content_length = Some(parsed);
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(expected_host) = host {
+        let got = request_host.as_deref().unwrap_or("");
+        if !xhttp_host_matches(expected_host, got) {
+            return Err(format!("host mismatch: expected {expected_host}, got {got}"));
+        }
+    }
+
+    let body_kind = if has_chunked_encoding {
+        Http1BodyKind::Chunked
+    } else if let Some(content_length) = content_length {
+        Http1BodyKind::ContentLength(content_length)
+    } else {
+        Http1BodyKind::UntilEof
+    };
+
+    Ok((
+        Http1XhttpRequest {
+            path: normalized_path,
+            body_kind,
+        },
+        pipelined,
+    ))
+}
+
+fn reject_xhttp_http1(stream: &mut TcpStream) {
+    let _ = stream.write_all(
+        b"HTTP/1.1 404 Not Found\r\n\
+          Connection: close\r\n\
+          Content-Length: 0\r\n\
+          \r\n",
+    );
+}
+
+fn write_xhttp_http1_response(stream: &mut TcpStream) -> io::Result<()> {
+    stream.write_all(
+        b"HTTP/1.1 200 OK\r\n\
+          X-Accel-Buffering: no\r\n\
+          Cache-Control: no-store\r\n\
+          Content-Type: text/event-stream\r\n\
+          Transfer-Encoding: chunked\r\n\
+          Connection: close\r\n\
+          \r\n",
+    )?;
+    stream.flush()
 }
 
 // ── XHTTP stream bridge ───────────────────────────────────────────────
@@ -204,6 +658,7 @@ async fn drive_xhttp_connection(
     host: Option<&str>,
     validator: Arc<MemoryValidator>,
     kyber_sk: Option<[u8; 64]>,
+    metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tcp.set_nonblocking(true)?;
     let tcp = tokio::net::TcpStream::from_std(tcp)?;
@@ -244,6 +699,7 @@ async fn drive_xhttp_connection(
             host,
             Arc::clone(&validator),
             kyber_sk,
+            Arc::clone(&metrics),
         )
         .await?;
     }
@@ -268,6 +724,7 @@ async fn handle_xhttp_request_stream(
     host: Option<&str>,
     validator: Arc<MemoryValidator>,
     kyber_sk: Option<[u8; 64]>,
+    metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (parts, body) = request.into_parts();
 
@@ -292,7 +749,7 @@ async fn handle_xhttp_request_stream(
             .get("host")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
-        if req_host != expected_host {
+        if !xhttp_host_matches(expected_host, req_host) {
             debug!("{peer} XHTTP host mismatch: expected {expected_host}, got {req_host}");
             reject_xhttp(respond);
             return Ok(());
@@ -314,7 +771,8 @@ async fn handle_xhttp_request_stream(
 
     let relay_handle = tokio::task::spawn_blocking(move || {
         let xhttp_stream = XhttpStream::from_channels(incoming_rx, outgoing_tx);
-        handle_vless_over_xhttp(xhttp_stream, validator, kyber_sk, peer).map_err(|e| e.to_string())
+        handle_vless_over_xhttp(xhttp_stream, validator, kyber_sk, peer, metrics)
+            .map_err(|e| e.to_string())
     });
 
     let outgoing_handle =
@@ -372,6 +830,95 @@ async fn drive_outgoing(
     }
 }
 
+fn drive_incoming_http1<R: Read>(
+    mut body: R,
+    incoming_tx: mpsc::SyncSender<Vec<u8>>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = body.read(&mut buf)?;
+        if n == 0 {
+            return Ok(());
+        }
+        if incoming_tx.send(buf[..n].to_vec()).is_err() {
+            return Ok(());
+        }
+    }
+}
+
+fn drive_outgoing_http1(
+    stream: TcpStream,
+    mut outgoing_rx: tokio_mpsc::Receiver<Vec<u8>>,
+    peer: std::net::SocketAddr,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut writer = Http1ChunkedWriter::new(stream);
+    while let Some(data) = outgoing_rx.blocking_recv() {
+        writer.write_all(&data)?;
+    }
+    writer.finish()?;
+    trace!("{peer} XHTTP/1.1 stream finished OK");
+    Ok(())
+}
+
+fn drive_xhttp_http1_connection(
+    mut stream: TcpStream,
+    peer: std::net::SocketAddr,
+    path: &str,
+    host: Option<&str>,
+    validator: Arc<MemoryValidator>,
+    kyber_sk: Option<[u8; 64]>,
+    metrics: Arc<wrongsv_metrics::Registry>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut header_buf = Vec::new();
+    stream_read_upgrade(&stream, &mut header_buf)?;
+    let (request, initial_body) = match parse_xhttp_http1_request(&header_buf, path, host) {
+        Ok(request) => request,
+        Err(e) => {
+            debug!("{peer} XHTTP/1.1 rejected: {e}");
+            reject_xhttp_http1(&mut stream);
+            return Ok(());
+        }
+    };
+
+    trace!("{peer} XHTTP/1.1 stream accepted at {}", request.path);
+    stream.set_read_timeout(None)?;
+    stream.set_nodelay(true)?;
+    let reader_stream = stream.try_clone()?;
+    write_xhttp_http1_response(&mut stream)?;
+
+    let body_reader = Http1BodyReader::new(PrefixedReader::new(initial_body, reader_stream), request.body_kind);
+    let (incoming_tx, incoming_rx) = mpsc::sync_channel::<Vec<u8>>(64);
+    let (outgoing_tx, outgoing_rx) = tokio_mpsc::channel::<Vec<u8>>(256);
+
+    let incoming_handle = std::thread::spawn(move || {
+        drive_incoming_http1(body_reader, incoming_tx).map_err(|e| e.to_string())
+    });
+    let outgoing_handle = std::thread::spawn(move || {
+        drive_outgoing_http1(stream, outgoing_rx, peer).map_err(|e| e.to_string())
+    });
+
+    let relay_result =
+        handle_vless_over_xhttp(
+            XhttpStream::from_channels(incoming_rx, outgoing_tx),
+            validator,
+            kyber_sk,
+            peer,
+            metrics,
+        )
+        .map_err(|e| e.to_string());
+    let incoming_result = incoming_handle
+        .join()
+        .map_err(|_| "XHTTP/1.1 incoming thread panicked".to_string())?;
+    let outgoing_result = outgoing_handle
+        .join()
+        .map_err(|_| "XHTTP/1.1 outgoing thread panicked".to_string())?;
+
+    relay_result.map_err(|e| format!("XHTTP/1.1 relay: {e}"))?;
+    incoming_result.map_err(|e| format!("XHTTP/1.1 incoming: {e}"))?;
+    outgoing_result.map_err(|e| format!("XHTTP/1.1 outgoing: {e}"))?;
+    Ok(())
+}
+
 // ── Connection handler (sync entry point) ─────────────────────────────
 
 pub(crate) fn handle_xhttp_connection(
@@ -379,6 +926,7 @@ pub(crate) fn handle_xhttp_connection(
     validator: Arc<MemoryValidator>,
     kyber_sk: Option<[u8; 64]>,
     xhttp_config: &XhttpConfig,
+    metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let peer = stream.peer_addr()?;
     trace!("{peer} XHTTP connection");
@@ -396,24 +944,40 @@ pub(crate) fn handle_xhttp_connection(
                     tls_config: None,
                     ..xhttp_config.clone()
                 },
+                metrics,
             )
         }
         None => {
             stream.set_read_timeout(Some(Duration::from_secs(30)))?;
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_all()
-                .build()
-                .map_err(|e| format!("XHTTP runtime: {e}"))?;
-            rt.block_on(drive_xhttp_connection(
-                stream,
-                peer,
-                &xhttp_config.path,
-                xhttp_config.host.as_deref(),
-                validator,
-                kyber_sk,
-            ))
-            .map_err(|e| format!("XHTTP: {e}").into())
+            match detect_xhttp_wire_protocol(&stream)? {
+                XhttpWireProtocol::Http2 => {
+                    let rt = tokio::runtime::Builder::new_multi_thread()
+                        .worker_threads(2)
+                        .enable_all()
+                        .build()
+                        .map_err(|e| format!("XHTTP runtime: {e}"))?;
+                    rt.block_on(drive_xhttp_connection(
+                        stream,
+                        peer,
+                        &xhttp_config.path,
+                        xhttp_config.host.as_deref(),
+                        validator,
+                        kyber_sk,
+                        metrics,
+                    ))
+                    .map_err(|e| format!("XHTTP: {e}").into())
+                }
+                XhttpWireProtocol::Http1 => drive_xhttp_http1_connection(
+                    stream,
+                    peer,
+                    &xhttp_config.path,
+                    xhttp_config.host.as_deref(),
+                    validator,
+                    kyber_sk,
+                    metrics,
+                )
+                .map_err(|e| format!("XHTTP: {e}").into()),
+            }
         }
     }
 }
@@ -423,6 +987,7 @@ fn handle_vless_over_xhttp(
     validator: Arc<MemoryValidator>,
     kyber_sk: Option<[u8; 64]>,
     peer: std::net::SocketAddr,
+    metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut first = vec![0u8; 8192];
     let n = stream.read(&mut first)?;
@@ -448,6 +1013,8 @@ fn handle_vless_over_xhttp(
     );
     handle_kyber_addons(peer, &decoded, kyber_sk);
     validate_vless_command(request, use_vision)?;
+    let tap = wrongsv_metrics::MetricsTap::new(metrics, request.user.email.clone());
+    let _conn_guard = tap.track_connection();
 
     let resp_buf = response_header_buf(request)?;
     stream.write_all(&resp_buf)?;
@@ -456,7 +1023,7 @@ fn handle_vless_over_xhttp(
         if !account.udp {
             return Err("UDP not enabled for this user".into());
         }
-        relay_xhttp_udp(&mut stream, request, remaining_body)?;
+        relay_xhttp_udp(&mut stream, request, remaining_body, tap)?;
         debug!("{peer} XHTTP UDP relay finished");
         return Ok(());
     }
@@ -472,9 +1039,10 @@ fn handle_vless_over_xhttp(
             &decoded.user_sent_id,
             &account.testseed,
             remaining_body,
+            tap,
         )?;
     } else {
-        relay_xhttp_raw(stream, target, remaining_body)?;
+        relay_xhttp_raw(stream, target, remaining_body, tap)?;
     }
     debug!("{peer} XHTTP relay finished");
     Ok(())
@@ -486,14 +1054,18 @@ fn relay_xhttp_raw(
     client: XhttpStream,
     mut target: TcpStream,
     initial_data: Vec<u8>,
+    metrics: wrongsv_metrics::MetricsTap,
 ) -> Result<(), Box<dyn std::error::Error>> {
     target.set_nodelay(true)?;
     if !initial_data.is_empty() {
+        metrics.record_in(initial_data.len() as u64);
         target.write_all(&initial_data)?;
     }
     let (mut reader, mut writer) = client.split();
     let mut target_write = target.try_clone()?;
     let mut target_read = target;
+    let metrics_up = metrics.clone();
+    let metrics_down = metrics;
 
     let up = std::thread::spawn(move || {
         let mut buf = [0u8; 32768];
@@ -501,6 +1073,7 @@ fn relay_xhttp_raw(
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    metrics_up.record_in(n as u64);
                     if let Err(e) = target_write.write_all(&buf[..n]) {
                         debug!("XHTTP uplink write error: {e}");
                         break;
@@ -521,6 +1094,7 @@ fn relay_xhttp_raw(
             match target_read.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    metrics_down.record_out(n as u64);
                     if let Err(e) = writer.write_all(&buf[..n]) {
                         debug!("XHTTP downlink write error: {e}");
                         break;
@@ -545,6 +1119,7 @@ fn relay_xhttp_vision(
     user_sent_id: &[u8],
     testseed: &[u32],
     initial_data: Vec<u8>,
+    metrics: wrongsv_metrics::MetricsTap,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let up_seed = if testseed.len() >= 4 {
         testseed.to_vec()
@@ -562,6 +1137,7 @@ fn relay_xhttp_vision(
     if !initial_data.is_empty() {
         let unpadded = wrongsv_vless::vision::xtls_unpadding(&initial_data, &mut up_state, true);
         if !unpadded.is_empty() {
+            metrics.record_in(unpadded.len() as u64);
             target.write_all(&unpadded)?;
             target.set_read_timeout(Some(Duration::from_millis(10)))?;
         }
@@ -598,6 +1174,7 @@ fn relay_xhttp_vision(
                         down_user_uuid = w.user_uuid;
                     }
                     if !encoded.is_empty() {
+                        metrics.record_out(n as u64);
                         client.write_all(&encoded)?;
                     }
                     target.set_read_timeout(Some(Duration::from_millis(10)))?;
@@ -621,6 +1198,7 @@ fn relay_xhttp_vision(
                     let unpadded =
                         wrongsv_vless::vision::xtls_unpadding(&buf[..n], &mut up_state, true);
                     if !unpadded.is_empty() {
+                        metrics.record_in(unpadded.len() as u64);
                         target.write_all(&unpadded)?;
                         target.set_read_timeout(Some(Duration::from_millis(10)))?;
                     }
@@ -647,6 +1225,7 @@ fn relay_xhttp_udp(
     client: &mut XhttpStream,
     request: &RequestHeader,
     remaining: Vec<u8>,
+    metrics: wrongsv_metrics::MetricsTap,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::{Cursor, ErrorKind};
     use wrongsv_vless_encoding::{LengthPacketReader, LengthPacketWriter, PacketReadError};
@@ -663,6 +1242,7 @@ fn relay_xhttp_udp(
     if !remaining.is_empty() {
         let mut reader = LengthPacketReader::new(Cursor::new(&remaining));
         while let Ok(pkt) = reader.read_packet() {
+            metrics.record_in(pkt.len() as u64);
             socket.send(&pkt)?;
         }
     }
@@ -695,6 +1275,7 @@ fn relay_xhttp_udp(
 
         if let Some(pkts) = xhttp_data {
             for pkt in pkts {
+                metrics.record_in(pkt.len() as u64);
                 socket.send(&pkt)?;
             }
         }
@@ -702,6 +1283,7 @@ fn relay_xhttp_udp(
         match socket.recv(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
+                metrics.record_out(n as u64);
                 let mut packet = Vec::with_capacity(n + 2);
                 LengthPacketWriter::new(&mut packet).write_packet(&buf[..n])?;
                 client.write_all(&packet)?;
@@ -749,5 +1331,20 @@ mod tests {
         };
         let xhttp = parse_xhttp_config(&cfg).unwrap();
         assert_eq!(xhttp.host.as_deref(), Some("example.com"));
+    }
+
+    #[test]
+    fn parse_http1_chunked_request_with_host_port() {
+        let request = b"POST /xhttp HTTP/1.1\r\n\
+Host: Example.com:443\r\n\
+Transfer-Encoding: chunked\r\n\
+\r\n\
+4\r\n\
+test\r\n";
+        let (parsed, pipelined) =
+            parse_xhttp_http1_request(request, "/xhttp", Some("example.com")).unwrap();
+        assert_eq!(parsed.path, "/xhttp");
+        assert_eq!(parsed.body_kind, Http1BodyKind::Chunked);
+        assert_eq!(pipelined, b"4\r\ntest\r\n");
     }
 }

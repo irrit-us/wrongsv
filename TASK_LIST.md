@@ -176,7 +176,8 @@ Executed matrices:
 New server-side defects recorded from client-capability sweeps:
 
 - `server.mihomo_grpc_interop`
-- `server.xray_xhttp_interop`
+- ~~`server.xray_xhttp_interop`~~ resolved later on 2026-06-13 by adding plaintext HTTP/1.1
+  stream-one support to wrongsv's XHTTP server
 - `server.xray_grpc_interop`
 - `server.v2ray_grpc_interop`
 - `server.vmess_standard_interop`
@@ -215,6 +216,25 @@ Non-server gaps identified during the sweep:
   remaining XHTTP defect is now narrowed to Xray-family interoperability.
 - sing-box no longer stays in the server-defect bucket until we have a
   capability-grounded XHTTP config mapping for its current schema.
+
+### 2026-06-13 — xray-core XHTTP interop and carrier metrics fixed
+
+- wrongsv XHTTP now detects plaintext HTTP/1.1 `stream-one` requests alongside
+  h2/h2c, decodes chunked upload bodies, and streams chunked HTTP/1.1 responses
+  back to the client on the same connection.
+- Added in-tree regressions for the new carrier path and metrics coverage:
+  `test_xhttp_http1_chunked_tcp_echo`,
+  `metrics_count_bytes_per_user_through_xhttp_http1_relay`, and
+  `metrics_count_bytes_per_user_through_grpc_relay`.
+- Wired the shared `MetricsTap` into both XHTTP and gRPC carrier relays so the
+  metrics endpoint now reports per-user bytes and connection counts for those
+  transports too.
+- External recheck: `wrongsv-external-tests/results/xray-xhttp-check-7` now
+  shows `xray-core` `vless_xhttp` passing compatibility probes and sustained
+  traffic, with per-user metrics deltas for `user@example.com`.
+- Follow-up hardening: clean EOF at an HTTP/1.1 chunk boundary is now treated as
+  a normal XHTTP stream shutdown, which removed the earlier noisy
+  `connection closed while reading HTTP/1.1 line` warnings from the server log.
 
 ### 2026-06-13 — Longer-duration capability sweeps
 

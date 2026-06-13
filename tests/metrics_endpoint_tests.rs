@@ -121,6 +121,45 @@ fn spawn_echo_target() -> std::net::SocketAddr {
     addr
 }
 
+fn build_vless_request(
+    user_uuid: Uuid,
+    email: &str,
+    target_port: u16,
+    flow: &str,
+) -> (RequestHeader, Vec<u8>) {
+    let user = MemoryUser {
+        account: MemoryAccount {
+            id: ID::new(user_uuid),
+            flow: flow.into(),
+            encryption: String::new(),
+            udp: true,
+            xor_mode: 0,
+            seconds: 0,
+            padding: String::new(),
+            testpre: 0,
+            testseed: vec![],
+        },
+        email: email.into(),
+        level: 0,
+    };
+
+    let request = RequestHeader {
+        version: 0,
+        command: RequestCommand::Tcp,
+        address: Address::parse("127.0.0.1"),
+        port: wrongsv_net_types::Port(target_port),
+        user,
+    };
+    let addons = Addons {
+        flow: flow.into(),
+        ..Default::default()
+    };
+
+    let mut buf = bytes::BytesMut::new();
+    encoding::encode_request_header(&mut buf, &request, &addons).unwrap();
+    (request, buf.to_vec())
+}
+
 fn vless_connect(server_addr: &str, user_uuid: Uuid, email: &str, target_port: u16) -> TcpStream {
     let validator = Arc::new(MemoryValidator::new());
     let user = MemoryUser {
@@ -138,28 +177,14 @@ fn vless_connect(server_addr: &str, user_uuid: Uuid, email: &str, target_port: u
         email: email.into(),
         level: 0,
     };
-    validator.add(user.clone()).unwrap();
-
-    let request = RequestHeader {
-        version: 0,
-        command: RequestCommand::Tcp,
-        address: Address::parse("127.0.0.1"),
-        port: wrongsv_net_types::Port(target_port),
-        user,
-    };
-    let addons = Addons {
-        flow: String::new(),
-        ..Default::default()
-    };
-
-    let mut buf = bytes::BytesMut::new();
-    encoding::encode_request_header(&mut buf, &request, &addons).unwrap();
+    validator.add(user).unwrap();
+    let (request, encoded) = build_vless_request(user_uuid, email, target_port, "");
 
     let mut stream = TcpStream::connect(server_addr).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
-    stream.write_all(&buf).unwrap();
+    stream.write_all(&encoded).unwrap();
 
     // Read the server's response header so the caller can read raw bytes.
     let mut cursor_buf = [0u8; 256];
@@ -168,6 +193,90 @@ fn vless_connect(server_addr: &str, user_uuid: Uuid, email: &str, target_port: u
     encoding::decode_response_header(&mut cursor, &request).unwrap();
 
     stream
+}
+
+fn write_http1_chunk(stream: &mut TcpStream, payload: &[u8]) {
+    write!(stream, "{:X}\r\n", payload.len()).unwrap();
+    stream.write_all(payload).unwrap();
+    stream.write_all(b"\r\n").unwrap();
+    stream.flush().unwrap();
+}
+
+fn finish_http1_chunks(stream: &mut TcpStream) {
+    stream.write_all(b"0\r\n\r\n").unwrap();
+    stream.flush().unwrap();
+}
+
+fn read_http1_response_headers(reader: &mut std::io::BufReader<TcpStream>) -> u16 {
+    use std::io::BufRead;
+
+    let mut status_line = String::new();
+    reader.read_line(&mut status_line).unwrap();
+    let mut parts = status_line.split_whitespace();
+    assert_eq!(parts.next(), Some("HTTP/1.1"));
+    let status = parts.next().unwrap().parse::<u16>().unwrap();
+    loop {
+        let mut header = String::new();
+        reader.read_line(&mut header).unwrap();
+        if header == "\r\n" || header.is_empty() {
+            break;
+        }
+    }
+    status
+}
+
+fn read_http1_chunk(reader: &mut std::io::BufReader<TcpStream>) -> Option<Vec<u8>> {
+    use std::io::BufRead;
+
+    let mut len_line = String::new();
+    reader.read_line(&mut len_line).unwrap();
+    assert!(!len_line.is_empty(), "unexpected EOF while reading HTTP/1.1 chunk");
+    let chunk_len = usize::from_str_radix(
+        len_line.trim().split(';').next().unwrap_or_default(),
+        16,
+    )
+    .unwrap();
+    if chunk_len == 0 {
+        loop {
+            let mut trailer = String::new();
+            reader.read_line(&mut trailer).unwrap();
+            if trailer == "\r\n" || trailer.is_empty() {
+                break;
+            }
+        }
+        return None;
+    }
+    let mut data = vec![0u8; chunk_len];
+    reader.read_exact(&mut data).unwrap();
+    let mut crlf = [0u8; 2];
+    reader.read_exact(&mut crlf).unwrap();
+    assert_eq!(&crlf, b"\r\n");
+    Some(data)
+}
+
+async fn read_grpc_frame(
+    body: &mut h2::RecvStream,
+) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
+    let mut buf = bytes::BytesMut::new();
+
+    loop {
+        match body.data().await {
+            Some(Ok(data)) => {
+                buf.extend_from_slice(&data);
+                if let Some(payload) = wrongsv_grpc::decode_hunk_frame(&mut buf)? {
+                    return Ok(Some(payload));
+                }
+            }
+            Some(Err(e)) => return Err(format!("h2 stream error: {e}").into()),
+            None => {
+                if buf.is_empty() {
+                    return Ok(None);
+                }
+                return wrongsv_grpc::decode_hunk_frame(&mut buf)
+                    .map_err(|e| format!("decode trailing grpc frame: {e}").into());
+            }
+        }
+    }
 }
 
 #[test]
@@ -219,6 +328,196 @@ bind = "127.0.0.1"
     let want_out = format!(
         "wrongsv_user_bytes_out{{email=\"{email}\"}} {}",
         payload.len()
+    );
+    assert!(
+        response.contains(&want_in),
+        "missing {want_in}\n--- response ---\n{response}"
+    );
+    assert!(
+        response.contains(&want_out),
+        "missing {want_out}\n--- response ---\n{response}"
+    );
+}
+
+#[test]
+fn metrics_count_bytes_per_user_through_xhttp_http1_relay() {
+    use std::io::BufReader;
+
+    let listen = reserve_addr();
+    let metrics_addr = reserve_addr();
+    let port = metrics_addr
+        .split(':')
+        .next_back()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap();
+    let user_uuid = Uuid::new_v4();
+    let email = "xhttp-user@metrics.test";
+    let config_toml = format!(
+        r#"
+listen = "{listen}"
+
+[[users]]
+id = "{user_uuid}"
+email = "{email}"
+flow = ""
+
+[xhttp]
+path = "/xhttp"
+
+[metrics]
+port = {port}
+bind = "127.0.0.1"
+"#
+    );
+    let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
+    let server = wrongsv_server::InboundServer::new(config).unwrap();
+    let _handle = server.spawn();
+    thread::sleep(Duration::from_millis(200));
+
+    let echo_addr = spawn_echo_target();
+    let (_request, encoded) = build_vless_request(user_uuid, email, echo_addr.port(), "");
+
+    let mut writer = TcpStream::connect(&listen).unwrap();
+    writer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let reader_stream = writer.try_clone().unwrap();
+    let mut reader = BufReader::new(reader_stream);
+
+    writer
+        .write_all(
+            b"POST /xhttp HTTP/1.1\r\n\
+Host: localhost\r\n\
+Transfer-Encoding: chunked\r\n\
+Content-Type: application/grpc\r\n\
+\r\n",
+        )
+        .unwrap();
+    write_http1_chunk(&mut writer, &encoded);
+
+    assert_eq!(read_http1_response_headers(&mut reader), 200);
+    let response_header = read_http1_chunk(&mut reader).expect("expected VLESS response");
+    assert!(!response_header.is_empty(), "expected non-empty VLESS response header");
+
+    let payload = b"xhttp-metrics-roundtrip-payload";
+    write_http1_chunk(&mut writer, payload);
+    let echoed = read_http1_chunk(&mut reader).expect("expected echoed payload");
+    assert_eq!(&echoed[..], payload, "echo mismatch");
+
+    finish_http1_chunks(&mut writer);
+    assert!(read_http1_chunk(&mut reader).is_none());
+
+    thread::sleep(Duration::from_millis(200));
+    let response = http_get(&metrics_addr, "/metrics");
+    assert!(response.contains("200 OK"), "got: {response}");
+    let want_in = format!("wrongsv_user_bytes_in{{email=\"{email}\"}} {}", payload.len());
+    let want_out = format!(
+        "wrongsv_user_bytes_out{{email=\"{email}\"}} {}",
+        payload.len()
+    );
+    assert!(
+        response.contains(&want_in),
+        "missing {want_in}\n--- response ---\n{response}"
+    );
+    assert!(
+        response.contains(&want_out),
+        "missing {want_out}\n--- response ---\n{response}"
+    );
+}
+
+#[test]
+fn metrics_count_bytes_per_user_through_grpc_relay() {
+    let listen = reserve_addr();
+    let metrics_addr = reserve_addr();
+    let port = metrics_addr
+        .split(':')
+        .next_back()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap();
+    let user_uuid = Uuid::new_v4();
+    let email = "grpc-user@metrics.test";
+    let config_toml = format!(
+        r#"
+listen = "{listen}"
+
+[[users]]
+id = "{user_uuid}"
+email = "{email}"
+flow = ""
+
+[grpc]
+service_name = "GunService"
+
+[metrics]
+port = {port}
+bind = "127.0.0.1"
+"#
+    );
+    let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
+    let server = wrongsv_server::InboundServer::new(config).unwrap();
+    let _handle = server.spawn();
+    thread::sleep(Duration::from_millis(200));
+
+    let echo_addr = spawn_echo_target();
+    let (_request, encoded) = build_vless_request(user_uuid, email, echo_addr.port(), "");
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let tcp = tokio::net::TcpStream::connect(&listen).await.unwrap();
+        tcp.set_nodelay(true).unwrap();
+
+        let (client, conn) = h2::client::handshake(tcp).await.unwrap();
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let mut client = client.ready().await.unwrap();
+
+        let request = http::Request::builder()
+            .method(http::Method::POST)
+            .uri("https://grpc.local/GunService/Tun")
+            .header("content-type", "application/grpc")
+            .header("te", "trailers")
+            .header("grpc-accept-encoding", "identity")
+            .body(())
+            .unwrap();
+
+        let (response, mut send_stream) = client.send_request(request, false).unwrap();
+        let response = response.await.unwrap();
+        assert_eq!(response.status(), http::StatusCode::OK);
+
+        let mut body = response.into_body();
+        send_stream
+            .send_data(wrongsv_grpc::encode_hunk_frame(&encoded), false)
+            .unwrap();
+
+        let response_header = read_grpc_frame(&mut body)
+            .await
+            .unwrap()
+            .expect("expected VLESS response frame");
+        assert!(!response_header.is_empty(), "expected non-empty VLESS response frame");
+
+        let payload = b"grpc-metrics-roundtrip-payload";
+        send_stream
+            .send_data(wrongsv_grpc::encode_hunk_frame(payload), false)
+            .unwrap();
+        let echoed = read_grpc_frame(&mut body)
+            .await
+            .unwrap()
+            .expect("expected echoed gRPC payload frame");
+        assert_eq!(&echoed[..], payload, "echo mismatch");
+
+        send_stream.send_data(bytes::Bytes::new(), true).unwrap();
+    });
+
+    thread::sleep(Duration::from_millis(200));
+    let response = http_get(&metrics_addr, "/metrics");
+    assert!(response.contains("200 OK"), "got: {response}");
+    let payload_len = b"grpc-metrics-roundtrip-payload".len();
+    let want_in = format!("wrongsv_user_bytes_in{{email=\"{email}\"}} {}", payload_len);
+    let want_out = format!(
+        "wrongsv_user_bytes_out{{email=\"{email}\"}} {}",
+        payload_len
     );
     assert!(
         response.contains(&want_in),

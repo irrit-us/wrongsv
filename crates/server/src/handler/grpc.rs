@@ -198,6 +198,7 @@ async fn drive_grpc_connection(
     service_path: &str,
     validator: Arc<MemoryValidator>,
     kyber_sk: Option<[u8; 64]>,
+    metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tcp.set_nonblocking(true)?;
     let tcp = tokio::net::TcpStream::from_std(tcp)?;
@@ -237,6 +238,7 @@ async fn drive_grpc_connection(
             service_path,
             Arc::clone(&validator),
             kyber_sk,
+            Arc::clone(&metrics),
         )
         .await?;
     }
@@ -260,6 +262,7 @@ async fn handle_grpc_request_stream(
     service_path: &str,
     validator: Arc<MemoryValidator>,
     kyber_sk: Option<[u8; 64]>,
+    metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (parts, body) = request.into_parts();
 
@@ -292,7 +295,8 @@ async fn handle_grpc_request_stream(
 
     let relay_handle = tokio::task::spawn_blocking(move || {
         let grpc_stream = GrpcStream::from_channels(incoming_rx, outgoing_tx);
-        handle_vless_over_grpc(grpc_stream, validator, kyber_sk, peer).map_err(|e| e.to_string())
+        handle_vless_over_grpc(grpc_stream, validator, kyber_sk, peer, metrics)
+            .map_err(|e| e.to_string())
     });
     let outgoing_handle =
         tokio::spawn(async move { drive_outgoing(&mut send, outgoing_rx, peer).await });
@@ -370,6 +374,7 @@ pub(crate) fn handle_grpc_connection(
     validator: Arc<MemoryValidator>,
     kyber_sk: Option<[u8; 64]>,
     grpc_config: &GrpcConfig,
+    metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let peer = stream.peer_addr()?;
     trace!("{peer} gRPC connection");
@@ -387,6 +392,7 @@ pub(crate) fn handle_grpc_connection(
                     tls_config: None,
                     ..grpc_config.clone()
                 },
+                metrics,
             )
         }
         None => {
@@ -402,6 +408,7 @@ pub(crate) fn handle_grpc_connection(
                 &format!("/{}/Tun", grpc_config.service_name),
                 validator,
                 kyber_sk,
+                metrics,
             ))
             .map_err(|e| format!("gRPC: {e}").into())
         }
@@ -413,6 +420,7 @@ fn handle_vless_over_grpc(
     validator: Arc<MemoryValidator>,
     kyber_sk: Option<[u8; 64]>,
     peer: std::net::SocketAddr,
+    metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut first = vec![0u8; 8192];
     let n = stream.read(&mut first)?;
@@ -438,6 +446,8 @@ fn handle_vless_over_grpc(
     );
     handle_kyber_addons(peer, &decoded, kyber_sk);
     validate_vless_command(request, use_vision)?;
+    let tap = wrongsv_metrics::MetricsTap::new(metrics, request.user.email.clone());
+    let _conn_guard = tap.track_connection();
 
     let resp_buf = response_header_buf(request)?;
     stream.write_all(&resp_buf)?;
@@ -446,7 +456,7 @@ fn handle_vless_over_grpc(
         if !account.udp {
             return Err("UDP not enabled for this user".into());
         }
-        relay_grpc_udp(&mut stream, request, remaining_body)?;
+        relay_grpc_udp(&mut stream, request, remaining_body, tap)?;
         debug!("{peer} gRPC UDP relay finished");
         return Ok(());
     }
@@ -462,9 +472,10 @@ fn handle_vless_over_grpc(
             &decoded.user_sent_id,
             &account.testseed,
             remaining_body,
+            tap,
         )?;
     } else {
-        relay_grpc_raw(stream, target, remaining_body)?;
+        relay_grpc_raw(stream, target, remaining_body, tap)?;
     }
     debug!("{peer} gRPC relay finished");
     Ok(())
@@ -476,14 +487,18 @@ fn relay_grpc_raw(
     client: GrpcStream,
     mut target: TcpStream,
     initial_data: Vec<u8>,
+    metrics: wrongsv_metrics::MetricsTap,
 ) -> Result<(), Box<dyn std::error::Error>> {
     target.set_nodelay(true)?;
     if !initial_data.is_empty() {
+        metrics.record_in(initial_data.len() as u64);
         target.write_all(&initial_data)?;
     }
     let (mut reader, mut writer) = client.split();
     let mut target_write = target.try_clone()?;
     let mut target_read = target;
+    let metrics_up = metrics.clone();
+    let metrics_down = metrics;
 
     let up = std::thread::spawn(move || {
         let mut buf = [0u8; 32768];
@@ -491,6 +506,7 @@ fn relay_grpc_raw(
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    metrics_up.record_in(n as u64);
                     if let Err(e) = target_write.write_all(&buf[..n]) {
                         debug!("gRPC uplink write error: {e}");
                         break;
@@ -511,6 +527,7 @@ fn relay_grpc_raw(
             match target_read.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    metrics_down.record_out(n as u64);
                     if let Err(e) = writer.write_all(&buf[..n]) {
                         debug!("gRPC downlink write error: {e}");
                         break;
@@ -535,6 +552,7 @@ fn relay_grpc_vision(
     user_sent_id: &[u8],
     testseed: &[u32],
     initial_data: Vec<u8>,
+    metrics: wrongsv_metrics::MetricsTap,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let up_seed = if testseed.len() >= 4 {
         testseed.to_vec()
@@ -552,6 +570,7 @@ fn relay_grpc_vision(
     if !initial_data.is_empty() {
         let unpadded = wrongsv_vless::vision::xtls_unpadding(&initial_data, &mut up_state, true);
         if !unpadded.is_empty() {
+            metrics.record_in(unpadded.len() as u64);
             target.write_all(&unpadded)?;
             target.set_read_timeout(Some(Duration::from_millis(10)))?;
         }
@@ -588,6 +607,7 @@ fn relay_grpc_vision(
                         down_user_uuid = w.user_uuid;
                     }
                     if !encoded.is_empty() {
+                        metrics.record_out(n as u64);
                         client.write_all(&encoded)?;
                     }
                     target.set_read_timeout(Some(Duration::from_millis(10)))?;
@@ -611,6 +631,7 @@ fn relay_grpc_vision(
                     let unpadded =
                         wrongsv_vless::vision::xtls_unpadding(&buf[..n], &mut up_state, true);
                     if !unpadded.is_empty() {
+                        metrics.record_in(unpadded.len() as u64);
                         target.write_all(&unpadded)?;
                         target.set_read_timeout(Some(Duration::from_millis(10)))?;
                     }
@@ -637,6 +658,7 @@ fn relay_grpc_udp(
     client: &mut GrpcStream,
     request: &RequestHeader,
     remaining: Vec<u8>,
+    metrics: wrongsv_metrics::MetricsTap,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::{Cursor, ErrorKind};
     use wrongsv_vless_encoding::{LengthPacketReader, LengthPacketWriter, PacketReadError};
@@ -654,6 +676,7 @@ fn relay_grpc_udp(
     if !remaining.is_empty() {
         let mut reader = LengthPacketReader::new(Cursor::new(&remaining));
         while let Ok(pkt) = reader.read_packet() {
+            metrics.record_in(pkt.len() as u64);
             socket.send(&pkt)?;
         }
     }
@@ -689,6 +712,7 @@ fn relay_grpc_udp(
 
         if let Some(pkts) = gprc_data {
             for pkt in pkts {
+                metrics.record_in(pkt.len() as u64);
                 socket.send(&pkt)?;
             }
         }
@@ -697,6 +721,7 @@ fn relay_grpc_udp(
         match socket.recv(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
+                metrics.record_out(n as u64);
                 let mut packet = Vec::with_capacity(n + 2);
                 LengthPacketWriter::new(&mut packet).write_packet(&buf[..n])?;
                 client.write_all(&packet)?;
