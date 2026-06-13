@@ -302,6 +302,7 @@ struct XhttpOpts<'a> {
     path: &'a str,
     #[serde(skip_serializing_if = "str::is_empty")]
     host: &'a str,
+    mode: &'a str,
 }
 
 #[derive(Serialize)]
@@ -422,6 +423,7 @@ fn mihomo_format(server_host: &str, client_name: &str, vals: &ClientConfigValues
             Some(XhttpOpts {
                 path: &vals.xhttp_path,
                 host: &vals.xhttp_host,
+                mode: "stream-one",
             }),
         ),
         _ => (None, None, None, None, None, None),
@@ -955,7 +957,7 @@ fn xray_format(server_host: &str, client_name: &str, vals: &ClientConfigValues) 
         Transport::Xhttp => Some(XrayXhttpSettings {
             path: &vals.xhttp_path,
             host: &vals.xhttp_host,
-            mode: "auto",
+            mode: "stream-one",
         }),
         _ => None,
     };
@@ -1273,6 +1275,7 @@ mod tests {
         assert!(json.contains(r#""network": "xhttp""#));
         assert!(json.contains(r#""xhttp-opts""#));
         assert!(json.contains(r#""path": "/xhttp-path""#));
+        assert!(json.contains(r#""mode": "stream-one""#));
     }
 
     #[test]
@@ -1346,7 +1349,7 @@ mod tests {
         let json = xray_format("1.2.3.4", "test", &test_vals(Transport::Xhttp));
         assert!(json.contains(r#""network": "xhttp""#));
         assert!(json.contains(r#""xhttpSettings""#));
-        assert!(json.contains(r#""mode": "auto""#));
+        assert!(json.contains(r#""mode": "stream-one""#));
     }
 
     #[test]

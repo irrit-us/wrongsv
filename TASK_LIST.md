@@ -156,11 +156,11 @@ Executed matrices:
 - `results/clash-verge-matrix`
   covered: VLESS raw TCP, WebSocket, HTTPUpgrade, Shadowsocks AEAD, Shadowsocks 2022, Trojan TLS
   confirmed defect: VMess standard interop
-  newly surfaced defects: Mihomo gRPC interop, Mihomo XHTTP interop
+  newly surfaced defect: Mihomo gRPC interop
 - `results/singbox-matrix-2` + `results/singbox-quic-check-2`
   covered: VLESS REALITY Vision, HTTPUpgrade, QUIC, Shadowsocks 2022, Trojan TLS
   confirmed defect: VMess standard interop
-  newly surfaced defect: sing-box XHTTP interop
+  harness gap: sing-box XHTTP config path still needs a capability-grounded mapping
 - `results/xray-matrix`
   covered: VLESS REALITY Vision, HTTPUpgrade, Shadowsocks 2022
   confirmed defect: VMess standard interop
@@ -176,8 +176,6 @@ Executed matrices:
 New server-side defects recorded from client-capability sweeps:
 
 - `server.mihomo_grpc_interop`
-- `server.mihomo_xhttp_interop`
-- `server.singbox_xhttp_interop`
 - `server.xray_xhttp_interop`
 - `server.xray_grpc_interop`
 - `server.v2ray_grpc_interop`
@@ -188,6 +186,8 @@ Non-server gaps identified during the sweep:
 - xray-core KCP runtime config needs updating for current xray config semantics
 - sing-box / Hiddify AnyTLS, ShadowTLS, Hysteria2, and TUIC are still harness gaps even though
   wrongsv already implements those server-side protocols
+- sing-box / Hiddify XHTTP still need a capability-grounded config mapping before they should be
+  treated as server defects
 
 ### 2026-06-13 — gRPC server path partly hardened
 
@@ -207,12 +207,14 @@ Non-server gaps identified during the sweep:
 ### 2026-06-13 — XHTTP still fails real-client interop
 
 - Rechecked XHTTP after refactoring the raw relay path.
-- In-tree `xhttp_tests` still pass, but real-client capability probes remain
-  broken.
-- `sing-box` still reports malformed HTTP responses, and a targeted
-  `xray-core` XHTTP check (`results/xray-xhttp-check`) also fails.
-- That narrows the defect boundary: the remaining XHTTP problem is in
-  wrongsv's XHTTP carrier semantics, not just in one client family.
+- For Mihomo-based clients, forcing `mode: "stream-one"` in the generated
+  client config changed the result from failure to pass
+  (`results/clash-verge-xhttp-recheck-2`).
+- That removed `server.mihomo_xhttp_interop` from the confirmed defect list.
+- `xray-core` still fails XHTTP (`results/xray-xhttp-check-3`), so the
+  remaining XHTTP defect is now narrowed to Xray-family interoperability.
+- sing-box no longer stays in the server-defect bucket until we have a
+  capability-grounded XHTTP config mapping for its current schema.
 
 ### 2026-06-13 — Longer-duration capability sweeps
 
