@@ -337,6 +337,7 @@ fn build_default_config() -> Config {
         grpc: None,
         xhttp: None,
         meek: None,
+        gdocsviewer: None,
         hysteria2: None,
         tuic: None,
         quic: None,

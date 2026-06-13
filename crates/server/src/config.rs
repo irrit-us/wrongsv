@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -63,6 +64,11 @@ pub struct Config {
     /// over V2Ray-compatible request sessions.
     #[serde(default)]
     pub meek: Option<MeekServerConfig>,
+    /// Google Docs Viewer carrier configuration. When set, the listener
+    /// exposes the V2Ray gdocsviewer origin endpoint and carries VLESS
+    /// over request sessions hidden behind viewer/text fetches.
+    #[serde(default)]
+    pub gdocsviewer: Option<GdocsViewerServerConfig>,
     /// Hysteria2 inbound configuration. When set, the listener accepts
     /// Hysteria2 QUIC/TCP/UDP traffic instead of VLESS.
     #[serde(default)]
@@ -368,6 +374,51 @@ fn default_meek_body_bytes() -> usize {
 
 fn default_meek_idle_timeout() -> u64 {
     300
+}
+
+/// Google Docs Viewer carrier TLS configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GdocsViewerTlsConfig {
+    #[serde(default)]
+    pub certificate: Option<String>,
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub dest: Option<String>,
+}
+
+/// Google Docs Viewer carrier server-side configuration.
+///
+/// This exposes the V2Ray `gdocsviewer` origin endpoint so a client can
+/// disguise request sessions behind viewer/text fetches.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GdocsViewerServerConfig {
+    /// HTTP path prefix for the origin endpoint (default "/gdocsviewer").
+    #[serde(default = "default_gdocsviewer_path")]
+    pub path_prefix: String,
+    /// Maximum decoded request payload size per viewer-origin fetch.
+    #[serde(default = "default_gdocsviewer_request_bytes")]
+    pub max_request_bytes: usize,
+    /// Maximum raw response bytes emitted per viewer-origin fetch.
+    #[serde(default = "default_meek_body_bytes")]
+    pub max_response_bytes: usize,
+    /// Optional base64-encoded 32-byte AES-256-GCM shared key.
+    #[serde(default)]
+    pub shared_key: Option<String>,
+    /// Idle session timeout in seconds.
+    #[serde(default = "default_meek_idle_timeout")]
+    pub idle_timeout: u64,
+    /// Optional TLS configuration for HTTPS origin URLs.
+    #[serde(default)]
+    pub tls: Option<GdocsViewerTlsConfig>,
+}
+
+fn default_gdocsviewer_path() -> String {
+    "/gdocsviewer".to_string()
+}
+
+fn default_gdocsviewer_request_bytes() -> usize {
+    1_100
 }
 
 /// Hysteria2 authentication user.
@@ -726,6 +777,14 @@ pub enum ConfigError {
     MeekWithNonVless,
     #[error("Meek inbound requires VLESS users")]
     MeekMissingUsers,
+    #[error("Google Docs Viewer inbound cannot be combined with other VLESS transport layers")]
+    GdocsViewerWithVlessTransport,
+    #[error("Google Docs Viewer inbound cannot be combined with non-VLESS protocols")]
+    GdocsViewerWithNonVless,
+    #[error("Google Docs Viewer inbound requires VLESS users")]
+    GdocsViewerMissingUsers,
+    #[error("Google Docs Viewer shared_key must be base64 for exactly 32 bytes")]
+    GdocsViewerInvalidSharedKey,
     #[error("Hysteria2 inbound cannot be combined with VLESS users")]
     Hysteria2WithVlessUsers,
     #[error("Hysteria2 inbound cannot be combined with VLESS transport layers")]
@@ -806,6 +865,7 @@ impl Config {
             || self.grpc.is_some()
             || self.xhttp.is_some()
             || self.meek.is_some()
+            || self.gdocsviewer.is_some()
             || self.quic.is_some()
             || self.kcp.is_some()
             || self.webtransport.is_some()
@@ -834,6 +894,7 @@ impl Config {
             || self.grpc.is_some()
             || self.xhttp.is_some()
             || self.meek.is_some()
+            || self.gdocsviewer.is_some()
     }
 
     /// True when any TLS-layer transport (REALITY, AnyTLS, plain TLS) is
@@ -1047,6 +1108,25 @@ impl Config {
             }
         }
 
+        if let Some(gdocsviewer) = &self.gdocsviewer {
+            self.check_framing_transport(
+                "gdocsviewer",
+                ConfigError::GdocsViewerWithNonVless,
+                ConfigError::GdocsViewerWithVlessTransport,
+            )?;
+            if !self.has_vless_users() {
+                return Err(ConfigError::GdocsViewerMissingUsers);
+            }
+            if let Some(shared_key) = &gdocsviewer.shared_key {
+                let decoded = base64::engine::general_purpose::STANDARD
+                    .decode(shared_key)
+                    .map_err(|_| ConfigError::GdocsViewerInvalidSharedKey)?;
+                if decoded.len() != 32 {
+                    return Err(ConfigError::GdocsViewerInvalidSharedKey);
+                }
+            }
+        }
+
         // -- VLESS datagram transports --
         if let Some(_quic) = &self.quic {
             self.check_datagram_transport(
@@ -1135,6 +1215,7 @@ impl Config {
                     || self.grpc.is_some()
                     || self.xhttp.is_some()
                     || self.meek.is_some()
+                    || self.gdocsviewer.is_some()
                     || self.quic.is_some()
                     || self.kcp.is_some()
             }
@@ -1144,6 +1225,7 @@ impl Config {
                     || self.grpc.is_some()
                     || self.xhttp.is_some()
                     || self.meek.is_some()
+                    || self.gdocsviewer.is_some()
                     || self.quic.is_some()
                     || self.kcp.is_some()
             }
@@ -1153,6 +1235,7 @@ impl Config {
                     || self.httpupgrade.is_some()
                     || self.xhttp.is_some()
                     || self.meek.is_some()
+                    || self.gdocsviewer.is_some()
                     || self.quic.is_some()
                     || self.kcp.is_some()
             }
@@ -1162,6 +1245,7 @@ impl Config {
                     || self.httpupgrade.is_some()
                     || self.grpc.is_some()
                     || self.meek.is_some()
+                    || self.gdocsviewer.is_some()
                     || self.quic.is_some()
                     || self.kcp.is_some()
             }
@@ -1171,6 +1255,17 @@ impl Config {
                     || self.httpupgrade.is_some()
                     || self.grpc.is_some()
                     || self.xhttp.is_some()
+                    || self.gdocsviewer.is_some()
+                    || self.quic.is_some()
+                    || self.kcp.is_some()
+            }
+            "gdocsviewer" => {
+                self.has_any_non_vless_inbound()
+                    || self.websocket.is_some()
+                    || self.httpupgrade.is_some()
+                    || self.grpc.is_some()
+                    || self.xhttp.is_some()
+                    || self.meek.is_some()
                     || self.quic.is_some()
                     || self.kcp.is_some()
             }
@@ -1279,6 +1374,7 @@ flow = "xtls-rprx-vision"
             grpc: None,
             xhttp: None,
             meek: None,
+            gdocsviewer: None,
             hysteria2: None,
             tuic: None,
             quic: None,
@@ -1316,6 +1412,7 @@ flow = "xtls-rprx-vision"
             grpc: None,
             xhttp: None,
             meek: None,
+            gdocsviewer: None,
             hysteria2: None,
             tuic: None,
             quic: None,

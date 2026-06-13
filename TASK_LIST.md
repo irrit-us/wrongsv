@@ -519,6 +519,26 @@ standard xray/v2fly AEAD path. `spawn_vmess_server` remains in
   with successful compatibility probes and sustained traffic through the
   `vless_meek` stack, so `server.v2ray_meek_transport` is no longer open.
 
+### 2026-06-14 — V2Ray Google Docs Viewer transport implemented and verified
+
+- Added `crates/server/src/handler/gdocsviewer.rs` plus `[gdocsviewer]` config
+  support: the server now exposes the V2Ray `gdocsviewer` origin endpoint with
+  configurable path prefix, optional TLS, optional base64-encoded 32-byte
+  AES-256-GCM shared keys, and the same reusable request-session carrier used
+  by Meek.
+- Added mock viewer/text endpoints to
+  `wrongsv-external-tests/proxy-testing-framework/local-test-server.js` so the
+  external suite can exercise the full viewer flow offline without depending on
+  the real Google Docs service.
+- Added a dedicated V2Ray `jsonv5` runtime builder for
+  `vless_gdocsviewer` in `wrongsv-external-tests`, and built a full upstream
+  V2Ray test binary with the `gdocsviewer` transport registered for this
+  verification path.
+- External verification now passes at
+  `wrongsv-external-tests/results/v2ray-gdocs-check-5/vless_gdocsviewer/report.json`
+  and `wrongsv-external-tests/results/v2ray-gdocs-check-5/matrix.json`, so
+  `server.v2ray_docs_transport` is no longer open.
+
 ### 2026-06-13 — ShadowTLS v3 interop fixed for sing-box / Hiddify
 
 - Replaced wrongsv's old exporter-HMAC ShadowTLS path with a ShadowTLS v3 server

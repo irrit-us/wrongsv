@@ -412,6 +412,26 @@ pub(crate) fn handle_vless_over_request_stream(
     Ok(())
 }
 
+pub(crate) fn spawn_vless_request_session(
+    transport_label: &'static str,
+    session_id: String,
+    registry: Arc<RequestSessionRegistry>,
+    stream: RequestSessionStream,
+    validator: Arc<MemoryValidator>,
+    kyber_sk: Option<[u8; 64]>,
+    metrics: Arc<wrongsv_metrics::Registry>,
+) {
+    std::thread::spawn(move || {
+        let peer_label = format!("{transport_label} session={session_id}");
+        let result =
+            handle_vless_over_request_stream(stream, validator, kyber_sk, &peer_label, metrics);
+        if let Err(e) = result {
+            tracing::warn!("{peer_label} error: {e}");
+        }
+        registry.remove(&session_id);
+    });
+}
+
 fn relay_request_stream_raw(
     client: RequestSessionStream,
     mut target: TcpStream,

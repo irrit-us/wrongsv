@@ -1,0 +1,14 @@
+# VLESS over the V2Ray Google Docs Viewer transport.
+#
+# The server exposes the origin-fetch endpoint; clients use a viewer/text
+# frontend to disguise request sessions.
+
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+email = "user@example.com"
+flow = ""
+
+[gdocsviewer]
+path_prefix = "/gdocsviewer"

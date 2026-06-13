@@ -3,7 +3,7 @@ use std::net::TcpStream;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tracing::{debug, trace, warn};
+use tracing::{debug, trace};
 use wrongsv_vless::MemoryValidator;
 
 use crate::config::MeekServerConfig;
@@ -475,25 +475,6 @@ fn reject_meek_http1(stream: &mut TcpStream, status_line: &str) {
     let _ = stream.flush();
 }
 
-fn spawn_meek_session(
-    session_id: String,
-    stream: RequestSessionStream,
-    config: MeekConfig,
-    validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
-    metrics: Arc<wrongsv_metrics::Registry>,
-) {
-    std::thread::spawn(move || {
-        let peer_label = format!("meek session={session_id}");
-        let result =
-            handle_vless_over_request_stream(stream, validator, kyber_sk, &peer_label, metrics);
-        if let Err(e) = result {
-            warn!("{peer_label} error: {e}");
-        }
-        config.sessions.remove(&session_id);
-    });
-}
-
 pub(crate) fn handle_meek_connection(
     stream: TcpStream,
     validator: Arc<MemoryValidator>,
@@ -556,10 +537,11 @@ pub(crate) fn handle_meek_connection(
 
             let lease = meek_config.sessions.acquire(&request.session_id);
             if let Some(session_stream) = lease.stream {
-                spawn_meek_session(
+                spawn_vless_request_session(
+                    "meek",
                     request.session_id.clone(),
+                    Arc::clone(&meek_config.sessions),
                     session_stream,
-                    meek_config.clone(),
                     validator,
                     kyber_sk,
                     metrics.clone(),

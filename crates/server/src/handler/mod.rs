@@ -46,6 +46,8 @@ pub(crate) mod request_transport;
 pub(crate) use request_transport::*;
 pub(crate) mod meek;
 pub(crate) use meek::*;
+pub(crate) mod gdocsviewer;
+pub(crate) use gdocsviewer::*;
 pub(crate) mod hysteria2;
 pub(crate) use hysteria2::*;
 pub(crate) mod tuic;
@@ -167,6 +169,7 @@ pub struct InboundServer {
     grpc_config: Option<GrpcConfig>,
     xhttp_config: Option<XhttpConfig>,
     meek_config: Option<MeekConfig>,
+    gdocsviewer_config: Option<GdocsViewerConfig>,
     hysteria2_config: Option<Hysteria2Config>,
     tuic_config: Option<TuicConfig>,
     quic_config: Option<QuicConfig>,
@@ -268,6 +271,22 @@ impl InboundServer {
                         " (TLS + Meek)"
                     } else {
                         " (Meek)"
+                    }
+                );
+                Some(cfg)
+            }
+            None => None,
+        };
+        let gdocsviewer_config = match &config.gdocsviewer {
+            Some(gc) => {
+                let cfg = parse_gdocsviewer_config(gc)?;
+                info!(
+                    "Google Docs Viewer enabled on {}{}",
+                    cfg.path_prefix,
+                    if cfg.tls_config.is_some() {
+                        " (TLS origin)"
+                    } else {
+                        " (origin)"
                     }
                 );
                 Some(cfg)
@@ -423,6 +442,7 @@ impl InboundServer {
             grpc_config,
             xhttp_config,
             meek_config,
+            gdocsviewer_config,
             hysteria2_config,
             tuic_config,
             quic_config,
@@ -592,6 +612,8 @@ impl InboundServer {
             "VLESS XHTTP"
         } else if self.meek_config.is_some() {
             "VLESS Meek"
+        } else if self.gdocsviewer_config.is_some() {
+            "VLESS Google Docs Viewer"
         } else if self.webtransport_config.is_some() {
             "VLESS WebTransport"
         } else {
@@ -616,6 +638,7 @@ impl InboundServer {
         let grpc_config = self.grpc_config.clone();
         let xhttp_config = self.xhttp_config.clone();
         let meek_config = self.meek_config.clone();
+        let gdocsviewer_config = self.gdocsviewer_config.clone();
         let shadowtls_config = self.shadowtls_config.clone();
         let vmess_config = self.vmess_config.clone();
         let hysteria2_enabled = self.hysteria2_config.is_some();
@@ -658,6 +681,7 @@ impl InboundServer {
                     let gc = grpc_config.clone();
                     let xc = xhttp_config.clone();
                     let mkc = meek_config.clone();
+                    let gdc = gdocsviewer_config.clone();
                     let stc = shadowtls_config.clone();
                     let vmc = vmess_config.clone();
                     thread::spawn(move || {
@@ -678,6 +702,8 @@ impl InboundServer {
                                 handle_xhttp_connection(stream, v, kyber_sk, xc, m)
                             } else if let Some(ref mkc) = mkc {
                                 handle_meek_connection(stream, v, kyber_sk, mkc, m)
+                            } else if let Some(ref gdc) = gdc {
+                                handle_gdocsviewer_connection(stream, v, kyber_sk, gdc, m)
                             } else if hysteria2_enabled {
                                 Err(
                                     "Hysteria2 inbound uses QUIC and does not accept TCP sockets"
