@@ -735,6 +735,7 @@ struct XrayOutbound<'a> {
     tag: &'a str,
     settings: XrayVlessSettings<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "streamSettings")]
     stream_settings: Option<XrayStreamSettings<'a>>,
 }
 
@@ -1114,6 +1115,26 @@ fn hiddify_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
             remarks: client_name.to_string(),
             subscription: String::new(),
             configs: vec![vmess_outbound, direct_outbound],
+        };
+        return serde_json::to_string_pretty(&config).expect("HiddifyConfig should serialize");
+    }
+
+    if vals.transport == Transport::Xhttp {
+        let xray_config: serde_json::Value =
+            serde_json::from_str(&xray_format(server_host, client_name, vals))
+                .expect("XrayConfig should parse as JSON");
+        let xray_outbound = serde_json::json!({
+            "type": "xray",
+            "tag": client_name,
+            "xconfig": {
+                "outbounds": xray_config["outbounds"].clone()
+            }
+        });
+        let direct_outbound = serde_json::json!({"type": "direct", "tag": "direct"});
+        let config = HiddifyConfig {
+            remarks: client_name.to_string(),
+            subscription: String::new(),
+            configs: vec![xray_outbound, direct_outbound],
         };
         return serde_json::to_string_pretty(&config).expect("HiddifyConfig should serialize");
     }
@@ -1542,5 +1563,14 @@ email = "user@example.com"
         let json = hiddify_format("1.2.3.4", "test", &test_vals(Transport::Grpc));
         assert!(json.contains(r#""type": "grpc""#));
         assert!(json.contains(r#""service_name": "TestService""#));
+    }
+
+    #[test]
+    fn hiddify_xhttp_uses_xray_wrapper() {
+        let json = hiddify_format("1.2.3.4", "test", &test_vals(Transport::Xhttp));
+        assert!(json.contains(r#""type": "xray""#));
+        assert!(json.contains(r#""network": "xhttp""#));
+        assert!(json.contains(r#""xhttpSettings""#));
+        assert!(json.contains(r#""mode": "stream-one""#));
     }
 }

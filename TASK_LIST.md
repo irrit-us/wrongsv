@@ -193,8 +193,8 @@ Non-server gaps identified during the sweep:
   remain client/runtime gaps rather than wrongsv server defects
 - sing-box / Hiddify Hysteria2 and TUIC are still harness gaps even though wrongsv already
   implements those server-side protocols; Hiddify AnyTLS also remains blocked by its packaged core
-- sing-box / Hiddify XHTTP still need a capability-grounded config mapping before they should be
-  treated as server defects
+- Hiddify XHTTP is now covered through its custom embedded-Xray outbound path; plain sing-box
+  still lacks a usable XHTTP config surface on the installed core and remains a client/runtime gap
 
 ### 2026-06-13 — gRPC server path partly hardened
 
@@ -434,6 +434,23 @@ standard xray/v2fly AEAD path. `spawn_vmess_server` remains in
   for the Xray family. Mihomo-based KCP remains a client/runtime gap on this
   box because the core still attempts a TCP connect to the KCP port even when
   `network: mkcp` / `mkcp-opts` are present.
+
+### 2026-06-13 — Hiddify XHTTP coverage added via embedded Xray outbound
+
+- Added scenario-aware raw-config selection to the external harness so a
+  client/scenario pair can request `xray` format instead of being locked to a
+  single format per client family.
+- Hiddify `vless_xhttp` now runs through the packaged core's custom
+  `type: "xray"` outbound wrapper, embedding wrongsv's Xray-format
+  `splithttp` config directly.
+- Real external checks now pass:
+  `wrongsv-external-tests/results/hiddify-xhttp-check-4/vless_xhttp/report.json`
+  and the longer run
+  `wrongsv-external-tests/results/hiddify-xhttp-long-2/vless_xhttp/report.json`.
+- Current classification: Hiddify no longer has an XHTTP harness gap.
+  Plain sing-box still does on this machine because the installed 1.12.12 core
+  rejects both native `transport.type: "xhttp"` and Hiddify's custom
+  `type: "xray"` wrapper.
 
 ### 2026-06-13 — sing-box AnyTLS harness gap partially closed
 
