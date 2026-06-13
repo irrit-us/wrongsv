@@ -25,6 +25,7 @@ pub(crate) struct ClientConfigValues {
     pub kcp_tti: u16,
     pub xhttp_path: String,
     pub xhttp_host: String,
+    pub shadowtls_password: String,
 }
 
 /// Resolve values for the generated client config from TOML config or defaults.
@@ -135,6 +136,11 @@ pub(crate) fn resolve_client_values(
                 .as_ref()
                 .and_then(|x| x.host.clone())
                 .unwrap_or_default();
+            let shadowtls_password = cfg
+                .shadowtls
+                .as_ref()
+                .map(|s| s.password.clone())
+                .unwrap_or_default();
             // Detect TLS: true for TLS-layer transports, true for stream
             // transports that have a tls sub-config, true for QUIC (built-in).
             let has_tls = match transport {
@@ -175,6 +181,7 @@ pub(crate) fn resolve_client_values(
                 kcp_tti,
                 xhttp_path,
                 xhttp_host,
+                shadowtls_password,
             }
         }
         None => ClientConfigValues {
@@ -201,6 +208,7 @@ pub(crate) fn resolve_client_values(
             kcp_tti: 50,
             xhttp_path: "/xhttp".to_string(),
             xhttp_host: String::new(),
+            shadowtls_password: String::new(),
         },
     }
 }
@@ -494,6 +502,8 @@ struct SingBoxVlessOutbound<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     packet_encoding: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    detour: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tls: Option<SingBoxTls<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     transport: Option<serde_json::Value>,
@@ -651,6 +661,12 @@ fn singbox_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
         _ => None,
     };
 
+    let shadowtls_detour = if vals.transport == Transport::ShadowTls {
+        Some(format!("{client_name}-shadowtls"))
+    } else {
+        None
+    };
+
     let vless_outbound = serde_json::to_value(SingBoxVlessOutbound {
         outbound_type: "vless",
         tag: client_name,
@@ -660,12 +676,37 @@ fn singbox_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
         flow: &vals.flow,
         network,
         packet_encoding,
-        tls,
+        detour: shadowtls_detour.as_deref(),
+        tls: if vals.transport == Transport::ShadowTls {
+            None
+        } else {
+            tls
+        },
         transport,
     })
     .expect("SingBoxVlessOutbound should serialize");
 
     let direct_outbound = serde_json::json!({"type": "direct", "tag": "direct"});
+    let shadowtls_outbound = shadowtls_detour.as_ref().map(|tag| {
+        serde_json::json!({
+            "type": "shadowtls",
+            "tag": tag,
+            "server": server_host,
+            "server_port": port,
+            "version": 3,
+            "password": vals.shadowtls_password,
+            "tls": {
+                "enabled": true,
+                "server_name": vals.servername,
+                "insecure": true
+            }
+        })
+    });
+    let mut outbounds = vec![vless_outbound];
+    if let Some(shadowtls_outbound) = shadowtls_outbound {
+        outbounds.push(shadowtls_outbound);
+    }
+    outbounds.push(direct_outbound);
 
     let config = SingBoxConfig {
         inbounds: vec![SingBoxInbound {
@@ -674,7 +715,7 @@ fn singbox_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
             listen: "127.0.0.1".into(),
             listen_port: 10809,
         }],
-        outbounds: vec![vless_outbound, direct_outbound],
+        outbounds,
     };
 
     serde_json::to_string_pretty(&config).expect("SingBoxConfig should serialize")
@@ -1153,6 +1194,12 @@ fn hiddify_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
         _ => None,
     };
 
+    let shadowtls_detour = if vals.transport == Transport::ShadowTls {
+        Some(format!("{client_name}-shadowtls"))
+    } else {
+        None
+    };
+
     let vless_outbound = serde_json::to_value(SingBoxVlessOutbound {
         outbound_type: "vless",
         tag: client_name,
@@ -1162,17 +1209,42 @@ fn hiddify_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
         flow: &vals.flow,
         network,
         packet_encoding,
-        tls,
+        detour: shadowtls_detour.as_deref(),
+        tls: if vals.transport == Transport::ShadowTls {
+            None
+        } else {
+            tls
+        },
         transport,
     })
     .expect("SingBoxVlessOutbound should serialize");
 
     let direct_outbound = serde_json::json!({"type": "direct", "tag": "direct"});
+    let shadowtls_outbound = shadowtls_detour.as_ref().map(|tag| {
+        serde_json::json!({
+            "type": "shadowtls",
+            "tag": tag,
+            "server": server_host,
+            "server_port": port,
+            "version": 3,
+            "password": vals.shadowtls_password,
+            "tls": {
+                "enabled": true,
+                "server_name": vals.servername,
+                "insecure": true
+            }
+        })
+    });
+    let mut configs = vec![vless_outbound];
+    if let Some(shadowtls_outbound) = shadowtls_outbound {
+        configs.push(shadowtls_outbound);
+    }
+    configs.push(direct_outbound);
 
     let config = HiddifyConfig {
         remarks: client_name.to_string(),
         subscription: String::new(),
-        configs: vec![vless_outbound, direct_outbound],
+        configs,
     };
 
     serde_json::to_string_pretty(&config).expect("HiddifyConfig should serialize")
@@ -1207,6 +1279,7 @@ mod tests {
             kcp_tti: 50,
             xhttp_path: "/xhttp-path".into(),
             xhttp_host: "xhost.example.com".into(),
+            shadowtls_password: "shadow-pass".into(),
         }
     }
 
@@ -1290,6 +1363,14 @@ mod tests {
     }
 
     #[test]
+    fn singbox_shadowtls_uses_detour_outbound() {
+        let json = singbox_format("1.2.3.4", "test", &test_vals(Transport::ShadowTls));
+        assert!(json.contains(r#""type": "shadowtls""#));
+        assert!(json.contains(r#""detour": "test-shadowtls""#));
+        assert!(json.contains(r#""password": "shadow-pass""#));
+    }
+
+    #[test]
     fn singbox_has_packet_encoding() {
         let json = singbox_format("1.2.3.4", "test", &test_vals(Transport::Reality));
         assert!(json.contains(r#""packet_encoding": "packetaddr""#));
@@ -1342,6 +1423,14 @@ mod tests {
         assert!(json.contains(r#""vnext""#));
         assert!(json.contains(r#""id": "test-uuid-1234""#));
         assert!(json.contains(r#""encryption": "none""#));
+    }
+
+    #[test]
+    fn hiddify_shadowtls_uses_detour_outbound() {
+        let json = hiddify_format("1.2.3.4", "test", &test_vals(Transport::ShadowTls));
+        assert!(json.contains(r#""type": "shadowtls""#));
+        assert!(json.contains(r#""detour": "test-shadowtls""#));
+        assert!(json.contains(r#""password": "shadow-pass""#));
     }
 
     #[test]
