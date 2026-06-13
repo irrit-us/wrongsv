@@ -82,9 +82,8 @@ pub struct Config {
     /// streams. This is a VLESS transport layer over QUIC.
     #[serde(default)]
     pub webtransport: Option<WebTransportServerConfig>,
-    /// ShadowTLS configuration. When set, the listener performs TLS 1.3
-    /// handshake + HMAC authentication (RFC 8446 exporter) before VLESS.
-    /// Failed auth falls through to `dest`.
+    /// ShadowTLS configuration. When set, the listener relays a ShadowTLS v3
+    /// handshake and authenticated record layer before VLESS.
     #[serde(default)]
     pub shadowtls: Option<ShadowTlsServerConfig>,
     /// VMess AEAD configuration. When set, this listener accepts VMess
@@ -554,20 +553,21 @@ pub struct VmessServerConfig {
 
 /// ShadowTLS server-side configuration.
 ///
-/// ShadowTLS is a TLS 1.3 disguise protocol. After the TLS handshake,
-/// both sides compute an HMAC over the RFC 8446 exporter secret with the
-/// shared password. Valid auth → VLESS relay; invalid → fallback to `dest`.
+/// ShadowTLS v3 authenticates the client through the ClientHello session-id
+/// HMAC, relays the upstream TLS handshake, and then switches to an
+/// authenticated record stream that carries VLESS.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ShadowTlsServerConfig {
-    /// Password for HMAC authentication.
+    /// Password used for ClientHello HMAC verification and record auth.
     pub password: String,
-    /// Fallback destination for unauthenticated probes (e.g. "127.0.0.1:8080").
+    /// Optional handshake / fallback destination for unauthenticated probes.
+    /// When unset, wrongsv spins up a local TLS backend from `certificate`/`key`.
     #[serde(default)]
     pub dest: Option<String>,
-    /// Optional TLS certificate PEM (self-signed if not provided).
+    /// Optional TLS certificate PEM for the local handshake backend.
     #[serde(default)]
     pub certificate: Option<String>,
-    /// Optional TLS key PEM.
+    /// Optional TLS key PEM for the local handshake backend.
     #[serde(default)]
     pub key: Option<String>,
 }

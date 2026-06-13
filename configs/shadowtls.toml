@@ -1,5 +1,5 @@
-# VLESS + ShadowTLS carrier (TLS 1.3 + RFC 8446 exporter HMAC-SHA256 auth)
-# Compatible with sing-box ShadowTLS transport
+# VLESS over ShadowTLS v3.
+# If `dest` is omitted, wrongsv uses a local TLS backend for the cover handshake.
 listen = "0.0.0.0:443"
 
 [[users]]

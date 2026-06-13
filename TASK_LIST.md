@@ -16,7 +16,7 @@
 - [x] Fix clippy warning in vmess_handler tests (`std::slice::from_ref`)
 - [x] Identify "local-as-remote" risks — places where tests assume real remote but actually hit 127.0.0.1
 - [x] Identify "mock-as-real" risks — stubs that always-succeed and mask failures (fixed REALITY cert HMAC bypass in 36e64b5)
-- [x] Audit channel bounds / timeouts for OOM and hang risks — channels: unbounded sites all have natural upstream backpressure (KCP recv window, TCP recv buffer, single-message use). Timeouts: 6 handshake sites lacked a read-deadline bound (slowloris risk); fixed with 30s set/clear pattern in accept_anytls, accept_tls, accept_shadowtls_tls, tls_relay, handle_shadowsocks_connection, and httpupgrade TLS branch
+- [x] Audit channel bounds / timeouts for OOM and hang risks — channels: unbounded sites all have natural upstream backpressure (KCP recv window, TCP recv buffer, single-message use). Timeouts: 6 handshake sites lacked a read-deadline bound (slowloris risk); fixed with 30s set/clear pattern in accept_anytls, accept_tls, the ShadowTLS accept path, tls_relay, handle_shadowsocks_connection, and httpupgrade TLS branch
 - [x] Fix flaky `test_mihomo_lifecycle_multi_user` (user2 raw-flow connection fails)
 
 ### Phase 2 — Protocol Audit
@@ -190,8 +190,8 @@ Non-server gaps identified during the sweep:
 
 - xray-core KCP runtime config startup has been updated to the current finalmask schema, but the
   runtime behavior of `vless_kcp` is still under investigation
-- sing-box / Hiddify AnyTLS, ShadowTLS, Hysteria2, and TUIC are still harness gaps even though
-  wrongsv already implements those server-side protocols
+- sing-box / Hiddify Hysteria2 and TUIC are still harness gaps even though wrongsv already
+  implements those server-side protocols; Hiddify AnyTLS also remains blocked by its packaged core
 - sing-box / Hiddify XHTTP still need a capability-grounded config mapping before they should be
   treated as server defects
 
@@ -428,6 +428,20 @@ standard xray/v2fly AEAD path. `spawn_vmess_server` remains in
   now confirmed: Hiddify's packaged core on this box rejects
   `type: "anytls"` as an unknown outbound type, so this remains a
   Hiddify-specific client/runtime gap rather than a wrongsv server defect.
+
+### 2026-06-13 — ShadowTLS v3 interop fixed for sing-box / Hiddify
+
+- Replaced wrongsv's old exporter-HMAC ShadowTLS path with a ShadowTLS v3 server
+  implementation: ClientHello session-id verification, relayed/local cover
+  handshake, and authenticated post-handshake records before VLESS.
+- Added a reusable sing-box-family ShadowTLS runtime builder that composes
+  `VLESS over ShadowTLS` through a detour instead of treating ShadowTLS as a
+  standalone final outbound.
+- External rechecks now pass on both supported client families:
+  `wrongsv-external-tests/results/singbox-shadowtls-check-2` and
+  `wrongsv-external-tests/results/hiddify-shadowtls-check-1`.
+- Capability status updated accordingly: ShadowTLS is no longer a harness gap
+  for the sing-box core path or Hiddify on this box.
 
 ### 2026-06-13 — Phase 3 traffic verification needs TUN privileges or mobile build
 
