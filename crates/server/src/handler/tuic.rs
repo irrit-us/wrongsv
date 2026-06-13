@@ -40,6 +40,7 @@ struct TuicUser {
     uuid: wrongsv_uuid::Uuid,
     password: String,
     name: Option<String>,
+    metrics_key: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,10 +58,15 @@ struct TuicUdpSession {
     close_notify: Notify,
     ipv4: Arc<UdpSocket>,
     ipv6: Option<Arc<UdpSocket>>,
+    metrics: wrongsv_metrics::MetricsTap,
 }
 
 impl TuicUdpSession {
-    async fn new(conn: QuinnConnection, assoc_id: u16) -> Result<Self, TuicError> {
+    async fn new(
+        conn: QuinnConnection,
+        assoc_id: u16,
+        metrics: wrongsv_metrics::MetricsTap,
+    ) -> Result<Self, TuicError> {
         let ipv4 = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
         let ipv6 = match UdpSocket::bind("[::]:0").await {
             Ok(socket) => Some(Arc::new(socket)),
@@ -75,6 +81,7 @@ impl TuicUdpSession {
             close_notify: Notify::new(),
             ipv4,
             ipv6,
+            metrics,
         })
     }
 
@@ -112,6 +119,7 @@ impl TuicUdpSession {
         } else {
             self.ipv6.as_ref().ok_or("IPv6 UDP socket unavailable")?
         };
+        self.metrics.record_in(payload.len() as u64);
         socket.send_to(&payload, target).await?;
         Ok(())
     }
@@ -157,6 +165,7 @@ impl TuicUdpSession {
                     let Ok((n, source)) = result else { break };
                     let (address, port) = socket_addr_to_tuic_address(source);
                     let addr = format!("{address}:{port}");
+                    self.metrics.record_out(n as u64);
                     if self.send_packet_to_client(&addr, &buf[..n]).await.is_err() {
                         break;
                     }
@@ -177,6 +186,7 @@ impl TuicUdpSession {
                     let Ok((n, source)) = result else { break };
                     let (address, port) = socket_addr_to_tuic_address(source);
                     let addr = format!("{address}:{port}");
+                    self.metrics.record_out(n as u64);
                     if self.send_packet_to_client(&addr, &buf[..n]).await.is_err() {
                         break;
                     }
@@ -218,6 +228,11 @@ pub(crate) fn parse_tuic_config(cfg: &TuicServerConfig) -> Result<TuicConfig, St
                 uuid,
                 password: user.password.clone(),
                 name: user.name.clone(),
+                metrics_key: user
+                    .email
+                    .clone()
+                    .or_else(|| user.name.clone())
+                    .unwrap_or_default(),
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -267,6 +282,7 @@ fn build_tuic_quic_config(
 pub(crate) async fn run_tuic_endpoint(
     listen: &str,
     config: TuicConfig,
+    metrics: Arc<wrongsv_metrics::Registry>,
     shutdown: ShutdownSignal,
 ) -> Result<(), TuicError> {
     let endpoint = create_tuic_endpoint(listen, &config)?;
@@ -280,10 +296,11 @@ pub(crate) async fn run_tuic_endpoint(
         match tokio::time::timeout(Duration::from_millis(200), endpoint.accept()).await {
             Ok(Some(incoming)) => {
                 let cfg = config.clone();
+                let metrics = Arc::clone(&metrics);
                 tokio::spawn(async move {
                     match incoming.await {
                         Ok(conn) => {
-                            if let Err(e) = handle_tuic_connection(conn, cfg).await {
+                            if let Err(e) = handle_tuic_connection(conn, cfg, metrics).await {
                                 warn!("TUIC connection error: {e}");
                             }
                         }
@@ -309,10 +326,17 @@ fn create_tuic_endpoint(listen: &str, config: &TuicConfig) -> Result<Endpoint, T
 async fn handle_tuic_connection(
     conn: QuinnConnection,
     config: TuicConfig,
+    metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), TuicError> {
     let peer = conn.remote_address();
     trace!("{peer} TUIC connection");
     let user = authenticate_tuic_connection(&conn, &config).await?;
+    let tap = if user.metrics_key.is_empty() {
+        wrongsv_metrics::MetricsTap::disabled()
+    } else {
+        wrongsv_metrics::MetricsTap::new(metrics, user.metrics_key.clone())
+    };
+    let _conn_guard = tap.track_connection();
     if let Some(ref name) = user.name {
         info!("{peer} TUIC auth accepted [{name}]");
     } else {
@@ -331,13 +355,17 @@ async fn handle_tuic_connection(
     let udp_sessions_for_udp = Arc::clone(&udp_sessions);
     let packet_assemblies_for_uni = Arc::clone(&packet_assemblies);
     let packet_assemblies_for_udp = Arc::clone(&packet_assemblies);
+    let tcp_tap = tap.clone();
+    let uni_tap = tap.clone();
+    let udp_tap = tap;
 
-    let tcp_task = tokio::spawn(async move { drive_tuic_tcp(tcp_conn).await });
+    let tcp_task = tokio::spawn(async move { drive_tuic_tcp(tcp_conn, tcp_tap).await });
     let uni_task = tokio::spawn(async move {
-        drive_tuic_uni(uni_conn, udp_sessions_for_uni, packet_assemblies_for_uni).await
+        drive_tuic_uni(uni_conn, udp_sessions_for_uni, packet_assemblies_for_uni, uni_tap).await
     });
     let udp_task = tokio::spawn(async move {
-        drive_tuic_datagrams(udp_conn, udp_sessions_for_udp, packet_assemblies_for_udp).await
+        drive_tuic_datagrams(udp_conn, udp_sessions_for_udp, packet_assemblies_for_udp, udp_tap)
+            .await
     });
 
     let (tcp_result, uni_result, udp_result) = tokio::join!(tcp_task, uni_task, udp_task);
@@ -368,6 +396,7 @@ async fn handle_tuic_connection(
 
 struct TuicAuthenticatedUser {
     name: Option<String>,
+    metrics_key: String,
 }
 
 async fn authenticate_tuic_connection(
@@ -398,6 +427,7 @@ async fn authenticate_tuic_connection(
     }
     Ok(TuicAuthenticatedUser {
         name: user.name.clone(),
+        metrics_key: user.metrics_key.clone(),
     })
 }
 
@@ -412,10 +442,14 @@ fn derive_tuic_token(
     Ok(token)
 }
 
-async fn drive_tuic_tcp(conn: QuinnConnection) -> Result<(), TuicError> {
+async fn drive_tuic_tcp(
+    conn: QuinnConnection,
+    tap: wrongsv_metrics::MetricsTap,
+) -> Result<(), TuicError> {
     while let Ok((send, recv)) = conn.accept_bi().await {
+        let tap = tap.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_tuic_connect_stream(send, recv).await {
+            if let Err(e) = handle_tuic_connect_stream(send, recv, tap).await {
                 warn!("TUIC TCP stream error: {e}");
             }
         });
@@ -426,6 +460,7 @@ async fn drive_tuic_tcp(conn: QuinnConnection) -> Result<(), TuicError> {
 async fn handle_tuic_connect_stream(
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
+    tap: wrongsv_metrics::MetricsTap,
 ) -> Result<(), TuicError> {
     let (address, initial_body) = read_tuic_connect_request(&mut recv).await?;
     let target = match TcpStream::connect(&address).await {
@@ -438,15 +473,20 @@ async fn handle_tuic_connect_stream(
     target.set_nodelay(true)?;
     let (mut target_read, mut target_write) = target.into_split();
     if !initial_body.is_empty() {
+        tap.record_in(initial_body.len() as u64);
         target_write.write_all(&initial_body).await?;
     }
+    let tap_up = tap.clone();
+    let tap_down = tap;
     let client_to_target = async {
-        tokio::io::copy(&mut recv, &mut target_write).await?;
+        let n = tokio::io::copy(&mut recv, &mut target_write).await?;
+        tap_up.record_in(n);
         target_write.shutdown().await?;
         Ok::<(), std::io::Error>(())
     };
     let target_to_client = async {
-        tokio::io::copy(&mut target_read, &mut send).await?;
+        let n = tokio::io::copy(&mut target_read, &mut send).await?;
+        tap_down.record_out(n);
         send.finish()?;
         Ok::<(), std::io::Error>(())
     };
@@ -508,12 +548,16 @@ async fn drive_tuic_uni(
     conn: QuinnConnection,
     sessions: Arc<Mutex<HashMap<u16, Arc<TuicUdpSession>>>>,
     packet_assemblies: Arc<Mutex<HashMap<(u16, u16), TuicPacketAssembly>>>,
+    tap: wrongsv_metrics::MetricsTap,
 ) -> Result<(), TuicError> {
     while let Ok(mut recv) = conn.accept_uni().await {
         let sessions = Arc::clone(&sessions);
         let packet_assemblies = Arc::clone(&packet_assemblies);
         let conn = conn.clone();
-        if let Err(e) = handle_tuic_uni_stream(conn, sessions, packet_assemblies, &mut recv).await {
+        let tap = tap.clone();
+        if let Err(e) =
+            handle_tuic_uni_stream(conn, sessions, packet_assemblies, &mut recv, tap).await
+        {
             warn!("TUIC unidirectional stream error: {e}");
         }
     }
@@ -525,6 +569,7 @@ async fn handle_tuic_uni_stream(
     sessions: Arc<Mutex<HashMap<u16, Arc<TuicUdpSession>>>>,
     packet_assemblies: Arc<Mutex<HashMap<(u16, u16), TuicPacketAssembly>>>,
     recv: &mut quinn::RecvStream,
+    tap: wrongsv_metrics::MetricsTap,
 ) -> Result<(), TuicError> {
     let cmd = read_tuic_command_header(recv).await?;
     match cmd {
@@ -535,6 +580,7 @@ async fn handle_tuic_uni_stream(
                 packet_assemblies,
                 packet,
                 TuicPacketRelayMode::Stream,
+                tap,
             )
             .await?;
         }
@@ -556,6 +602,7 @@ async fn drive_tuic_datagrams(
     conn: QuinnConnection,
     sessions: Arc<Mutex<HashMap<u16, Arc<TuicUdpSession>>>>,
     packet_assemblies: Arc<Mutex<HashMap<(u16, u16), TuicPacketAssembly>>>,
+    tap: wrongsv_metrics::MetricsTap,
 ) -> Result<(), TuicError> {
     loop {
         let datagram = conn.read_datagram().await?;
@@ -567,6 +614,7 @@ async fn drive_tuic_datagrams(
                     Arc::clone(&packet_assemblies),
                     packet,
                     TuicPacketRelayMode::Datagram,
+                    tap.clone(),
                 )
                 .await?;
             }
@@ -593,13 +641,15 @@ async fn handle_tuic_packet(
     packet_assemblies: Arc<Mutex<HashMap<(u16, u16), TuicPacketAssembly>>>,
     packet: TuicPacket,
     source_mode: TuicPacketRelayMode,
+    tap: wrongsv_metrics::MetricsTap,
 ) -> Result<(), TuicError> {
     let session = {
         let mut guard = sessions.lock().await;
         if let Some(session) = guard.get(&packet.assoc_id) {
             Arc::clone(session)
         } else {
-            let session = Arc::new(TuicUdpSession::new(conn.clone(), packet.assoc_id).await?);
+            let session =
+                Arc::new(TuicUdpSession::new(conn.clone(), packet.assoc_id, tap.clone()).await?);
             guard.insert(packet.assoc_id, Arc::clone(&session));
             let v4_session = Arc::clone(&session);
             tokio::spawn(async move { v4_session.recv_loop().await });

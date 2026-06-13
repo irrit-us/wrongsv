@@ -22,11 +22,17 @@ type H2UdpMessage = (u32, u16, u8, u8, String, Vec<u8>);
 
 #[derive(Clone)]
 pub(crate) struct Hysteria2Config {
-    pub password_auths: Vec<String>,
+    pub password_auths: Vec<Hysteria2AuthEntry>,
     pub quic_config: quinn::ServerConfig,
     pub disable_udp: bool,
     pub down_mbps: Option<u64>,
     pub ignore_client_bandwidth: bool,
+}
+
+#[derive(Clone)]
+pub(crate) struct Hysteria2AuthEntry {
+    pub auth: String,
+    pub metrics_key: String,
 }
 
 pub(crate) fn parse_hysteria2_config(
@@ -51,10 +57,16 @@ pub(crate) fn parse_hysteria2_config(
     let quic_config = build_hysteria2_quic_config(tls_config)?;
     let mut password_auths = Vec::new();
     if let Some(password) = cfg.password.as_ref() {
-        password_auths.push(password.clone());
+        password_auths.push(Hysteria2AuthEntry {
+            auth: password.clone(),
+            metrics_key: String::new(),
+        });
     }
     for user in &cfg.users {
-        password_auths.push(format!("{}:{}", user.name, user.password));
+        password_auths.push(Hysteria2AuthEntry {
+            auth: format!("{}:{}", user.name, user.password),
+            metrics_key: user.email.clone().unwrap_or_else(|| user.name.clone()),
+        });
     }
     Ok(Hysteria2Config {
         password_auths,
@@ -92,6 +104,7 @@ fn build_hysteria2_quic_config(
 pub(crate) async fn run_hysteria2_endpoint(
     listen: &str,
     config: Hysteria2Config,
+    metrics: Arc<wrongsv_metrics::Registry>,
     shutdown: ShutdownSignal,
 ) -> Result<(), H2Error> {
     let endpoint = create_hysteria2_endpoint(listen, &config)?;
@@ -106,10 +119,11 @@ pub(crate) async fn run_hysteria2_endpoint(
         match tokio::time::timeout(Duration::from_millis(200), endpoint.accept()).await {
             Ok(Some(incoming)) => {
                 let cfg = config.clone();
+                let metrics = Arc::clone(&metrics);
                 tokio::spawn(async move {
                     match incoming.await {
                         Ok(conn) => {
-                            if let Err(e) = handle_hysteria2_connection(conn, cfg).await {
+                            if let Err(e) = handle_hysteria2_connection(conn, cfg, metrics).await {
                                 warn!("Hysteria2 connection error: {e}");
                             }
                         }
@@ -135,6 +149,7 @@ fn create_hysteria2_endpoint(listen: &str, config: &Hysteria2Config) -> Result<E
 async fn handle_hysteria2_connection(
     conn: QuinnConnection,
     config: Hysteria2Config,
+    metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), H2Error> {
     let peer = conn.remote_address();
     trace!("{peer} Hysteria2 connection");
@@ -146,7 +161,7 @@ async fn handle_hysteria2_connection(
         return Err("Hysteria2 closed before auth request".into());
     };
     let (request, mut stream) = resolver.resolve_request().await?;
-    if !matches_hysteria2_auth(&request, &config)? {
+    let Some(metrics_key) = matches_hysteria2_auth(&request, &config)? else {
         let resp = http::Response::builder()
             .status(StatusCode::NOT_FOUND)
             .body(())
@@ -154,7 +169,7 @@ async fn handle_hysteria2_connection(
         stream.send_response(resp).await?;
         stream.finish().await?;
         return Ok(());
-    }
+    };
 
     let resp = http::Response::builder()
         .status(233)
@@ -164,26 +179,33 @@ async fn handle_hysteria2_connection(
         .unwrap();
     stream.send_response(resp).await?;
 
+    let tap = if metrics_key.is_empty() {
+        wrongsv_metrics::MetricsTap::disabled()
+    } else {
+        wrongsv_metrics::MetricsTap::new(metrics, metrics_key)
+    };
+    let _conn_guard = tap.track_connection();
     info!("{peer} Hysteria2 auth accepted");
-    handle_hysteria2_raw_connection(raw_conn, config).await?;
+    handle_hysteria2_raw_connection(raw_conn, config, tap).await?;
     Ok(())
 }
 
 fn matches_hysteria2_auth(
     request: &http::Request<()>,
     config: &Hysteria2Config,
-) -> Result<bool, H2Error> {
+) -> Result<Option<String>, H2Error> {
     if request.method() != http::Method::POST || request.uri().path() != "/auth" {
-        return Ok(false);
+        return Ok(None);
     }
     let auth = match request.headers().get("Hysteria-Auth") {
         Some(value) => value.to_str()?.to_string(),
-        None => return Ok(false),
+        None => return Ok(None),
     };
     Ok(config
         .password_auths
         .iter()
-        .any(|expected| expected == &auth))
+        .find(|expected| expected.auth == auth)
+        .map(|entry| entry.metrics_key.clone()))
 }
 
 fn hysteria2_cc_rx(config: &Hysteria2Config) -> String {
@@ -199,6 +221,7 @@ fn hysteria2_cc_rx(config: &Hysteria2Config) -> String {
 async fn handle_hysteria2_raw_connection(
     conn: QuinnConnection,
     config: Hysteria2Config,
+    tap: wrongsv_metrics::MetricsTap,
 ) -> Result<(), H2Error> {
     let udp_sessions: Arc<tokio::sync::Mutex<HashMap<u32, Arc<Hysteria2UdpSession>>>> =
         Arc::new(tokio::sync::Mutex::new(HashMap::new()));
@@ -207,13 +230,15 @@ async fn handle_hysteria2_raw_connection(
     let udp_conn = conn.clone();
     let udp_sessions_for_loop = Arc::clone(&udp_sessions);
     let udp_config = config.clone();
+    let tcp_tap = tap.clone();
+    let udp_tap = tap;
 
-    let tcp_task = tokio::spawn(async move { drive_hysteria2_tcp(tcp_conn).await });
+    let tcp_task = tokio::spawn(async move { drive_hysteria2_tcp(tcp_conn, tcp_tap).await });
     let udp_task = tokio::spawn(async move {
         if udp_config.disable_udp {
             discard_hysteria2_datagrams(udp_conn).await
         } else {
-            drive_hysteria2_udp(udp_conn, udp_sessions_for_loop, udp_config).await
+            drive_hysteria2_udp(udp_conn, udp_sessions_for_loop, udp_config, udp_tap).await
         }
     });
 
@@ -231,10 +256,14 @@ async fn handle_hysteria2_raw_connection(
     Ok(())
 }
 
-async fn drive_hysteria2_tcp(conn: QuinnConnection) -> Result<(), H2Error> {
+async fn drive_hysteria2_tcp(
+    conn: QuinnConnection,
+    tap: wrongsv_metrics::MetricsTap,
+) -> Result<(), H2Error> {
     while let Ok((send, recv)) = conn.accept_bi().await {
+        let tap = tap.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_hysteria2_tcp_stream(send, recv).await {
+            if let Err(e) = handle_hysteria2_tcp_stream(send, recv, tap).await {
                 warn!("Hysteria2 TCP stream error: {e}");
             }
         });
@@ -245,6 +274,7 @@ async fn drive_hysteria2_tcp(conn: QuinnConnection) -> Result<(), H2Error> {
 async fn handle_hysteria2_tcp_stream(
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
+    tap: wrongsv_metrics::MetricsTap,
 ) -> Result<(), H2Error> {
     let (address, initial_body) = read_hysteria2_tcp_request(&mut recv).await?;
     let target = match TcpStream::connect(&address).await {
@@ -260,16 +290,21 @@ async fn handle_hysteria2_tcp_stream(
 
     let (mut target_read, mut target_write) = target.into_split();
     if !initial_body.is_empty() {
+        tap.record_in(initial_body.len() as u64);
         target_write.write_all(&initial_body).await?;
     }
 
+    let tap_up = tap.clone();
+    let tap_down = tap;
     let client_to_target = async {
-        tokio::io::copy(&mut recv, &mut target_write).await?;
+        let n = tokio::io::copy(&mut recv, &mut target_write).await?;
+        tap_up.record_in(n);
         target_write.shutdown().await?;
         Ok::<(), std::io::Error>(())
     };
     let target_to_client = async {
-        tokio::io::copy(&mut target_read, &mut send).await?;
+        let n = tokio::io::copy(&mut target_read, &mut send).await?;
+        tap_down.record_out(n);
         send.finish()?;
         Ok::<(), std::io::Error>(())
     };
@@ -351,6 +386,7 @@ async fn drive_hysteria2_udp(
     conn: QuinnConnection,
     sessions: Arc<tokio::sync::Mutex<HashMap<u32, Arc<Hysteria2UdpSession>>>>,
     config: Hysteria2Config,
+    tap: wrongsv_metrics::MetricsTap,
 ) -> Result<(), H2Error> {
     let mut assemblies: HashMap<(u32, u16), Hysteria2UdpAssembly> = HashMap::new();
     loop {
@@ -374,7 +410,8 @@ async fn drive_hysteria2_udp(
             if let Some(session) = guard.get(&session_id) {
                 Arc::clone(session)
             } else {
-                let session = Arc::new(Hysteria2UdpSession::new(conn.clone(), session_id).await?);
+                let session =
+                    Arc::new(Hysteria2UdpSession::new(conn.clone(), session_id, tap.clone()).await?);
                 guard.insert(session_id, Arc::clone(&session));
                 session
             }
@@ -395,20 +432,35 @@ async fn discard_hysteria2_datagrams(conn: QuinnConnection) -> Result<(), H2Erro
 struct Hysteria2UdpSession {
     ipv4: Arc<UdpSocket>,
     ipv6: Option<Arc<UdpSocket>>,
+    metrics: wrongsv_metrics::MetricsTap,
 }
 
 impl Hysteria2UdpSession {
-    async fn new(conn: QuinnConnection, session_id: u32) -> Result<Self, H2Error> {
+    async fn new(
+        conn: QuinnConnection,
+        session_id: u32,
+        metrics: wrongsv_metrics::MetricsTap,
+    ) -> Result<Self, H2Error> {
         let ipv4 = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
         let ipv6 = match UdpSocket::bind("[::]:0").await {
             Ok(socket) => Some(Arc::new(socket)),
             Err(_) => None,
         };
-        spawn_hysteria2_udp_response_loop(conn.clone(), session_id, Arc::clone(&ipv4));
+        spawn_hysteria2_udp_response_loop(
+            conn.clone(),
+            session_id,
+            Arc::clone(&ipv4),
+            metrics.clone(),
+        );
         if let Some(ref ipv6_socket) = ipv6 {
-            spawn_hysteria2_udp_response_loop(conn.clone(), session_id, Arc::clone(ipv6_socket));
+            spawn_hysteria2_udp_response_loop(
+                conn.clone(),
+                session_id,
+                Arc::clone(ipv6_socket),
+                metrics.clone(),
+            );
         }
-        Ok(Self { ipv4, ipv6 })
+        Ok(Self { ipv4, ipv6, metrics })
     }
 
     async fn send_payload(&self, address: &str, payload: Vec<u8>) -> Result<(), H2Error> {
@@ -422,6 +474,7 @@ impl Hysteria2UdpSession {
         } else {
             self.ipv6.as_ref().ok_or("IPv6 UDP socket unavailable")?
         };
+        self.metrics.record_in(payload.len() as u64);
         socket.send_to(&payload, target).await?;
         Ok(())
     }
@@ -431,6 +484,7 @@ fn spawn_hysteria2_udp_response_loop(
     conn: QuinnConnection,
     session_id: u32,
     socket: Arc<UdpSocket>,
+    metrics: wrongsv_metrics::MetricsTap,
 ) {
     tokio::spawn(async move {
         let mut buf = [0u8; 65535];
@@ -446,6 +500,7 @@ fn spawn_hysteria2_udp_response_loop(
                     Ok(packet) => packet,
                     Err(_) => break,
                 };
+            metrics.record_out(n as u64);
             if conn.send_datagram(Bytes::from(packet)).is_err() {
                 break;
             }
@@ -621,7 +676,16 @@ mod tests {
         let (cert, key) = wrongsv_anytls::generate_self_signed_cert().unwrap();
         let tls = build_hysteria2_tls_config(&cert, &key).unwrap();
         Hysteria2Config {
-            password_auths: vec!["secret".into(), "alice:password".into()],
+            password_auths: vec![
+                Hysteria2AuthEntry {
+                    auth: "secret".into(),
+                    metrics_key: String::new(),
+                },
+                Hysteria2AuthEntry {
+                    auth: "alice:password".into(),
+                    metrics_key: "alice@example.com".into(),
+                },
+            ],
             quic_config: build_hysteria2_quic_config(tls).unwrap(),
             disable_udp: false,
             down_mbps: Some(100),

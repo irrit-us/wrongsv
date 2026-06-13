@@ -191,8 +191,8 @@ Non-server gaps identified during the sweep:
 - KCP now passes for `xray-core` and `V2Ray/V2Fly`, but the Mihomo core path on this box still
   treats VLESS mKCP as a TCP dial against the UDP KCP port, so `clash-verge-rev` / `FlClash`
   remain client/runtime gaps rather than wrongsv server defects
-- sing-box / Hiddify Hysteria2 and TUIC are still harness gaps even though wrongsv already
-  implements those server-side protocols; Hiddify AnyTLS also remains blocked by its packaged core
+- Hysteria2 and TUIC now pass for `sing-box` and `Hiddify`; Hiddify AnyTLS still remains blocked
+  by its packaged core
 - Hiddify XHTTP is now covered through its custom embedded-Xray outbound path; plain sing-box
   still lacks a usable XHTTP config surface on the installed core and remains a client/runtime gap
 
@@ -451,6 +451,21 @@ standard xray/v2fly AEAD path. `spawn_vmess_server` remains in
   Plain sing-box still does on this machine because the installed 1.12.12 core
   rejects both native `transport.type: "xhttp"` and Hiddify's custom
   `type: "xray"` wrapper.
+
+### 2026-06-13 — Hysteria2 / TUIC coverage and metrics wiring added
+
+- Added reusable `hysteria2_tcp` and `tuic_tcp` scenarios plus manual
+  sing-box-family runtime builders in `wrongsv-external-tests`.
+- Real checks now pass for both installed client families:
+  `wrongsv-external-tests/results/singbox-hysteria2-check-4/hysteria2_tcp/report.json`,
+  `wrongsv-external-tests/results/singbox-tuic-check-5/tuic_tcp/report.json`,
+  `wrongsv-external-tests/results/hiddify-hysteria2-check-2/hysteria2_tcp/report.json`,
+  and `wrongsv-external-tests/results/hiddify-tuic-check-3/tuic_tcp/report.json`.
+- wrongsv now accepts optional `email` fields on Hysteria2 and TUIC user
+  entries and threads the shared `MetricsTap` through both QUIC handlers.
+  Refreshed sing-box and Hiddify runs show non-zero per-user byte deltas for
+  `user@example.com` on both protocols.
+- Result: Hysteria2 and TUIC are no longer harness gaps for sing-box/Hiddify.
 
 ### 2026-06-13 — sing-box AnyTLS harness gap partially closed
 

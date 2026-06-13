@@ -9,3 +9,4 @@ disable_udp = false
 [[hysteria2.users]]
 name = "alice"
 password = "alice-password"
+email = "user@example.com"

@@ -327,6 +327,9 @@ pub struct Hysteria2UserConfig {
     pub name: String,
     /// Password for this user.
     pub password: String,
+    /// Optional email / metrics key for this user.
+    #[serde(default)]
+    pub email: Option<String>,
 }
 
 /// Hysteria2 TLS configuration.
@@ -383,6 +386,9 @@ pub struct TuicUserConfig {
     /// Optional display name for logs.
     #[serde(default)]
     pub name: Option<String>,
+    /// Optional email / metrics key for this user.
+    #[serde(default)]
+    pub email: Option<String>,
     /// TUIC user UUID.
     pub uuid: String,
     /// TUIC user password.

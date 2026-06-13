@@ -473,10 +473,12 @@ impl InboundServer {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;
+            let metrics = Arc::clone(&self.metrics);
             return runtime
                 .block_on(run_hysteria2_endpoint(
                     &self.config.listen,
                     config,
+                    metrics,
                     shutdown,
                 ))
                 .map_err(|e| std::io::Error::other(e.to_string()).into());
@@ -485,8 +487,9 @@ impl InboundServer {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;
+            let metrics = Arc::clone(&self.metrics);
             return runtime
-                .block_on(run_tuic_endpoint(&self.config.listen, config, shutdown))
+                .block_on(run_tuic_endpoint(&self.config.listen, config, metrics, shutdown))
                 .map_err(|e| std::io::Error::other(e.to_string()).into());
         }
         if let Some(config) = self.quic_config.clone() {
