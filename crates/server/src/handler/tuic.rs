@@ -1069,6 +1069,7 @@ mod tests {
                     .unwrap(),
                 password: "secret".into(),
                 name: Some("alice".into()),
+                metrics_key: "alice@example.com".into(),
             }],
             quic_config: build_tuic_quic_config(tls, "cubic", 10).unwrap(),
             auth_timeout: Duration::from_secs(3),

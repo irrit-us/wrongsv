@@ -736,7 +736,10 @@ mod tests {
             .header("Hysteria-Auth", "alice:password")
             .body(())
             .unwrap();
-        assert!(matches_hysteria2_auth(&request, &config).unwrap());
+        assert_eq!(
+            matches_hysteria2_auth(&request, &config).unwrap(),
+            Some("alice@example.com".into())
+        );
     }
 
     fn build_root_store(cert_pem: &str) -> rustls::RootCertStore {
@@ -848,7 +851,12 @@ mod tests {
                 let cfg = config.clone();
                 tokio::spawn(async move {
                     if let Ok(conn) = incoming.await {
-                        let _ = handle_hysteria2_connection(conn, cfg).await;
+                        let _ = handle_hysteria2_connection(
+                            conn,
+                            cfg,
+                            Arc::new(wrongsv_metrics::Registry::new()),
+                        )
+                        .await;
                     }
                 });
             }
@@ -909,7 +917,10 @@ mod tests {
         let (cert, key) = wrongsv_anytls::generate_self_signed_cert().unwrap();
         let tls = build_hysteria2_tls_config(&cert, &key).unwrap();
         let config = Hysteria2Config {
-            password_auths: vec!["secret".into()],
+            password_auths: vec![Hysteria2AuthEntry {
+                auth: "secret".into(),
+                metrics_key: String::new(),
+            }],
             quic_config: build_hysteria2_quic_config(tls).unwrap(),
             disable_udp: false,
             down_mbps: Some(100),
@@ -949,7 +960,10 @@ mod tests {
         let (cert, key) = wrongsv_anytls::generate_self_signed_cert().unwrap();
         let tls = build_hysteria2_tls_config(&cert, &key).unwrap();
         let config = Hysteria2Config {
-            password_auths: vec!["secret".into()],
+            password_auths: vec![Hysteria2AuthEntry {
+                auth: "secret".into(),
+                metrics_key: String::new(),
+            }],
             quic_config: build_hysteria2_quic_config(tls).unwrap(),
             disable_udp: false,
             down_mbps: Some(100),

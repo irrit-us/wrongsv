@@ -78,10 +78,17 @@ enum Http1BodyKind {
     UntilEof,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Http1ResponseMode {
+    Chunked,
+    Raw,
+}
+
 #[derive(Debug)]
 struct Http1XhttpRequest {
     path: String,
     body_kind: Http1BodyKind,
+    response_mode: Http1ResponseMode,
 }
 
 struct PrefixedReader<R> {
@@ -205,7 +212,19 @@ impl<R: Read> Read for Http1BodyReader<R> {
                 Ok(n)
             }
             Http1BodyKind::UntilEof => {
-                let n = self.inner.read(buf)?;
+                let n = match self.inner.read(buf) {
+                    Ok(n) => n,
+                    Err(ref e)
+                        if matches!(
+                            e.kind(),
+                            io::ErrorKind::ConnectionReset | io::ErrorKind::BrokenPipe
+                        ) =>
+                    {
+                        self.finished = true;
+                        return Ok(0);
+                    }
+                    Err(e) => return Err(e),
+                };
                 if n == 0 {
                     self.finished = true;
                 }
@@ -414,7 +433,7 @@ fn parse_xhttp_http1_request(
     let method = parts
         .next()
         .ok_or_else(|| "invalid HTTP/1.1 request line".to_string())?;
-    if method != "POST" {
+    if method != "POST" && method != "PUT" {
         return Err(format!("unsupported HTTP/1.1 method: {method}"));
     }
     let raw_path = parts
@@ -489,6 +508,11 @@ fn parse_xhttp_http1_request(
         Http1XhttpRequest {
             path: normalized_path,
             body_kind,
+            response_mode: if method == "PUT" {
+                Http1ResponseMode::Raw
+            } else {
+                Http1ResponseMode::Chunked
+            },
         },
         pipelined,
     ))
@@ -503,16 +527,28 @@ fn reject_xhttp_http1(stream: &mut TcpStream) {
     );
 }
 
-fn write_xhttp_http1_response(stream: &mut TcpStream) -> io::Result<()> {
-    stream.write_all(
-        b"HTTP/1.1 200 OK\r\n\
-          X-Accel-Buffering: no\r\n\
-          Cache-Control: no-store\r\n\
-          Content-Type: text/event-stream\r\n\
-          Transfer-Encoding: chunked\r\n\
-          Connection: close\r\n\
-          \r\n",
-    )?;
+fn write_xhttp_http1_response(
+    stream: &mut TcpStream,
+    mode: Http1ResponseMode,
+) -> io::Result<()> {
+    match mode {
+        Http1ResponseMode::Chunked => stream.write_all(
+            b"HTTP/1.1 200 OK\r\n\
+              X-Accel-Buffering: no\r\n\
+              Cache-Control: no-store\r\n\
+              Content-Type: text/event-stream\r\n\
+              Transfer-Encoding: chunked\r\n\
+              Connection: close\r\n\
+              \r\n",
+        )?,
+        Http1ResponseMode::Raw => stream.write_all(
+            b"HTTP/1.1 200 OK\r\n\
+              Cache-Control: no-store\r\n\
+              Content-Type: application/octet-stream\r\n\
+              Connection: close\r\n\
+              \r\n",
+        )?,
+    }
     stream.flush()
 }
 
@@ -861,15 +897,27 @@ fn drive_incoming_http1<R: Read>(
 }
 
 fn drive_outgoing_http1(
-    stream: TcpStream,
+    mut stream: TcpStream,
+    mode: Http1ResponseMode,
     mut outgoing_rx: tokio_mpsc::Receiver<Vec<u8>>,
     peer: std::net::SocketAddr,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut writer = Http1ChunkedWriter::new(stream);
-    while let Some(data) = outgoing_rx.blocking_recv() {
-        writer.write_all(&data)?;
+    match mode {
+        Http1ResponseMode::Chunked => {
+            let mut writer = Http1ChunkedWriter::new(stream);
+            while let Some(data) = outgoing_rx.blocking_recv() {
+                writer.write_all(&data)?;
+            }
+            writer.finish()?;
+        }
+        Http1ResponseMode::Raw => {
+            while let Some(data) = outgoing_rx.blocking_recv() {
+                stream.write_all(&data)?;
+                stream.flush()?;
+            }
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+        }
     }
-    writer.finish()?;
     trace!("{peer} XHTTP/1.1 stream finished OK");
     Ok(())
 }
@@ -898,7 +946,7 @@ fn drive_xhttp_http1_connection(
     stream.set_read_timeout(None)?;
     stream.set_nodelay(true)?;
     let reader_stream = stream.try_clone()?;
-    write_xhttp_http1_response(&mut stream)?;
+    write_xhttp_http1_response(&mut stream, request.response_mode)?;
 
     let body_reader = Http1BodyReader::new(PrefixedReader::new(initial_body, reader_stream), request.body_kind);
     let (incoming_tx, incoming_rx) = mpsc::sync_channel::<Vec<u8>>(64);
@@ -907,8 +955,9 @@ fn drive_xhttp_http1_connection(
     let incoming_handle = std::thread::spawn(move || {
         drive_incoming_http1(body_reader, incoming_tx).map_err(|e| e.to_string())
     });
+    let response_mode = request.response_mode;
     let outgoing_handle = std::thread::spawn(move || {
-        drive_outgoing_http1(stream, outgoing_rx, peer).map_err(|e| e.to_string())
+        drive_outgoing_http1(stream, response_mode, outgoing_rx, peer).map_err(|e| e.to_string())
     });
 
     let relay_result =
@@ -1359,6 +1408,20 @@ test\r\n";
             parse_xhttp_http1_request(request, "/xhttp", Some("example.com")).unwrap();
         assert_eq!(parsed.path, "/xhttp");
         assert_eq!(parsed.body_kind, Http1BodyKind::Chunked);
+        assert_eq!(parsed.response_mode, Http1ResponseMode::Chunked);
         assert_eq!(pipelined, b"4\r\ntest\r\n");
+    }
+
+    #[test]
+    fn parse_http1_put_request_until_eof() {
+        let request = b"PUT /xhttp HTTP/1.1\r\n\
+Host: localhost\r\n\
+\r\n\
+\x00";
+        let (parsed, pipelined) = parse_xhttp_http1_request(request, "/xhttp", None).unwrap();
+        assert_eq!(parsed.path, "/xhttp");
+        assert_eq!(parsed.body_kind, Http1BodyKind::UntilEof);
+        assert_eq!(parsed.response_mode, Http1ResponseMode::Raw);
+        assert_eq!(pipelined, b"\x00");
     }
 }

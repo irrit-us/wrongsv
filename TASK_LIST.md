@@ -193,8 +193,9 @@ Non-server gaps identified during the sweep:
   remain client/runtime gaps rather than wrongsv server defects
 - Hysteria2 and TUIC now pass for `sing-box` and `Hiddify`; Hiddify AnyTLS still remains blocked
   by its packaged core
-- Hiddify XHTTP is now covered through its custom embedded-Xray outbound path; plain sing-box
-  still lacks a usable XHTTP config surface on the installed core and remains a client/runtime gap
+- Hiddify XHTTP is now covered through its custom embedded-Xray outbound path, and plain sing-box
+  XHTTP now also passes via its HTTP/1 `v2ray-http` transport path after a server-side
+  compatibility tweak
 
 ### 2026-06-13 — gRPC server path partly hardened
 
@@ -448,9 +449,6 @@ standard xray/v2fly AEAD path. `spawn_vmess_server` remains in
   and the longer run
   `wrongsv-external-tests/results/hiddify-xhttp-long-2/vless_xhttp/report.json`.
 - Current classification: Hiddify no longer has an XHTTP harness gap.
-  Plain sing-box still does on this machine because the installed 1.12.12 core
-  rejects both native `transport.type: "xhttp"` and Hiddify's custom
-  `type: "xray"` wrapper.
 
 ### 2026-06-13 — Hysteria2 / TUIC coverage and metrics wiring added
 
@@ -466,6 +464,23 @@ standard xray/v2fly AEAD path. `spawn_vmess_server` remains in
   Refreshed sing-box and Hiddify runs show non-zero per-user byte deltas for
   `user@example.com` on both protocols.
 - Result: Hysteria2 and TUIC are no longer harness gaps for sing-box/Hiddify.
+
+### 2026-06-13 — sing-box XHTTP HTTP/1 compatibility added
+
+- Investigated the remaining plain sing-box XHTTP failure and confirmed the
+  installed core was using its `v2ray-http` client transport rather than a
+  native `xhttp` transport. The first failure mode was a 404 because wrongsv's
+  HTTP/1 parser only accepted `POST`; the second was `unknown version: 50`
+  because wrongsv returned chunked HTTP/1.1 response bodies while sing-box
+  reads raw bytes after the 200 response header.
+- wrongsv's HTTP/1 XHTTP path now accepts both `POST` and `PUT`, and `PUT`
+  requests receive a raw-body `HTTP/1.1 200 OK` response instead of chunked
+  framing. Connection-reset on the `UntilEof` request-body path is treated as a
+  normal shutdown.
+- External rechecks now pass for plain sing-box:
+  `wrongsv-external-tests/results/singbox-xhttp-check-3/vless_xhttp/report.json`
+  and the longer run
+  `wrongsv-external-tests/results/singbox-xhttp-long-1/vless_xhttp/report.json`.
 
 ### 2026-06-13 — sing-box AnyTLS harness gap partially closed
 
