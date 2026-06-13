@@ -72,6 +72,10 @@
 - 127.0.0.1:11451 is the local outbound proxy for any unreachable external resource.
 - New external-test entry point: `wrongsv-external-tests/run-client-suite.js`. It composes `wrongsv` server startup, client-config adaptation, client lifecycle, traffic workloads, browser workloads, and wrongsv `/metrics` scraping.
 - New capability entry point: `wrongsv-external-tests/run-client-matrix.js`. It iterates protocol scenarios per client, records pass/fail/defect status, and emits `matrix.json` / `matrix.md`.
+- Core-client debug surfaces are now available in external runs: Mihomo-based paths use the Clash
+  controller API, sing-box uses its Clash API surface, and GUI clients keep using VM-service
+  snapshots. Each suite writes `debug-*.json` artifacts next to `report.json` when the client
+  supports them.
 - Browser/user simulation now runs against deterministic local pages served by `proxy-testing-framework/local-test-server.js` (`/page/news`, `/page/feed`, `/page/store/catalog`, `/page/form`, `/page/video`) instead of only raw `httpbin` targets.
 
 ## Status
@@ -209,6 +213,16 @@ Non-server gaps identified during the sweep:
   `xray-core` XHTTP check (`results/xray-xhttp-check`) also fails.
 - That narrows the defect boundary: the remaining XHTTP problem is in
   wrongsv's XHTTP carrier semantics, not just in one client family.
+
+### 2026-06-13 — Longer-duration capability sweeps
+
+- Added traffic-profile selection to `run-client-matrix.js` so capability sweeps can run with
+  `local-general`, `local-download-heavy`, and `local-session-churn` instead of only a quick
+  smoke profile.
+- Longer matrix runs now exist for stable combinations:
+  `results/clash-verge-long` and `results/singbox-long`.
+- These runs confirmed the previously passing protocol families still hold up under sustained
+  load while continuing to emit per-user wrongsv metrics deltas.
 
 ### 2026-06-13 — Metrics endpoint live
 
