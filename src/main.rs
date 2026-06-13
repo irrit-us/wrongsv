@@ -206,7 +206,12 @@ fn main() {
                 duration,
                 output,
             } => {
-                match wrongsv_evaluator_client::runner::run_evaluation(&server, &token, duration) {
+                match wrongsv_evaluator_client::runner::run_evaluation(
+                    &server,
+                    &token,
+                    duration,
+                    &[],
+                ) {
                     Ok(results) => {
                         // Export JSON
                         let json_path = format!("{output}.json");

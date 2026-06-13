@@ -64,6 +64,8 @@ struct StackResult {
 enum ClientMessage<'a> {
     #[serde(rename = "auth")]
     Auth { token: &'a str },
+    #[serde(rename = "select_protocols")]
+    SelectProtocols { protocols: &'a [String] },
     #[serde(rename = "ready")]
     Ready { protocol: &'a str },
     #[serde(rename = "result")]
@@ -337,11 +339,14 @@ fn run_packet_loss_test(stream: &mut dyn transport::ReadWrite, _duration: Durati
 // ── main evaluation loop ────────────────────────────────────────────────
 
 /// Connect to the evaluator server, authenticate, run through all protocols,
-/// and return results.
+/// and return results. If `protocols` is non-empty, the server runs only
+/// those protocols (in the given order); an empty slice keeps the server's
+/// configured default.
 pub fn run_evaluation(
     server_addr: &str,
     token: &str,
     duration_secs: u64,
+    protocols: &[String],
 ) -> Result<Vec<ProtocolResult>, Box<dyn std::error::Error>> {
     let mut stream = TcpStream::connect_timeout(&server_addr.parse()?, Duration::from_secs(10))?;
     stream.set_read_timeout(Some(Duration::from_secs(60)))?;
@@ -367,6 +372,12 @@ pub fn run_evaluation(
         }
         _ => return Err("unexpected auth response".into()),
     }
+
+    // --- protocol selection ---
+    send_msg(
+        reader.get_mut(),
+        &ClientMessage::SelectProtocols { protocols },
+    )?;
 
     let mut results: Vec<ProtocolResult> = Vec::new();
     let duration = Duration::from_secs(duration_secs);

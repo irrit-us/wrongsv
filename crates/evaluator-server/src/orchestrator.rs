@@ -480,6 +480,32 @@ async fn serve_client(
     }
     info!("evaluator client authenticated");
 
+    // Read the client's protocol selection. Empty list = use server defaults.
+    let client_protocols: Option<Vec<String>> = match lines.next_line().await {
+        Ok(Some(line)) => match serde_json::from_str::<ClientMessage>(&line) {
+            Ok(ClientMessage::SelectProtocols { protocols }) => {
+                if protocols.is_empty() {
+                    None
+                } else {
+                    Some(protocols)
+                }
+            }
+            other => {
+                warn!("expected select_protocols, got: {other:?}");
+                return;
+            }
+        },
+        _ => return,
+    };
+
+    let protocols: &[String] = match client_protocols.as_deref() {
+        Some(p) => {
+            info!("client requested protocols: {:?}", p);
+            p
+        }
+        None => protocols,
+    };
+
     let mut results: Vec<ProtocolMetrics> = Vec::new();
 
     for (i, protocol) in protocols.iter().enumerate() {

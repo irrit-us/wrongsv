@@ -52,7 +52,7 @@ fn evaluator_end_to_end_small_subset() {
 
     // Run client on main thread
     let results =
-        run_evaluation(&listen_addr, token, duration_secs).expect("evaluation should succeed");
+        run_evaluation(&listen_addr, token, duration_secs, &[]).expect("evaluation should succeed");
 
     // Verify results
     assert!(
@@ -141,7 +141,7 @@ fn evaluator_reality_uses_real_raw_pubkey() {
     std::thread::sleep(Duration::from_millis(300));
 
     let results =
-        run_evaluation(&listen_addr, token, duration_secs).expect("evaluation should succeed");
+        run_evaluation(&listen_addr, token, duration_secs, &[]).expect("evaluation should succeed");
     let reality = results
         .iter()
         .find(|r| r.protocol == "reality")
@@ -186,7 +186,7 @@ fn evaluator_rejects_bad_token() {
     std::thread::sleep(Duration::from_millis(300));
 
     // Try to connect with a WRONG token
-    let result = run_evaluation(&listen_addr, "wrong-token", 1);
+    let result = run_evaluation(&listen_addr, "wrong-token", 1, &[]);
     assert!(result.is_err(), "should reject bad token");
     let err_msg = result.unwrap_err().to_string();
     assert!(

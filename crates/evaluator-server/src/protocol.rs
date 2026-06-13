@@ -10,6 +10,10 @@ pub enum ClientMessage {
     /// Authenticate with the shared token.
     #[serde(rename = "auth")]
     Auth { token: String },
+    /// Override the server's configured protocol list. Sent once after AuthOk.
+    /// An empty list means "use server defaults".
+    #[serde(rename = "select_protocols")]
+    SelectProtocols { protocols: Vec<String> },
     /// Client is ready to begin a test.
     #[serde(rename = "ready")]
     Ready { protocol: String },
