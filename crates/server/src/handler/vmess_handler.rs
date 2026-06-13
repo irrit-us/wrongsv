@@ -82,17 +82,7 @@ pub(crate) fn handle_vmess_connection(
     let _conn_guard = tap.track_connection();
 
     // ── Read header ────────────────────────────────────────────────────
-    let mut header_len_buf = [0u8; 2];
-    read_exact(&mut sock, &mut header_len_buf)?;
-    let header_len = u16::from_be_bytes(header_len_buf) as usize;
-    if !(28..=8192).contains(&header_len) {
-        return Err(format!("VMess header length out of range: {header_len}").into());
-    }
-
-    let mut header_payload = vec![0u8; header_len];
-    read_exact(&mut sock, &mut header_payload)?;
-
-    let instr = match vmess::decrypt_header(&user_cmd_key, &eaudid, &header_payload) {
+    let instr = match vmess::read_header(&user_cmd_key, &eaudid, &mut sock) {
         Ok(inst) => inst,
         Err(e) => {
             warn!("{peer} VMess header decrypt failed: {e}");
@@ -105,9 +95,14 @@ pub(crate) fn handle_vmess_connection(
         instr.command, instr.address, instr.port
     );
 
+    match instr.command {
+        vmess::VmessCommand::Tcp => {}
+        vmess::VmessCommand::Udp => return Err("VMess UDP relay is not implemented yet".into()),
+        vmess::VmessCommand::Mux => return Err("VMess Mux relay is not implemented yet".into()),
+    }
+
     // ── Send response auth ─────────────────────────────────────────────
-    let response_key = vmess::derive_response_key(&user_cmd_key);
-    let resp_payload = vmess::build_response(&response_key)?;
+    let resp_payload = vmess::build_response(&instr.body_key, &instr.body_iv, instr.response_header)?;
     sock.write_all(&resp_payload)?;
 
     // ── Relay ──────────────────────────────────────────────────────────
@@ -127,9 +122,12 @@ pub(crate) fn handle_vmess_connection(
     sock.set_read_timeout(Some(Duration::from_secs(1)))?;
     sock.set_write_timeout(Some(Duration::from_secs(5)))?;
 
-    // Body readers/writers — same key and IV for both directions
-    let client_body_key = &instr.body_key;
-    let client_body_iv = &instr.body_iv;
+    let client_body_key = instr.body_key;
+    let client_body_iv = instr.body_iv;
+    let server_body_key = vmess::derive_response_body_key(&client_body_key);
+    let server_body_iv = vmess::derive_response_body_iv(&client_body_iv);
+    let option = instr.option;
+    let security = instr.security;
 
     let mut client_r = sock.try_clone()?;
     let mut client_w = sock;
@@ -141,13 +139,18 @@ pub(crate) fn handle_vmess_connection(
     let (err_tx, err_rx) = std::sync::mpsc::channel::<String>();
 
     // Thread 1: Read VMess chunks from client → decrypt → write to target
-    let cbk = *client_body_key;
-    let cbv = *client_body_iv;
     let err_tx1 = err_tx.clone();
     let tap_up = tap.clone();
     let t1 = thread::spawn(move || {
         let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-            let mut reader = vmess::VmessBodyReader::new(&cbk, &cbv);
+            let mut reader = vmess::VmessBodyReader::new_with_options(
+                &client_body_key,
+                &client_body_iv,
+                &client_body_key,
+                &client_body_iv,
+                option,
+                security,
+            )?;
             loop {
                 let mut plaintext = Vec::with_capacity(16384);
                 match reader.read_chunk(&mut client_r, &mut plaintext) {
@@ -175,12 +178,17 @@ pub(crate) fn handle_vmess_connection(
     });
 
     // Thread 2: Read from target → encrypt with VMess body → write to client
-    let sbk = *client_body_key;
-    let sbv = *client_body_iv;
     let tap_down = tap.clone();
     let t2 = thread::spawn(move || {
         let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-            let mut writer = vmess::VmessBodyWriter::new(&sbk, &sbv);
+            let mut writer = vmess::VmessBodyWriter::new_with_options(
+                &server_body_key,
+                &server_body_iv,
+                &client_body_key,
+                &client_body_iv,
+                option,
+                security,
+            )?;
             let mut buf = [0u8; 16384];
             loop {
                 match target_r.read(&mut buf) {

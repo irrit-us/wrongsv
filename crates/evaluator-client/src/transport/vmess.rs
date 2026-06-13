@@ -1,8 +1,4 @@
-//! VMess AEAD client transport.
-//!
-//! Connects to a wrongsv VMess server, authenticates with EAuID, sends an
-//! encrypted header, and returns a bidirectional stream with AEAD body
-//! encryption/decryption handled internally.
+//! Standard VMess AEAD client transport.
 
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
@@ -14,7 +10,7 @@ use wrongsv_server::vmess;
 
 use super::BoxedIo;
 
-/// VMess stream — converts plain data ↔ AES-128-GCM chunked VMess body.
+/// VMess stream — converts plain data ↔ standard VMess chunked body framing.
 pub struct VmessStream {
     // Write side: send plaintext, it gets encrypted and written to socket
     write_tx: mpsc::SyncSender<Vec<u8>>,
@@ -122,9 +118,12 @@ pub fn connect_vmess(
         command: vmess::VmessCommand::Tcp,
         address: target_addr.to_string(),
         port: target_port,
+        option: vmess::DEFAULT_REQUEST_OPTIONS,
+        security: vmess::DEFAULT_SECURITY,
+        response_header: vmess::DEFAULT_RESPONSE_HEADER,
     };
 
-    let (total_len, header_payload): (u16, Vec<u8>) =
+    let (_total_len, header_payload): (u16, Vec<u8>) =
         match vmess::build_header(&cmd_key, &eaudid, &body_key, &body_iv, &request) {
             Ok(v) => v,
             Err(e) => {
@@ -137,12 +136,15 @@ pub fn connect_vmess(
 
     // ── Send EAuID + header ───────────────────────────────────────────
     sock.write_all(&eaudid)?;
-    sock.write_all(&total_len.to_be_bytes())?;
     sock.write_all(&header_payload)?;
 
     // ── Read response ────────────────────────────────────────────────
-    let response_key = vmess::derive_response_key(&cmd_key);
-    match vmess::read_response(&response_key, &mut sock) {
+    match vmess::read_response(
+        &body_key,
+        &body_iv,
+        request.response_header,
+        &mut sock,
+    ) {
         Ok(()) => {}
         Err(e) => {
             return Err(io::Error::new(
@@ -167,12 +169,24 @@ pub fn connect_vmess(
     let mut reader_sock = sock;
 
     // Thread: read plaintext from channel, encrypt, write to socket
-    let bk = body_key;
-    let bv = body_iv;
+    let request_body_key = body_key;
+    let request_body_iv = body_iv;
+    let response_body_key = vmess::derive_response_body_key(&request_body_key);
+    let response_body_iv = vmess::derive_response_body_iv(&request_body_iv);
+    let option = request.option;
+    let security = request.security;
     let read_tx_err = read_tx.clone();
     thread::spawn(move || {
-        let result = {
-            let mut writer = vmess::VmessBodyWriter::new(&bk, &bv);
+        let result = (|| -> io::Result<()> {
+            let mut writer = vmess::VmessBodyWriter::new_with_options(
+                &request_body_key,
+                &request_body_iv,
+                &request_body_key,
+                &request_body_iv,
+                option,
+                security,
+            )
+            .map_err(io::Error::other)?;
             let outcome = loop {
                 match write_rx.recv_timeout(Duration::from_millis(10)) {
                     Ok(data) => {
@@ -195,7 +209,7 @@ pub fn connect_vmess(
             };
             let _ = writer_sock.shutdown(Shutdown::Write);
             outcome
-        };
+        })();
         if let Err(_e) = result {
             let _ = read_tx_err.send(Vec::new());
         }
@@ -203,8 +217,16 @@ pub fn connect_vmess(
 
     // Thread: read from socket, decrypt, send plaintext to channel
     thread::spawn(move || {
-        let result = {
-            let mut reader = vmess::VmessBodyReader::new(&bk, &bv);
+        let result = (|| -> io::Result<()> {
+            let mut reader = vmess::VmessBodyReader::new_with_options(
+                &response_body_key,
+                &response_body_iv,
+                &request_body_key,
+                &request_body_iv,
+                option,
+                security,
+            )
+            .map_err(io::Error::other)?;
             let mut plaintext = Vec::with_capacity(16384);
             let outcome = loop {
                 plaintext.clear();
@@ -230,7 +252,7 @@ pub fn connect_vmess(
             };
             let _ = reader_sock.shutdown(Shutdown::Read);
             outcome
-        };
+        })();
         if let Err(_e) = result {
             let _ = read_tx.send(Vec::new());
         }

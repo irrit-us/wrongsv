@@ -24,7 +24,7 @@
 - [x] **VLESS** — wire format matches xray (version|user_id|addons(u8-len + proto)|cmd|addr+port). Two issues surfaced & one hardened — see "VLESS Kyber-via-addons is unreachable" under Status.
 - [x] **REALITY** — auth path matches xray-core (X25519+HKDF-SHA256 with `salt=client_random[..20]`, `info=b"REALITY"`; AES-256-GCM session_id w/ AAD = ClientHello body, session_id offset 39 zeroed; HMAC-SHA512(auth_key, raw_pubkey) cert binding). Verified end-to-end by the eval-client cert HMAC check (36e64b5) and lifecycle tests.
 - [x] **AnyTLS** — sing-anytls wire matches spec: `[SHA256(pw)(32) | padding_len(2 BE) | padding(N) | payload]`. Constant-time pw compare, 30s slowloris bound. Verified by lifecycle tests + AnyTLS metrics roundtrip.
-- [x] **VMess** — custom dialect, NOT v2fly/xray VMess AEAD — see "VMess KDF diverges from v2fly" under Status.
+- [x] **VMess** — reconciled with standard xray/v2fly VMess AEAD; see "VMess standard interop restored" under Status.
 - [x] **Trojan** — trojan-gfw wire matches spec: `SHA224_hex(pw)(56) + CRLF + cmd + SOCKS5 addr + port(BE) + CRLF + payload`. Case-insensitive hash compare, port-0 rejection on Connect, MAX_REQUEST_HEAD_LEN bound, fast non-hex reject for fallback. Verified by lifecycle tests + per-user metrics roundtrip.
 - [x] **Shadowsocks 2022** — blake3 KDF with info `"shadowsocks 2022 session subkey"`, salt_len=key_len, base64 PSK, replay-cache, salt-prefix only on legacy methods. Matches shadowsocks-org/2022-1.md.
 - [x] **WebSocket** — RFC 6455 framing (FIN+RSV+opcode; masked client→server; unmasked server→client; 16/64-bit ext length; control payload ≤125). Upgrade uses canonical GUID `258EAFA5-E914-47DA-95CA-C5AB0DC85B11`. Minor gap: RSV-bits MUST-be-zero check is missing (proxy context, no extension negotiation, low risk).
@@ -41,7 +41,7 @@
 
 ### Phase 4 — Expand External Test Coverage
 
-- [x] Add xray-core VMess regression test (`test_xray_lifecycle_vmess_dialect_divergence`) — empirically confirms wrongsv-VMess ≠ v2fly-VMess
+- [x] Add xray-core VMess real-client lifecycle coverage (`test_xray_lifecycle_vmess_tcp_echo`) — now proves positive xray-core interop against wrongsv VMess
 - [x] Add xray-core client lifecycle module in wrongsv-external-tests (start, configure, stop)
 - [x] Add sing-box client lifecycle module in wrongsv-external-tests
 - [x] Add clash-verge-rev capability path via Mihomo core adapter in wrongsv-external-tests
@@ -155,20 +155,20 @@ Executed matrices:
 
 - `results/clash-verge-matrix`
   covered: VLESS raw TCP, WebSocket, HTTPUpgrade, Shadowsocks AEAD, Shadowsocks 2022, Trojan TLS
-  confirmed defect: VMess standard interop
+  confirmed defect: VMess standard interop (resolved later, see below)
   newly surfaced defect: Mihomo gRPC interop (resolved later, see below)
 - `results/singbox-matrix-2` + `results/singbox-quic-check-2`
   covered: VLESS REALITY Vision, HTTPUpgrade, QUIC, Shadowsocks 2022, Trojan TLS
-  confirmed defect: VMess standard interop
+  confirmed defect: VMess standard interop (resolved later, see below)
   harness gap: sing-box XHTTP config path still needs a capability-grounded mapping
 - `results/xray-matrix`
   covered: VLESS REALITY Vision, HTTPUpgrade, Shadowsocks 2022
-  confirmed defect: VMess standard interop
+  confirmed defect: VMess standard interop (resolved later, see below)
   newly surfaced defect: xray-core gRPC interop instability (resolved later, see below)
   harness gap: latest xray 26.5.9 mKCP config migration breaks our current KCP runtime builder
 - `results/v2ray-matrix-check-2` + `results/v2ray-extra-check`
   covered: VLESS raw TCP, WebSocket, Shadowsocks AEAD
-  confirmed defect: VMess standard interop
+  confirmed defect: VMess standard interop (resolved later, see below)
   newly surfaced defect: V2Fly gRPC interop instability (resolved later, see below)
   client-side note: tested V2Ray 5.49.0 does not accept `httpupgrade` as a transport keyword, so
   it was removed from the runnable capability set
@@ -183,11 +183,13 @@ New server-side defects recorded from client-capability sweeps:
   handling on reused gRPC connections
 - ~~`server.v2ray_grpc_interop`~~ resolved later on 2026-06-13 by graceful h2 stream-reset
   handling on reused gRPC connections
-- `server.vmess_standard_interop`
+- ~~`server.vmess_standard_interop`~~ resolved later on 2026-06-13 by standardizing wrongsv VMess
+  AuthID/KDF/header/body framing and fixing standalone VMess client-config UUID selection
 
 Non-server gaps identified during the sweep:
 
-- xray-core KCP runtime config needs updating for current xray config semantics
+- xray-core KCP runtime config startup has been updated to the current finalmask schema, but the
+  runtime behavior of `vless_kcp` is still under investigation
 - sing-box / Hiddify AnyTLS, ShadowTLS, Hysteria2, and TUIC are still harness gaps even though
   wrongsv already implements those server-side protocols
 - sing-box / Hiddify XHTTP still need a capability-grounded config mapping before they should be
@@ -317,7 +319,7 @@ No protocol traffic is currently encrypted with PQ material on either side, so (
 zero-risk. Hardening commit already in place to make the truncation a hard error if anyone
 revives the path.
 
-### 2026-06-13 — VMess KDF diverges from v2fly spec
+### 2026-06-13 — VMess KDF diverges from v2fly spec (historical, resolved later)
 
 Audit of `crates/server/src/vmess.rs` shows wrongsv's VMess is a CUSTOM AEAD variant, not
 v2fly/xray VMess AEAD. Concretely:
@@ -356,20 +358,50 @@ HTTPUpgrade). Two non-trivial findings surfaced (Kyber-via-addons is unreachable
 is a custom dialect). Both documented above with decision points. Next: Phase 3 external
 tests via hiddify + FlClash — required to confirm the VMess interop gap matters in practice.
 
-### 2026-06-13 — VMess KDF divergence empirically confirmed via xray-core
+### 2026-06-13 — VMess KDF divergence empirically confirmed via xray-core (historical, resolved later)
 
-Added `test_xray_lifecycle_vmess_dialect_divergence` (tests/xray_lifecycle.rs:990+).
-The test spawns a real xray-core 26.5.9 binary as a VMess client against a
-wrongsv VMess server and asserts the handshake FAILS.
+Added `test_xray_lifecycle_vmess_dialect_divergence` (later replaced by
+`test_xray_lifecycle_vmess_tcp_echo`). The original regression proved the old
+wrongsv VMess dialect was incompatible with xray-core.
 
 Result: xray's EAuID arrives, wrongsv decrypts it with the wrong key, CRC32
 check fails, server logs `VMess auth failed: eaudid verification failed`.
-Audit finding confirmed — the test now functions as a regression check that
-will start failing only if the dialect is reconciled.
+Audit finding confirmed at the time — and later retired once the dialect was
+reconciled.
 
-Decision still pending (A: rename to `vmess-wrongsv` / B: refactor KDF to
-v2fly spec). New helper `spawn_vmess_server` added to `tests/common/mod.rs`
-for cross-binary reuse (sing-box / mihomo lifecycle suites can use it).
+The implementation was later moved to option (B): wrongsv now follows the
+standard xray/v2fly AEAD path. `spawn_vmess_server` remains in
+`tests/common/mod.rs` for cross-binary reuse.
+
+### 2026-06-13 — VMess standard interop restored across clients
+
+- wrongsv VMess now uses the standard command-key derivation
+  (`MD5(uuid || c48619fe-8f02-49e0-b9e9-edf763e17e21)`), xray-style nested KDF
+  salts for AuthID/header/response-header handling, and standard masked/padded
+  AEAD body chunks with encrypted EOF markers.
+- Standalone VMess client-config generation was also fixed so VMess clients now
+  receive the real `[[vmess.users]]` UUID instead of a placeholder build UUID.
+- In-tree verification now passes for:
+  `test_xray_lifecycle_vmess_tcp_echo`,
+  `metrics_count_bytes_per_user_through_vmess_relay`, and the VMess helper
+  unit tests in `crates/server/src/vmess.rs`.
+- External rechecks now pass for standard-VMess clients:
+  `xray-core` (`results/xray-vmess-recheck-2`),
+  `v2ray` (`results/v2ray-vmess-recheck-1`),
+  `sing-box` (`results/singbox-vmess-recheck-1`),
+  `clash-verge-rev` (`results/clash-verge-vmess-recheck-1`),
+  `FlClash` (`results/flclash-vmess-recheck-1`), and
+  `Hiddify` (`results/hiddify-vmess-recheck-1`).
+
+### 2026-06-13 — xray-core KCP runtime-config migration fixed, runtime still open
+
+- Updated wrongsv's xray-format client config generation so KCP no longer emits
+  the removed `seed` field. It now uses the current `finalmask.udp` schema with
+  `mkcp-original` or `mkcp-aes128gcm`.
+- Result: `xray-core` no longer fails at startup on `vless_kcp`.
+- Residual issue: `results/xray-kcp-check-2` still times out under sustained
+  traffic and produces no server-side metrics deltas, so KCP remains an open
+  follow-up item rather than a confirmed resolved capability.
 
 ### 2026-06-13 — Phase 3 traffic verification needs TUN privileges or mobile build
 

@@ -18,7 +18,7 @@ use common::{
     init_logging, lifecycle_test_lock, local_http_url, pick_ports, socks5_get, socks5_tcp_echo,
     socks5_udp_echo, spawn_http_echo_target, spawn_httpupgrade_server, spawn_multi_user_server,
     spawn_server, spawn_shadowsocks_server, spawn_tcp_echo_target,
-    spawn_trojan_server_with_pinned_cert, spawn_udp_echo_target, spawn_ws_server,
+    spawn_trojan_server_with_pinned_cert, spawn_udp_echo_target, spawn_vmess_server, spawn_ws_server,
 };
 
 fn xray_bin() -> Option<String> {
@@ -268,6 +268,55 @@ fn write_xray_ws_config(path: &str, socks_port: u16, server_port: u16, uuid: &st
       "mux": {{
         "enabled": false,
         "xudpConcurrency": -1
+      }}
+    }}
+  ],
+  "routing": {{
+    "rules": [
+      {{
+        "type": "field",
+        "inboundTag": ["socks-in"],
+        "outboundTag": "proxy"
+      }}
+    ]
+  }}
+}}"#
+    );
+    std::fs::write(path, json).unwrap();
+}
+
+fn write_xray_vmess_config(path: &str, socks_port: u16, server_port: u16, uuid: &str) {
+    let json = format!(
+        r#"{{
+  "log": {{ "loglevel": "warning" }},
+  "inbounds": [
+    {{
+      "port": {socks_port},
+      "protocol": "socks",
+      "listen": "127.0.0.1",
+      "tag": "socks-in",
+      "settings": {{
+        "udp": true
+      }}
+    }}
+  ],
+  "outbounds": [
+    {{
+      "protocol": "vmess",
+      "tag": "proxy",
+      "settings": {{
+        "vnext": [
+          {{
+            "address": "127.0.0.1",
+            "port": {server_port},
+            "users": [
+              {{
+                "id": "{uuid}",
+                "security": "aes-128-gcm"
+              }}
+            ]
+          }}
+        ]
       }}
     }}
   ],
@@ -941,4 +990,33 @@ fn test_xray_lifecycle_httpupgrade_tcp_http() {
 
     let body = socks5_get(socks_port, &local_http_url(http_addr, "/ip")).unwrap();
     assert!(body.contains("origin"), "unexpected response: {body}");
+}
+
+// ── VMess AEAD tests ───────────────────────────────────────────────────────
+
+/// Positive interop check: real xray-core VMess outbound should be able to
+/// authenticate against wrongsv's VMess server and relay TCP once the server
+/// follows the standard xray/v2fly AEAD wire format.
+#[test]
+fn test_xray_lifecycle_vmess_tcp_echo() {
+    if xray_bin().is_none() {
+        eprintln!("SKIP: xray not found");
+        return;
+    }
+    let _guard = lifecycle_test_lock();
+    init_logging();
+
+    let ports = pick_ports(2);
+    let server_port = ports[0];
+    let socks_port = ports[1];
+    let echo_addr = spawn_tcp_echo_target();
+
+    let _server = spawn_vmess_server(server_port, TEST_UUID, "vmess@xray.test");
+
+    let cfg = format!("/tmp/xray-vmess-{server_port}.json");
+    write_xray_vmess_config(&cfg, socks_port, server_port, TEST_UUID);
+    let _x = start_xray(&cfg, socks_port);
+
+    let result = socks5_tcp_echo(socks_port, echo_addr, b"xray vmess tcp").unwrap();
+    assert_eq!(result, b"xray vmess tcp");
 }

@@ -63,11 +63,19 @@ pub(crate) fn resolve_client_values(
 
     match toml_config {
         Some(ref cfg) => {
-            let uuid = cfg
-                .users
-                .first()
-                .map(|u| u.id.as_str())
-                .unwrap_or(build_uuid());
+            let uuid = match transport {
+                Transport::Vmess => cfg
+                    .vmess
+                    .as_ref()
+                    .and_then(|v| v.users.first())
+                    .map(|u| u.id.as_str())
+                    .unwrap_or(build_uuid()),
+                _ => cfg
+                    .users
+                    .first()
+                    .map(|u| u.id.as_str())
+                    .unwrap_or(build_uuid()),
+            };
             let flow = cfg
                 .users
                 .first()
@@ -715,6 +723,8 @@ struct XrayStreamSettings<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     security: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    finalmask: Option<XrayFinalMask<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "realitySettings")]
     reality_settings: Option<XrayRealitySettings<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -779,8 +789,24 @@ struct XrayKcpSettings {
     uplink_capacity: u16,
     #[serde(rename = "downlinkCapacity")]
     downlink_capacity: u16,
-    #[serde(skip_serializing_if = "str::is_empty")]
-    seed: String,
+}
+
+#[derive(Serialize)]
+struct XrayFinalMask<'a> {
+    udp: Vec<XrayFinalMaskEntry<'a>>,
+}
+
+#[derive(Serialize)]
+struct XrayFinalMaskEntry<'a> {
+    #[serde(rename = "type")]
+    mask_type: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    settings: Option<XrayFinalMaskSettings<'a>>,
+}
+
+#[derive(Serialize)]
+struct XrayFinalMaskSettings<'a> {
+    password: &'a str,
 }
 
 #[derive(Serialize)]
@@ -930,8 +956,27 @@ fn xray_format(server_host: &str, client_name: &str, vals: &ClientConfigValues) 
             tti: vals.kcp_tti,
             uplink_capacity: 5,
             downlink_capacity: 20,
-            seed: vals.kcp_seed.clone(),
         }),
+        _ => None,
+    };
+
+    let finalmask = match vals.transport {
+        Transport::Kcp => {
+            let udp = if vals.kcp_seed.is_empty() {
+                vec![XrayFinalMaskEntry {
+                    mask_type: "mkcp-original",
+                    settings: None,
+                }]
+            } else {
+                vec![XrayFinalMaskEntry {
+                    mask_type: "mkcp-aes128gcm",
+                    settings: Some(XrayFinalMaskSettings {
+                        password: &vals.kcp_seed,
+                    }),
+                }]
+            };
+            Some(XrayFinalMask { udp })
+        }
         _ => None,
     };
 
@@ -965,6 +1010,7 @@ fn xray_format(server_host: &str, client_name: &str, vals: &ClientConfigValues) 
     let stream_settings = XrayStreamSettings {
         network: xray_network,
         security,
+        finalmask,
         reality_settings,
         tls_settings,
         ws_settings,
@@ -1341,7 +1387,9 @@ mod tests {
         assert!(json.contains(r#""kcpSettings""#));
         assert!(json.contains(r#""mtu": 1350"#));
         assert!(json.contains(r#""tti": 50"#));
-        assert!(json.contains(r#""seed": "test-seed""#));
+        assert!(json.contains(r#""finalmask""#));
+        assert!(json.contains(r#""type": "mkcp-aes128gcm""#));
+        assert!(json.contains(r#""password": "test-seed""#));
     }
 
     #[test]
@@ -1350,6 +1398,29 @@ mod tests {
         assert!(json.contains(r#""network": "xhttp""#));
         assert!(json.contains(r#""xhttpSettings""#));
         assert!(json.contains(r#""mode": "stream-one""#));
+    }
+
+    #[test]
+    fn resolve_client_values_prefers_vmess_user_uuid() {
+        let path = format!("/tmp/client-config-vmess-{}.toml", std::process::id());
+        std::fs::write(
+            &path,
+            r#"
+listen = "127.0.0.1:50443"
+
+[vmess]
+
+[[vmess.users]]
+id = "12345678-1234-1234-1234-123456789abc"
+email = "user@example.com"
+"#,
+        )
+        .unwrap();
+
+        let vals = resolve_client_values(Some(&path), Some(Transport::Vmess), "YOUR_SNI");
+        assert_eq!(vals.uuid, "12345678-1234-1234-1234-123456789abc");
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

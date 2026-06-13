@@ -685,24 +685,43 @@ bind = "127.0.0.1"
         command: VmessCommand::Tcp,
         address: "127.0.0.1".into(),
         port: echo_addr.port(),
+        option: vmess::DEFAULT_REQUEST_OPTIONS,
+        security: vmess::DEFAULT_SECURITY,
+        response_header: vmess::DEFAULT_RESPONSE_HEADER,
     };
-    let (header_len, header_payload) =
+    let (_header_len, header_payload) =
         vmess::build_header(&cmd_key, &eaudid, &body_key, &body_iv, &request).unwrap();
 
     let mut conn = TcpStream::connect(&listen).unwrap();
     conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     conn.write_all(&eaudid).unwrap();
-    conn.write_all(&header_len.to_be_bytes()).unwrap();
     conn.write_all(&header_payload).unwrap();
 
-    let response_key = vmess::derive_response_key(&cmd_key);
-    vmess::read_response(&response_key, &mut conn).unwrap();
+    vmess::read_response(&body_key, &body_iv, request.response_header, &mut conn).unwrap();
 
     let payload = b"vmess-metrics-roundtrip-payload";
-    let mut writer = VmessBodyWriter::new(&body_key, &body_iv);
+    let mut writer = VmessBodyWriter::new_with_options(
+        &body_key,
+        &body_iv,
+        &body_key,
+        &body_iv,
+        request.option,
+        request.security,
+    )
+    .unwrap();
     writer.write_chunk(&mut conn, payload).unwrap();
 
-    let mut reader = VmessBodyReader::new(&body_key, &body_iv);
+    let response_body_key = vmess::derive_response_body_key(&body_key);
+    let response_body_iv = vmess::derive_response_body_iv(&body_iv);
+    let mut reader = VmessBodyReader::new_with_options(
+        &response_body_key,
+        &response_body_iv,
+        &body_key,
+        &body_iv,
+        request.option,
+        request.security,
+    )
+    .unwrap();
     let mut plaintext = Vec::with_capacity(payload.len());
     let got_chunk = reader.read_chunk(&mut conn, &mut plaintext).unwrap();
     assert!(got_chunk, "expected echoed VMess body chunk");

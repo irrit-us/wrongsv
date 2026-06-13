@@ -138,6 +138,26 @@ max_time_diff = 300
     ServerGuard { handle }
 }
 
+/// Spawn a wrongsv VMess AEAD server (no transport layer, plain TCP).
+pub fn spawn_vmess_server(port: u16, user_id: &str, email: &str) -> ServerGuard {
+    let config_toml = format!(
+        r#"
+listen = "127.0.0.1:{port}"
+
+[vmess]
+
+[[vmess.users]]
+id = "{user_id}"
+email = "{email}"
+"#
+    );
+    let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
+    let server = wrongsv_server::InboundServer::new(config).unwrap();
+    let handle = server.spawn();
+    thread::sleep(Duration::from_millis(200));
+    ServerGuard { handle }
+}
+
 /// Spawn a wrongsv Shadowsocks server.
 pub fn spawn_shadowsocks_server(port: u16, method: &str, password: &str) -> ServerGuard {
     let config_toml = format!(
