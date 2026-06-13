@@ -44,8 +44,11 @@
 - [x] Add xray-core VMess regression test (`test_xray_lifecycle_vmess_dialect_divergence`) — empirically confirms wrongsv-VMess ≠ v2fly-VMess
 - [x] Add xray-core client lifecycle module in wrongsv-external-tests (start, configure, stop)
 - [x] Add sing-box client lifecycle module in wrongsv-external-tests
+- [x] Add clash-verge-rev capability path via Mihomo core adapter in wrongsv-external-tests
+- [x] Add V2Ray / V2Fly core lifecycle module in wrongsv-external-tests
 - [x] Expand behavior coverage (download-heavy, local session churn, richer local pages/forms/feed/video)
 - [x] Keep modular: every client gets the same API surface (start, healthcheck, shutdown)
+- [x] Add capability-driven multi-scenario audit (`run-client-matrix.js`) so each client can be swept across the protocol stacks it claims to support
 
 ### Phase 5 — Metrics Port
 
@@ -68,6 +71,7 @@
 - Test purpose encapsulation = modular client lifecycles + reusable user behaviors. Each client lifecycle is a separate file with a uniform interface so the orchestrator can swap clients without rewriting tests.
 - 127.0.0.1:11451 is the local outbound proxy for any unreachable external resource.
 - New external-test entry point: `wrongsv-external-tests/run-client-suite.js`. It composes `wrongsv` server startup, client-config adaptation, client lifecycle, traffic workloads, browser workloads, and wrongsv `/metrics` scraping.
+- New capability entry point: `wrongsv-external-tests/run-client-matrix.js`. It iterates protocol scenarios per client, records pass/fail/defect status, and emits `matrix.json` / `matrix.md`.
 - Browser/user simulation now runs against deterministic local pages served by `proxy-testing-framework/local-test-server.js` (`/page/news`, `/page/feed`, `/page/store/catalog`, `/page/form`, `/page/video`) instead of only raw `httpbin` targets.
 
 ## Status
@@ -129,6 +133,56 @@ Residual issue:
 - `xray-core` adapter validated with a REALITY-based wrongsv config
   (`results/xray-check-2`). Latest xray 26.5.9 rejects legacy TLS
   `allowInsecure`, so REALITY is the stable validation path for now.
+
+### 2026-06-13 — Capability-driven protocol matrices added
+
+- Added `e2e-harness/scenarios.js` + `capabilities.js` and a new
+  `run-client-matrix.js` entry point. The audit now starts from the client's
+  declared capability set and executes the matching wrongsv server stacks,
+  instead of only validating one transport per client.
+- Added two new client entries to the reusable interface:
+  `clash-verge-rev` (Mihomo core path) and `v2ray` (V2Fly core).
+- Manual runtime builders were added for protocol families that wrongsv's
+  built-in client-config generator does not yet cover:
+  Shadowsocks AEAD / 2022 and Trojan for Mihomo, sing-box/Hiddify, and the
+  Xray/V2Ray family.
+
+Executed matrices:
+
+- `results/clash-verge-matrix`
+  covered: VLESS raw TCP, WebSocket, HTTPUpgrade, Shadowsocks AEAD, Shadowsocks 2022, Trojan TLS
+  confirmed defect: VMess standard interop
+  newly surfaced defects: Mihomo gRPC interop, Mihomo XHTTP interop
+- `results/singbox-matrix-2` + `results/singbox-quic-check-2`
+  covered: VLESS REALITY Vision, HTTPUpgrade, QUIC, Shadowsocks 2022, Trojan TLS
+  confirmed defect: VMess standard interop
+  newly surfaced defect: sing-box XHTTP interop
+- `results/xray-matrix`
+  covered: VLESS REALITY Vision, HTTPUpgrade, Shadowsocks 2022
+  confirmed defect: VMess standard interop
+  newly surfaced defect: xray-core gRPC interop instability
+  harness gap: latest xray 26.5.9 mKCP config migration breaks our current KCP runtime builder
+- `results/v2ray-matrix-check-2` + `results/v2ray-extra-check`
+  covered: VLESS raw TCP, WebSocket, Shadowsocks AEAD
+  confirmed defect: VMess standard interop
+  newly surfaced defect: V2Fly gRPC interop instability
+  client-side note: tested V2Ray 5.49.0 does not accept `httpupgrade` as a transport keyword, so
+  it was removed from the runnable capability set
+
+New server-side defects recorded from client-capability sweeps:
+
+- `server.mihomo_grpc_interop`
+- `server.mihomo_xhttp_interop`
+- `server.singbox_xhttp_interop`
+- `server.xray_grpc_interop`
+- `server.v2ray_grpc_interop`
+- `server.vmess_standard_interop`
+
+Non-server gaps identified during the sweep:
+
+- xray-core KCP runtime config needs updating for current xray config semantics
+- sing-box / Hiddify AnyTLS, ShadowTLS, Hysteria2, and TUIC are still harness gaps even though
+  wrongsv already implements those server-side protocols
 
 ### 2026-06-13 — Metrics endpoint live
 
