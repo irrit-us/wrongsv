@@ -174,6 +174,7 @@ New server-side defects recorded from client-capability sweeps:
 - `server.mihomo_grpc_interop`
 - `server.mihomo_xhttp_interop`
 - `server.singbox_xhttp_interop`
+- `server.xray_xhttp_interop`
 - `server.xray_grpc_interop`
 - `server.v2ray_grpc_interop`
 - `server.vmess_standard_interop`
@@ -198,6 +199,16 @@ Non-server gaps identified during the sweep:
   not fully clean in external runs (`Empty reply from server` / stream reset
   after some successful requests), so those defects remain open despite the
   server-side improvement.
+
+### 2026-06-13 — XHTTP still fails real-client interop
+
+- Rechecked XHTTP after refactoring the raw relay path.
+- In-tree `xhttp_tests` still pass, but real-client capability probes remain
+  broken.
+- `sing-box` still reports malformed HTTP responses, and a targeted
+  `xray-core` XHTTP check (`results/xray-xhttp-check`) also fails.
+- That narrows the defect boundary: the remaining XHTTP problem is in
+  wrongsv's XHTTP carrier semantics, not just in one client family.
 
 ### 2026-06-13 — Metrics endpoint live
 

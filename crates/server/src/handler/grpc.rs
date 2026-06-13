@@ -62,6 +62,17 @@ pub(crate) struct GrpcStream {
     eof: bool,
 }
 
+pub(crate) struct GrpcReader {
+    incoming_rx: Receiver<Vec<u8>>,
+    pending: Vec<u8>,
+    eof: bool,
+}
+
+#[derive(Clone)]
+pub(crate) struct GrpcWriter {
+    outgoing_tx: tokio_mpsc::Sender<Vec<u8>>,
+}
+
 impl GrpcStream {
     fn from_channels(
         incoming_rx: Receiver<Vec<u8>>,
@@ -73,6 +84,64 @@ impl GrpcStream {
             outgoing_tx,
             eof: false,
         }
+    }
+
+    fn split(self) -> (GrpcReader, GrpcWriter) {
+        (
+            GrpcReader {
+                incoming_rx: self.incoming_rx,
+                pending: self.pending,
+                eof: self.eof,
+            },
+            GrpcWriter {
+                outgoing_tx: self.outgoing_tx,
+            },
+        )
+    }
+}
+
+impl Read for GrpcReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if !self.pending.is_empty() {
+            let n = self.pending.len().min(buf.len());
+            buf[..n].copy_from_slice(&self.pending[..n]);
+            self.pending.drain(..n);
+            return Ok(n);
+        }
+        if self.eof {
+            return Ok(0);
+        }
+        match self.incoming_rx.recv() {
+            Ok(data) => {
+                if data.len() <= buf.len() {
+                    let n = data.len();
+                    buf[..n].copy_from_slice(&data);
+                    Ok(n)
+                } else {
+                    let n = buf.len();
+                    buf[..n].copy_from_slice(&data[..n]);
+                    self.pending.extend_from_slice(&data[n..]);
+                    Ok(n)
+                }
+            }
+            Err(_) => {
+                self.eof = true;
+                Ok(0)
+            }
+        }
+    }
+}
+
+impl Write for GrpcWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.outgoing_tx
+            .blocking_send(buf.to_vec())
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "gRPC stream closed"))?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
@@ -110,16 +179,10 @@ impl Read for GrpcStream {
 
 impl Write for GrpcStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if self.eof {
-            return Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "gRPC stream closed",
-            ));
+        GrpcWriter {
+            outgoing_tx: self.outgoing_tx.clone(),
         }
-        self.outgoing_tx
-            .blocking_send(buf.to_vec())
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "gRPC stream closed"))?;
-        Ok(buf.len())
+        .write(buf)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -228,9 +291,8 @@ async fn handle_grpc_request_stream(
     let (outgoing_tx, outgoing_rx) = tokio_mpsc::channel::<Vec<u8>>(256);
 
     let relay_handle = tokio::task::spawn_blocking(move || {
-        let mut grpc_stream = GrpcStream::from_channels(incoming_rx, outgoing_tx);
-        handle_vless_over_grpc(&mut grpc_stream, validator, kyber_sk, peer)
-            .map_err(|e| e.to_string())
+        let grpc_stream = GrpcStream::from_channels(incoming_rx, outgoing_tx);
+        handle_vless_over_grpc(grpc_stream, validator, kyber_sk, peer).map_err(|e| e.to_string())
     });
     let outgoing_handle =
         tokio::spawn(async move { drive_outgoing(&mut send, outgoing_rx, peer).await });
@@ -291,7 +353,6 @@ async fn drive_outgoing(
             }
             None => {
                 // Channel closed — relay finished
-                let _ = send.send_data(bytes::Bytes::new(), true);
                 let mut trailers = http::HeaderMap::new();
                 trailers.insert("grpc-status", "0".parse().unwrap());
                 let _ = send.send_trailers(trailers);
@@ -348,7 +409,7 @@ pub(crate) fn handle_grpc_connection(
 }
 
 fn handle_vless_over_grpc(
-    stream: &mut GrpcStream,
+    mut stream: GrpcStream,
     validator: Arc<MemoryValidator>,
     kyber_sk: Option<[u8; 64]>,
     peer: std::net::SocketAddr,
@@ -385,7 +446,7 @@ fn handle_vless_over_grpc(
         if !account.udp {
             return Err("UDP not enabled for this user".into());
         }
-        relay_grpc_udp(stream, request, remaining_body)?;
+        relay_grpc_udp(&mut stream, request, remaining_body)?;
         debug!("{peer} gRPC UDP relay finished");
         return Ok(());
     }
@@ -396,7 +457,7 @@ fn handle_vless_over_grpc(
 
     if use_vision {
         relay_grpc_vision(
-            stream,
+            &mut stream,
             target,
             &decoded.user_sent_id,
             &account.testseed,
@@ -412,48 +473,59 @@ fn handle_vless_over_grpc(
 // ── gRPC relay functions ──────────────────────────────────────────────
 
 fn relay_grpc_raw(
-    client: &mut GrpcStream,
+    client: GrpcStream,
     mut target: TcpStream,
     initial_data: Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut buf = [0u8; 32768];
     target.set_nodelay(true)?;
-    target.set_read_timeout(Some(Duration::from_millis(10)))?;
-
     if !initial_data.is_empty() {
         target.write_all(&initial_data)?;
-        target.set_read_timeout(Some(Duration::from_millis(10)))?;
     }
+    let (mut reader, mut writer) = client.split();
+    let mut target_write = target.try_clone()?;
+    let mut target_read = target;
 
-    loop {
-        // Downlink: target → gRPC
-        match target.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                client.write_all(&buf[..n])?;
-                target.set_read_timeout(Some(Duration::from_millis(10)))?;
-                continue;
+    let up = std::thread::spawn(move || {
+        let mut buf = [0u8; 32768];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if let Err(e) = target_write.write_all(&buf[..n]) {
+                        debug!("gRPC uplink write error: {e}");
+                        break;
+                    }
+                }
+                Err(e) => {
+                    debug!("gRPC uplink read error: {e}");
+                    break;
+                }
             }
-            Err(ref e)
-                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
-            {
-                target.set_read_timeout(Some(Duration::from_millis(10)))?;
-            }
-            Err(e) => return Err(e.into()),
         }
+        let _ = target_write.shutdown(std::net::Shutdown::Write);
+    });
 
-        // Uplink: gRPC → target
-        match client.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                target.write_all(&buf[..n])?;
-                target.set_read_timeout(Some(Duration::from_millis(10)))?;
+    let down = std::thread::spawn(move || {
+        let mut buf = [0u8; 32768];
+        loop {
+            match target_read.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if let Err(e) = writer.write_all(&buf[..n]) {
+                        debug!("gRPC downlink write error: {e}");
+                        break;
+                    }
+                }
+                Err(e) => {
+                    debug!("gRPC downlink read error: {e}");
+                    break;
+                }
             }
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
-            Err(e) => return Err(e.into()),
         }
-    }
-    let _ = target.shutdown(std::net::Shutdown::Write);
+    });
+
+    let _ = up.join();
+    let _ = down.join();
     Ok(())
 }
 

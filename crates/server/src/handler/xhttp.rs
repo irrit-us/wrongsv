@@ -7,7 +7,7 @@ use std::time::Duration;
 use tokio::sync::mpsc as tokio_mpsc;
 
 use http::StatusCode;
-use tracing::{debug, error, trace};
+use tracing::{debug, trace};
 use wrongsv_protocol::{RequestCommand, RequestHeader};
 use wrongsv_vless::MemoryValidator;
 
@@ -59,49 +59,88 @@ pub(crate) struct XhttpStream {
     pending: Vec<u8>,
     outgoing_tx: tokio_mpsc::Sender<Vec<u8>>,
     eof: bool,
-    _thread: std::thread::JoinHandle<()>,
+}
+
+pub(crate) struct XhttpReader {
+    incoming_rx: Receiver<Vec<u8>>,
+    pending: Vec<u8>,
+    eof: bool,
+}
+
+#[derive(Clone)]
+pub(crate) struct XhttpWriter {
+    outgoing_tx: tokio_mpsc::Sender<Vec<u8>>,
 }
 
 impl XhttpStream {
-    pub fn accept(
-        tcp: TcpStream,
-        peer: std::net::SocketAddr,
-        config: &XhttpConfig,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let path = config.path.clone();
-        let host = config.host.clone();
-        let (incoming_tx, incoming_rx) = mpsc::sync_channel::<Vec<u8>>(64);
-        let (outgoing_tx, outgoing_rx) = tokio_mpsc::channel::<Vec<u8>>(256);
-
-        let thread = std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_all()
-                .build()
-                .expect("xhttp tokio runtime");
-            rt.block_on(async move {
-                if let Err(e) = drive_xhttp_connection(
-                    tcp,
-                    peer,
-                    &path,
-                    host.as_deref(),
-                    incoming_tx,
-                    outgoing_rx,
-                )
-                .await
-                {
-                    error!("{peer} XHTTP connection error: {e}");
-                }
-            });
-        });
-
-        Ok(XhttpStream {
+    fn from_channels(
+        incoming_rx: Receiver<Vec<u8>>,
+        outgoing_tx: tokio_mpsc::Sender<Vec<u8>>,
+    ) -> Self {
+        XhttpStream {
             incoming_rx,
             pending: Vec::new(),
             outgoing_tx,
             eof: false,
-            _thread: thread,
-        })
+        }
+    }
+
+    fn split(self) -> (XhttpReader, XhttpWriter) {
+        (
+            XhttpReader {
+                incoming_rx: self.incoming_rx,
+                pending: self.pending,
+                eof: self.eof,
+            },
+            XhttpWriter {
+                outgoing_tx: self.outgoing_tx,
+            },
+        )
+    }
+}
+
+impl Read for XhttpReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if !self.pending.is_empty() {
+            let n = self.pending.len().min(buf.len());
+            buf[..n].copy_from_slice(&self.pending[..n]);
+            self.pending.drain(..n);
+            return Ok(n);
+        }
+        if self.eof {
+            return Ok(0);
+        }
+        match self.incoming_rx.recv() {
+            Ok(data) => {
+                if data.len() <= buf.len() {
+                    let n = data.len();
+                    buf[..n].copy_from_slice(&data);
+                    Ok(n)
+                } else {
+                    let n = buf.len();
+                    buf[..n].copy_from_slice(&data[..n]);
+                    self.pending.extend_from_slice(&data[n..]);
+                    Ok(n)
+                }
+            }
+            Err(_) => {
+                self.eof = true;
+                Ok(0)
+            }
+        }
+    }
+}
+
+impl Write for XhttpWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.outgoing_tx
+            .blocking_send(buf.to_vec())
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "XHTTP stream closed"))?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
@@ -163,8 +202,8 @@ async fn drive_xhttp_connection(
     peer: std::net::SocketAddr,
     path: &str,
     host: Option<&str>,
-    incoming_tx: mpsc::SyncSender<Vec<u8>>,
-    outgoing_rx: tokio_mpsc::Receiver<Vec<u8>>,
+    validator: Arc<MemoryValidator>,
+    kyber_sk: Option<[u8; 64]>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tcp.set_nonblocking(true)?;
     let tcp = tokio::net::TcpStream::from_std(tcp)?;
@@ -177,96 +216,40 @@ async fn drive_xhttp_connection(
         .map_err(|e| format!("h2 handshake: {e}"))?;
     trace!("{peer} HTTP/2 handshake done");
 
-    let (request, mut respond) = match conn.accept().await {
-        Some(Ok(r)) => r,
-        Some(Err(e)) => return Err(format!("h2 accept: {e}").into()),
-        None => return Err("h2: connection closed before request".into()),
-    };
-
-    let (parts, body) = request.into_parts();
-
-    // Validate method
-    if parts.method != http::Method::POST {
-        debug!("{peer} XHTTP rejected: method={}", parts.method);
-        reject_xhttp(respond);
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            drive_conn_to_close(&mut conn),
-        )
-        .await;
-        return Ok(());
-    }
-
-    // Validate path prefix
-    if !parts.uri.path().starts_with(path) {
-        debug!(
-            "{peer} XHTTP path mismatch: expected prefix {path}, got {}",
-            parts.uri.path()
-        );
-        reject_xhttp(respond);
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            drive_conn_to_close(&mut conn),
-        )
-        .await;
-        return Ok(());
-    }
-
-    // Validate host if configured
-    if let Some(expected_host) = host {
-        let req_host = parts
-            .headers
-            .get("host")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        if req_host != expected_host {
-            debug!("{peer} XHTTP host mismatch: expected {expected_host}, got {req_host}");
-            reject_xhttp(respond);
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(1),
-                drive_conn_to_close(&mut conn),
-            )
-            .await;
-            return Ok(());
-        }
-    }
-
-    trace!("{peer} XHTTP stream accepted at {path}");
-
-    // Spawn connection driver
+    let (request_tx, mut request_rx) = tokio_mpsc::channel(32);
     let conn_handle = tokio::spawn(async move {
-        while let Some(Ok((_req, respond))) = conn.accept().await {
-            reject_xhttp(respond);
+        loop {
+            match conn.accept().await {
+                Some(Ok(stream)) => {
+                    if request_tx.send(Ok(stream)).await.is_err() {
+                        break;
+                    }
+                }
+                Some(Err(e)) => {
+                    let _ = request_tx.send(Err(format!("h2 accept: {e}"))).await;
+                    break;
+                }
+                None => break,
+            }
         }
     });
-    tokio::task::yield_now().await;
 
-    // Send 200 response — body will stream downlink data
-    let resp = http::Response::builder()
-        .status(StatusCode::OK)
-        .body(())
-        .unwrap();
-    let mut send = respond
-        .send_response(resp, false)
-        .map_err(|e| format!("send response: {e}"))?;
-
-    // Spawn outgoing task (server→client downlink)
-    let outgoing_handle =
-        tokio::spawn(async move { drive_outgoing(&mut send, outgoing_rx, peer).await });
-
-    // Drive incoming on current task (client→server uplink)
-    let incoming_result = drive_incoming(body, &incoming_tx).await;
-
-    match outgoing_handle.await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => error!("{peer} XHTTP outgoing error: {e}"),
-        Err(e) => error!("{peer} XHTTP outgoing panic: {e}"),
+    while let Some(item) = request_rx.recv().await {
+        let (request, respond) = item.map_err(|e| format!("XHTTP connection error: {e}"))?;
+        handle_xhttp_request_stream(
+            request,
+            respond,
+            peer,
+            path,
+            host,
+            Arc::clone(&validator),
+            kyber_sk,
+        )
+        .await?;
     }
 
-    // Give the connection driver time to flush final frames
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(3), conn_handle).await;
-
-    incoming_result
+    let _ = conn_handle.await;
+    Ok(())
 }
 
 fn reject_xhttp(mut respond: h2::server::SendResponse<bytes::Bytes>) {
@@ -277,12 +260,78 @@ fn reject_xhttp(mut respond: h2::server::SendResponse<bytes::Bytes>) {
     let _ = respond.send_response(resp, true);
 }
 
-async fn drive_conn_to_close(
-    conn: &mut h2::server::Connection<tokio::net::TcpStream, bytes::Bytes>,
-) {
-    while let Some(Ok((_req, respond))) = conn.accept().await {
+async fn handle_xhttp_request_stream(
+    request: http::Request<h2::RecvStream>,
+    mut respond: h2::server::SendResponse<bytes::Bytes>,
+    peer: std::net::SocketAddr,
+    path: &str,
+    host: Option<&str>,
+    validator: Arc<MemoryValidator>,
+    kyber_sk: Option<[u8; 64]>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (parts, body) = request.into_parts();
+
+    if parts.method != http::Method::POST {
+        debug!("{peer} XHTTP rejected: method={}", parts.method);
         reject_xhttp(respond);
+        return Ok(());
     }
+
+    if !parts.uri.path().starts_with(path) {
+        debug!(
+            "{peer} XHTTP path mismatch: expected prefix {path}, got {}",
+            parts.uri.path()
+        );
+        reject_xhttp(respond);
+        return Ok(());
+    }
+
+    if let Some(expected_host) = host {
+        let req_host = parts
+            .headers
+            .get("host")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if req_host != expected_host {
+            debug!("{peer} XHTTP host mismatch: expected {expected_host}, got {req_host}");
+            reject_xhttp(respond);
+            return Ok(());
+        }
+    }
+
+    trace!("{peer} XHTTP stream accepted at {path}");
+
+    let resp = http::Response::builder()
+        .status(StatusCode::OK)
+        .body(())
+        .unwrap();
+    let mut send = respond
+        .send_response(resp, false)
+        .map_err(|e| format!("send response: {e}"))?;
+
+    let (incoming_tx, incoming_rx) = mpsc::sync_channel::<Vec<u8>>(64);
+    let (outgoing_tx, outgoing_rx) = tokio_mpsc::channel::<Vec<u8>>(256);
+
+    let relay_handle = tokio::task::spawn_blocking(move || {
+        let xhttp_stream = XhttpStream::from_channels(incoming_rx, outgoing_tx);
+        handle_vless_over_xhttp(xhttp_stream, validator, kyber_sk, peer).map_err(|e| e.to_string())
+    });
+
+    let outgoing_handle =
+        tokio::spawn(async move { drive_outgoing(&mut send, outgoing_rx, peer).await });
+    let incoming_result = drive_incoming(body, &incoming_tx).await;
+    drop(incoming_tx);
+
+    let relay_result = relay_handle
+        .await
+        .map_err(|e| format!("XHTTP relay panic: {e}"))?;
+    let outgoing_result = outgoing_handle
+        .await
+        .map_err(|e| format!("XHTTP outgoing panic: {e}"))?;
+
+    outgoing_result?;
+    relay_result.map_err(|e| format!("XHTTP relay: {e}"))?;
+    incoming_result
 }
 
 async fn drive_incoming(
@@ -351,15 +400,26 @@ pub(crate) fn handle_xhttp_connection(
         }
         None => {
             stream.set_read_timeout(Some(Duration::from_secs(30)))?;
-            let mut xhttp_stream = XhttpStream::accept(stream, peer, xhttp_config)
-                .map_err(|e| format!("XHTTP: {e}"))?;
-            handle_vless_over_xhttp(&mut xhttp_stream, validator, kyber_sk, peer)
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .map_err(|e| format!("XHTTP runtime: {e}"))?;
+            rt.block_on(drive_xhttp_connection(
+                stream,
+                peer,
+                &xhttp_config.path,
+                xhttp_config.host.as_deref(),
+                validator,
+                kyber_sk,
+            ))
+            .map_err(|e| format!("XHTTP: {e}").into())
         }
     }
 }
 
 fn handle_vless_over_xhttp(
-    stream: &mut XhttpStream,
+    mut stream: XhttpStream,
     validator: Arc<MemoryValidator>,
     kyber_sk: Option<[u8; 64]>,
     peer: std::net::SocketAddr,
@@ -396,7 +456,7 @@ fn handle_vless_over_xhttp(
         if !account.udp {
             return Err("UDP not enabled for this user".into());
         }
-        relay_xhttp_udp(stream, request, remaining_body)?;
+        relay_xhttp_udp(&mut stream, request, remaining_body)?;
         debug!("{peer} XHTTP UDP relay finished");
         return Ok(());
     }
@@ -407,7 +467,7 @@ fn handle_vless_over_xhttp(
 
     if use_vision {
         relay_xhttp_vision(
-            stream,
+            &mut stream,
             target,
             &decoded.user_sent_id,
             &account.testseed,
@@ -423,48 +483,59 @@ fn handle_vless_over_xhttp(
 // ── XHTTP relay functions ─────────────────────────────────────────────
 
 fn relay_xhttp_raw(
-    client: &mut XhttpStream,
+    client: XhttpStream,
     mut target: TcpStream,
     initial_data: Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut buf = [0u8; 32768];
     target.set_nodelay(true)?;
-    target.set_read_timeout(Some(Duration::from_millis(10)))?;
-
     if !initial_data.is_empty() {
         target.write_all(&initial_data)?;
-        target.set_read_timeout(Some(Duration::from_millis(10)))?;
     }
+    let (mut reader, mut writer) = client.split();
+    let mut target_write = target.try_clone()?;
+    let mut target_read = target;
 
-    loop {
-        // Downlink: target → XHTTP
-        match target.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                client.write_all(&buf[..n])?;
-                target.set_read_timeout(Some(Duration::from_millis(10)))?;
-                continue;
+    let up = std::thread::spawn(move || {
+        let mut buf = [0u8; 32768];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if let Err(e) = target_write.write_all(&buf[..n]) {
+                        debug!("XHTTP uplink write error: {e}");
+                        break;
+                    }
+                }
+                Err(e) => {
+                    debug!("XHTTP uplink read error: {e}");
+                    break;
+                }
             }
-            Err(ref e)
-                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
-            {
-                target.set_read_timeout(Some(Duration::from_millis(10)))?;
-            }
-            Err(e) => return Err(e.into()),
         }
+        let _ = target_write.shutdown(std::net::Shutdown::Write);
+    });
 
-        // Uplink: XHTTP → target
-        match client.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                target.write_all(&buf[..n])?;
-                target.set_read_timeout(Some(Duration::from_millis(10)))?;
+    let down = std::thread::spawn(move || {
+        let mut buf = [0u8; 32768];
+        loop {
+            match target_read.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if let Err(e) = writer.write_all(&buf[..n]) {
+                        debug!("XHTTP downlink write error: {e}");
+                        break;
+                    }
+                }
+                Err(e) => {
+                    debug!("XHTTP downlink read error: {e}");
+                    break;
+                }
             }
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
-            Err(e) => return Err(e.into()),
         }
-    }
-    let _ = target.shutdown(std::net::Shutdown::Write);
+    });
+
+    let _ = up.join();
+    let _ = down.join();
     Ok(())
 }
 
