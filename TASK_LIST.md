@@ -188,8 +188,9 @@ New server-side defects recorded from client-capability sweeps:
 
 Non-server gaps identified during the sweep:
 
-- xray-core KCP runtime config startup has been updated to the current finalmask schema, but the
-  runtime behavior of `vless_kcp` is still under investigation
+- KCP now passes for `xray-core` and `V2Ray/V2Fly`, but the Mihomo core path on this box still
+  treats VLESS mKCP as a TCP dial against the UDP KCP port, so `clash-verge-rev` / `FlClash`
+  remain client/runtime gaps rather than wrongsv server defects
 - sing-box / Hiddify Hysteria2 and TUIC are still harness gaps even though wrongsv already
   implements those server-side protocols; Hiddify AnyTLS also remains blocked by its packaged core
 - sing-box / Hiddify XHTTP still need a capability-grounded config mapping before they should be
@@ -413,6 +414,26 @@ standard xray/v2fly AEAD path. `spawn_vmess_server` remains in
   `KCP closed before VLESS header`.
 - Current conclusion: the remaining KCP bug is inside the KCP stream/session
   implementation itself, not the outer packet mask layer.
+
+### 2026-06-13 — Xray-compatible mKCP session engine landed
+
+- Replaced wrongsv's generic Rust `kcp` crate session layer with an
+  Xray-compatible mKCP segment engine while preserving the existing outer
+  packet-mask handling and reusable relay/update-loop structure.
+- In-tree KCP integration tests now use the same Xray-style session protocol
+  instead of the generic KCP wire format, and both
+  `cargo test -p wrongsv-server kcp -- --nocapture` and
+  `cargo test --test kcp_tests -- --nocapture` pass.
+- External rechecks now pass under real clients:
+  `wrongsv-external-tests/results/xray-kcp-check-6/vless_kcp/report.json`
+  and `wrongsv-external-tests/results/v2ray-kcp-check-2/vless_kcp/report.json`.
+  `xray-core` now sustains traffic with p50 ~10-11ms locally, and V2Ray/V2Fly
+  also completes the same KCP scenario after the adapter converts the newer
+  Xray `finalmask` form into the legacy V2Ray `kcpSettings.seed` schema.
+- Capability result: `vless_kcp` is no longer an open wrongsv server defect
+  for the Xray family. Mihomo-based KCP remains a client/runtime gap on this
+  box because the core still attempts a TCP connect to the KCP port even when
+  `network: mkcp` / `mkcp-opts` are present.
 
 ### 2026-06-13 — sing-box AnyTLS harness gap partially closed
 

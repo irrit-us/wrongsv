@@ -1,20 +1,20 @@
-//! KCP (mKCP) carrier integration tests.
-//!
-//! These tests verify VLESS over KCP transport — mKCP auth + KCP reliable
-//! session + VLESS relay without external client binaries.
+//! KCP (mKCP) carrier integration tests using the Xray-style mKCP session
+//! format instead of the generic Rust `kcp` crate wire format.
 
-use std::cell::RefCell;
-use std::io::Write;
+use std::collections::VecDeque;
 use std::net::{SocketAddr, UdpSocket};
-use std::rc::Rc;
+use std::thread;
 use std::time::Duration;
 
 use aes_gcm::aead::{AeadInPlace, KeyInit};
-use kcp::Kcp;
 use sha2::Digest;
+
+#[path = "../crates/server/src/handler/kcp/xray_session.rs"]
+mod xray_session;
 
 mod common;
 use common::{init_logging, pick_port, spawn_tcp_echo_target};
+use xray_session::{SessionConfig, XrayKcpSession};
 
 const TEST_UUID: &str = "41309a00-3cbe-43a2-80e7-76c8a4fe65be";
 const TEST_SEED: &str = "test-kcp-seed";
@@ -69,7 +69,7 @@ fn encode_vless_request(
     buf.to_vec()
 }
 
-// ── mKCP helpers ────────────────────────────────────────────────────────
+// ── mKCP packet mask helpers ───────────────────────────────────────────
 
 const MKCP_ORIGINAL_OVERHEAD: usize = 6;
 
@@ -112,6 +112,7 @@ fn mkcp_seal(seed: &str, data: &[u8]) -> Vec<u8> {
         packet.truncate(MKCP_ORIGINAL_OVERHEAD + data.len());
         return packet;
     }
+
     let digest = sha2::Sha256::digest(seed.as_bytes());
     let cipher = aes_gcm::Aes128Gcm::new_from_slice(&digest[..16]).unwrap();
     let mut nonce = [0u8; 12];
@@ -150,6 +151,7 @@ fn mkcp_open(seed: &str, packet: &[u8]) -> Option<Vec<u8>> {
         }
         return Some(data[6..6 + length].to_vec());
     }
+
     if packet.len() < 12 + 16 {
         return None;
     }
@@ -168,130 +170,96 @@ fn mkcp_open(seed: &str, packet: &[u8]) -> Option<Vec<u8>> {
     Some(plaintext)
 }
 
-// ── KCP output that buffers bytes for mKCP wrapping ────────────────────
-
-/// Shared-output writer. KCP calls `write()` with raw KCP segments;
-/// we collect them in a shared buffer that the test loop reads via Rc.
-struct SharedOutput {
-    buf: Rc<RefCell<Vec<u8>>>,
-}
-
-impl SharedOutput {
-    fn new(buf: Rc<RefCell<Vec<u8>>>) -> Self {
-        SharedOutput { buf }
-    }
-}
-
-impl Write for SharedOutput {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.buf.borrow_mut().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-// ── Test KCP client ────────────────────────────────────────────────────
+// ── Test mKCP client ───────────────────────────────────────────────────
 
 struct TestKcpClient {
-    kcp: Kcp<SharedOutput>,
-    output_buf: Rc<RefCell<Vec<u8>>>,
+    engine: XrayKcpSession,
     socket: UdpSocket,
     server_addr: SocketAddr,
     seed: String,
-    #[allow(dead_code)]
-    conv: u16,
+    tick: u32,
+    received: VecDeque<Vec<u8>>,
 }
 
 impl TestKcpClient {
     fn new(socket: UdpSocket, server_addr: SocketAddr, seed: &str, conv: u16) -> Self {
-        let buf = Rc::new(RefCell::new(Vec::new()));
-        let output = SharedOutput::new(Rc::clone(&buf));
-        let mut kcp = Kcp::new(conv as u32, output);
-        let _ = kcp.set_mtu(1350);
-        kcp.set_nodelay(true, 10, 2, true);
-        kcp.set_wndsize(128, 256);
-        TestKcpClient {
-            kcp,
-            output_buf: buf,
+        socket
+            .set_read_timeout(Some(Duration::from_millis(20)))
+            .unwrap();
+        Self {
+            engine: XrayKcpSession::new(SessionConfig {
+                conv,
+                mtu: 1350,
+                tti: 20,
+                uplink_capacity: 5,
+                downlink_capacity: 20,
+                write_buffer_size: 2 * 1024 * 1024,
+                packet_overhead: 16,
+            }),
             socket,
             server_addr,
             seed: seed.to_string(),
-            conv,
+            tick: 0,
+            received: VecDeque::new(),
         }
     }
 
-    /// Drain pending KCP output, wrap in mKCP framing, and send via UDP.
-    fn drain_output(&mut self) {
-        let pending: Vec<u8> = self.output_buf.borrow_mut().drain(..).collect();
-        if !pending.is_empty() {
-            let packet = mkcp_seal(&self.seed, &pending);
-            let _ = self.socket.send_to(&packet, self.server_addr);
-        }
+    fn send(&mut self, data: &[u8]) {
+        self.engine.enqueue_application_data(data);
     }
 
-    /// Send data through KCP to the server (splits into KCP segments, wraps
-    /// in mKCP framing, sends via UDP).
-    fn send_and_flush(&mut self, data: &[u8], tick: u32) {
-        let _ = self.kcp.update(tick);
-        let _ = self.kcp.send(data);
-        let output: Vec<u8> = self.output_buf.borrow_mut().drain(..).collect();
-        if !output.is_empty() {
-            let packet = mkcp_seal(&self.seed, &output);
-            let _ = self.socket.send_to(&packet, self.server_addr);
+    fn step(&mut self, step_ms: u32) {
+        for packet in self.engine.flush(self.tick) {
+            let wrapped = mkcp_seal(&self.seed, &packet);
+            let _ = self.socket.send_to(&wrapped, self.server_addr);
         }
-        // Flush any remaining KCP output (ACKs, retransmits, etc.)
-        self.kcp.flush().unwrap();
-        let output2: Vec<u8> = self.output_buf.borrow_mut().drain(..).collect();
-        if !output2.is_empty() {
-            let packet = mkcp_seal(&self.seed, &output2);
-            let _ = self.socket.send_to(&packet, self.server_addr);
-        }
-    }
 
-    /// Pump: receive UDP packets, feed into KCP, flush output back.
-    fn pump(&mut self, timeout_ms: u64) {
-        let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
-
-        while std::time::Instant::now() < deadline {
-            self.socket
-                .set_read_timeout(Some(Duration::from_millis(10)))
-                .ok();
-
-            let mut recv_buf = [0u8; 2048];
+        loop {
+            let mut recv_buf = [0u8; 4096];
             match self.socket.recv_from(&mut recv_buf) {
                 Ok((n, src)) => {
                     if src != self.server_addr {
                         continue;
                     }
-                    if let Some(data) = mkcp_open(&self.seed, &recv_buf[..n]) {
-                        let _ = self.kcp.input(&data);
+                    if let Some(packet) = mkcp_open(&self.seed, &recv_buf[..n]) {
+                        self.engine.input(&packet, self.tick);
+                        while let Some(data) = self.engine.take_received() {
+                            self.received.push_back(data);
+                        }
                     }
                 }
                 Err(ref e)
                     if e.kind() == std::io::ErrorKind::WouldBlock
-                        || e.kind() == std::io::ErrorKind::TimedOut => {}
+                        || e.kind() == std::io::ErrorKind::TimedOut =>
+                {
+                    break;
+                }
                 Err(_) => break,
             }
-
-            // Send any KCP output (ACKs, etc.)
-            self.drain_output();
         }
+
+        self.tick = self.tick.saturating_add(step_ms);
+        thread::sleep(Duration::from_millis(step_ms as u64));
     }
 
-    /// Read data from KCP after pumping.
     fn recv(&mut self) -> Option<Vec<u8>> {
-        let mut buf = [0u8; 32768];
-        match self.kcp.recv(&mut buf) {
-            Ok(0) | Err(_) => None,
-            Ok(n) => Some(buf[..n].to_vec()),
+        self.received.pop_front()
+    }
+
+    fn wait_for_data(&mut self, timeout_ms: u32) -> Option<Vec<u8>> {
+        let mut elapsed = 0u32;
+        while elapsed < timeout_ms {
+            self.step(20);
+            if let Some(data) = self.recv() {
+                return Some(data);
+            }
+            elapsed += 20;
         }
+        None
     }
 }
 
-// ── Server spawning ─────────────────────────────────────────────────────
+// ── Server spawning ────────────────────────────────────────────────────
 
 fn spawn_kcp_server(port: u16, user_id: &str, flow: &str) -> wrongsv_server::ServerHandle {
     let config: wrongsv_server::Config = toml::from_str(&format!(
@@ -314,7 +282,7 @@ mtu = 1350
     server.spawn()
 }
 
-// ── Tests ───────────────────────────────────────────────────────────────
+// ── Tests ──────────────────────────────────────────────────────────────
 
 #[test]
 fn test_kcp_handshake() {
@@ -325,12 +293,8 @@ fn test_kcp_handshake() {
 
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     socket.connect(server_addr).unwrap();
-    socket
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .unwrap();
 
-    let mut client = TestKcpClient::new(socket.try_clone().unwrap(), server_addr, TEST_SEED, 1);
-
+    let mut client = TestKcpClient::new(socket, server_addr, TEST_SEED, 1);
     let vless_header = encode_vless_request(
         TEST_UUID,
         "127.0.0.1",
@@ -338,31 +302,13 @@ fn test_kcp_handshake() {
         wrongsv_protocol::RequestCommand::Tcp,
         "",
     );
+    client.send(&vless_header);
 
-    // Send VLESS request and flush
-    client.send_and_flush(&vless_header, 0);
-
-    // Try to read VLESS response
-    let mut attempts = 0;
-    loop {
-        let tick = (100 + attempts * 20) as u32;
-        let _ = client.kcp.update(tick);
-        client.pump(100);
-
-        if let Some(data) = client.recv() {
-            assert!(!data.is_empty(), "VLESS response should not be empty");
-            assert_eq!(data[0], 0, "VLESS version must be 0");
-            return;
-        }
-
-        attempts += 1;
-        if attempts > 30 {
-            panic!(
-                "timed out waiting for VLESS response after {} attempts",
-                attempts
-            );
-        }
-    }
+    let response = client
+        .wait_for_data(2500)
+        .expect("timed out waiting for VLESS response");
+    assert!(!response.is_empty(), "VLESS response should not be empty");
+    assert_eq!(response[0], 0, "VLESS version must be 0");
 }
 
 #[test]
@@ -375,12 +321,8 @@ fn test_kcp_tcp_echo() {
 
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     socket.connect(server_addr).unwrap();
-    socket
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .unwrap();
 
-    let mut client = TestKcpClient::new(socket.try_clone().unwrap(), server_addr, TEST_SEED, 1);
-
+    let mut client = TestKcpClient::new(socket, server_addr, TEST_SEED, 7);
     let vless_header = encode_vless_request(
         TEST_UUID,
         &echo_addr.ip().to_string(),
@@ -388,45 +330,17 @@ fn test_kcp_tcp_echo() {
         wrongsv_protocol::RequestCommand::Tcp,
         "",
     );
+    client.send(&vless_header);
 
-    client.send_and_flush(&vless_header, 0);
+    let response = client
+        .wait_for_data(2500)
+        .expect("should receive VLESS response");
+    assert_eq!(response[0], 0, "VLESS version must be 0");
 
-    // Wait for VLESS response
-    let mut got_response = false;
-    for tick in 0..40 {
-        let _ = client.kcp.update((100 + tick * 20) as u32);
-        client.pump(100);
-
-        if let Some(data) = client.recv() {
-            assert!(!data.is_empty());
-            assert_eq!(data[0], 0, "VLESS version must be 0");
-            got_response = true;
-            break;
-        }
-    }
-    assert!(got_response, "should receive VLESS response");
-
-    // Send echo payload and verify echo
     let payload = b"hello-kcp-echo";
-    client.send_and_flush(payload, 500);
-
-    let mut echo_received = false;
-    for tick in 0..60 {
-        let _ = client.kcp.update((500 + tick * 20) as u32);
-        client.pump(100);
-
-        if let Some(data) = client.recv()
-            && data == payload
-        {
-            echo_received = true;
-            break;
-        }
-    }
-    assert!(
-        echo_received,
-        "should receive echo of '{}'",
-        std::str::from_utf8(payload).unwrap()
-    );
+    client.send(payload);
+    let echoed = client.wait_for_data(3000).expect("should receive TCP echo");
+    assert_eq!(echoed, payload);
 }
 
 #[test]
@@ -438,31 +352,21 @@ fn test_kcp_rejects_invalid_uuid() {
 
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     socket.connect(server_addr).unwrap();
-    socket
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .unwrap();
 
-    let mut client = TestKcpClient::new(socket.try_clone().unwrap(), server_addr, TEST_SEED, 1);
-
-    let bad_uuid = "00000000-0000-0000-0000-000000000000";
+    let mut client = TestKcpClient::new(socket, server_addr, TEST_SEED, 9);
     let vless_header = encode_vless_request(
-        bad_uuid,
+        "00000000-0000-0000-0000-000000000000",
         "127.0.0.1",
         80,
         wrongsv_protocol::RequestCommand::Tcp,
         "",
     );
+    client.send(&vless_header);
 
-    client.send_and_flush(&vless_header, 0);
-
-    // The server should reject — we should either get no response or the
-    // server will eventually close the KCP session.
-    for tick in 0..20 {
-        let _ = client.kcp.update((100 + tick * 20) as u32);
-        client.pump(100);
+    for _ in 0..50 {
+        client.step(20);
         let _ = client.recv();
     }
-    // Test passes if we don't hang
 }
 
 #[test]
@@ -474,12 +378,8 @@ fn test_kcp_vision_response() {
 
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     socket.connect(server_addr).unwrap();
-    socket
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .unwrap();
 
-    let mut client = TestKcpClient::new(socket.try_clone().unwrap(), server_addr, TEST_SEED, 1);
-
+    let mut client = TestKcpClient::new(socket, server_addr, TEST_SEED, 11);
     let vless_header = encode_vless_request(
         TEST_UUID,
         "127.0.0.1",
@@ -487,20 +387,10 @@ fn test_kcp_vision_response() {
         wrongsv_protocol::RequestCommand::Tcp,
         "xtls-rprx-vision",
     );
+    client.send(&vless_header);
 
-    client.send_and_flush(&vless_header, 0);
-
-    let mut got_response = false;
-    for tick in 0..40 {
-        let _ = client.kcp.update((100 + tick * 20) as u32);
-        client.pump(100);
-
-        if let Some(data) = client.recv() {
-            assert!(!data.is_empty());
-            assert_eq!(data[0], 0, "VLESS version must be 0");
-            got_response = true;
-            break;
-        }
-    }
-    assert!(got_response, "Vision flow should receive VLESS response");
+    let response = client
+        .wait_for_data(2500)
+        .expect("Vision flow should receive VLESS response");
+    assert_eq!(response[0], 0, "VLESS version must be 0");
 }

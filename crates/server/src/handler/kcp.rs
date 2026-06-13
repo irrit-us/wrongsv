@@ -6,6 +6,8 @@
 //!   - KCP reliable transport sessions multiplexed over a single UDP socket
 //!   - VLESS decode, response, and relay over KCP byte streams
 
+mod xray_session;
+
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream, UdpSocket};
@@ -13,7 +15,6 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use ::kcp::Kcp;
 use aes_gcm::aead::{AeadInPlace, KeyInit};
 use sha2::Digest;
 use tokio::sync::mpsc as tokio_mpsc;
@@ -23,6 +24,9 @@ use wrongsv_protocol::RequestCommand;
 use crate::config::KcpServerConfig;
 
 use super::*;
+use xray_session::{
+    SessionConfig as XraySessionConfig, SessionState as XraySessionState, XrayKcpSession, peek_conv,
+};
 
 // ── mKCP constants ─────────────────────────────────────────────────────
 
@@ -34,6 +38,10 @@ const MKCP_ORIGINAL_OVERHEAD: usize = 6;
 pub(crate) struct KcpConfig {
     pub mtu: usize,
     pub tti: u32, // transmission interval in ms
+    pub uplink_capacity: usize,
+    pub downlink_capacity: usize,
+    pub _read_buffer_size: usize,
+    pub write_buffer_size: usize,
     packet_mask: KcpPacketMask,
 }
 
@@ -58,6 +66,10 @@ pub(crate) fn parse_kcp_config(kc: &KcpServerConfig) -> Result<KcpConfig, String
     Ok(KcpConfig {
         mtu,
         tti,
+        uplink_capacity: kc.uplink_capacity.unwrap_or(5),
+        downlink_capacity: kc.downlink_capacity.unwrap_or(20),
+        _read_buffer_size: kc.read_buffer_size.unwrap_or(2 * 1024 * 1024),
+        write_buffer_size: kc.write_buffer_size.unwrap_or(2 * 1024 * 1024),
         packet_mask,
     })
 }
@@ -93,6 +105,13 @@ enum KcpPacketMask {
 }
 
 impl KcpPacketMask {
+    fn overhead(&self) -> usize {
+        match self {
+            Self::Original => MKCP_ORIGINAL_OVERHEAD,
+            Self::Aes128Gcm { .. } => 16,
+        }
+    }
+
     fn wrap(&self, plaintext: &[u8]) -> Result<Vec<u8>, io::Error> {
         match self {
             Self::Original => {
@@ -179,63 +198,55 @@ impl KcpPacketMask {
     }
 }
 
-// ── KCP output channel ─────────────────────────────────────────────────
-
-/// A `Write` impl that sends KCP output segments through a channel.
-struct ChanWriter {
-    tx: tokio_mpsc::UnboundedSender<Vec<u8>>,
-}
-
-impl Write for ChanWriter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.tx
-            .send(buf.to_vec())
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "channel closed"))?;
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
 // ── KCP session ────────────────────────────────────────────────────────
 
 struct KcpSession {
-    kcp: Kcp<ChanWriter>,
+    engine: XrayKcpSession,
     incoming_tx: mpsc::Sender<Vec<u8>>,
     /// Pending VLESS output — fed to kcp.send() in the update loop.
     vless_outgoing_rx: mpsc::Receiver<Vec<u8>>,
+    udp_tx: tokio_mpsc::UnboundedSender<Vec<u8>>,
+    started_at: Instant,
     last_update: Instant,
 }
 
 impl KcpSession {
     fn new(
-        conv: u32,
-        output: ChanWriter,
+        conv: u16,
+        config: &KcpConfig,
         incoming_tx: mpsc::Sender<Vec<u8>>,
         vless_outgoing_rx: mpsc::Receiver<Vec<u8>>,
-        mtu: usize,
+        udp_tx: tokio_mpsc::UnboundedSender<Vec<u8>>,
     ) -> Self {
-        let mut kcp = Kcp::new(conv, output);
-        let _ = kcp.set_mtu(mtu);
-        // nodelay(nodelay, interval, resend, nc)
-        kcp.set_nodelay(true, 10, 2, true);
-        kcp.set_wndsize(128, 256);
+        let engine = XrayKcpSession::new(XraySessionConfig {
+            conv,
+            mtu: config.mtu,
+            tti: config.tti,
+            uplink_capacity: config.uplink_capacity,
+            downlink_capacity: config.downlink_capacity,
+            write_buffer_size: config.write_buffer_size,
+            packet_overhead: config.packet_mask.overhead(),
+        });
         KcpSession {
-            kcp,
+            engine,
             incoming_tx,
             vless_outgoing_rx,
+            udp_tx,
+            started_at: Instant::now(),
             last_update: Instant::now(),
         }
+    }
+
+    fn current_ms(&self) -> u32 {
+        self.started_at.elapsed().as_millis() as u32
     }
 }
 
 // ── Shared KCP state ───────────────────────────────────────────────────
 
 struct KcpShared {
-    sessions: HashMap<(SocketAddr, u32), Arc<Mutex<KcpSession>>>,
-    mtu: usize,
+    sessions: HashMap<(SocketAddr, u16), Arc<Mutex<KcpSession>>>,
+    config: KcpConfig,
     packet_mask: KcpPacketMask,
     socket: UdpSocket,
 }
@@ -425,7 +436,7 @@ pub(crate) async fn run_kcp_endpoint(
 
     let shared = Arc::new(Mutex::new(KcpShared {
         sessions: HashMap::new(),
-        mtu: config.mtu,
+        config: config.clone(),
         packet_mask: config.packet_mask.clone(),
         socket: socket.try_clone()?,
     }));
@@ -458,29 +469,37 @@ pub(crate) async fn run_kcp_endpoint(
             Ok((n, src)) => {
                 let mut sh = shared.lock().unwrap();
                 if let Some(data) = sh.packet_mask.unwrap(&buf[..n])
-                    && data.len() >= ::kcp::KCP_OVERHEAD
+                    && let Some(kcp_conv) = peek_conv(&data)
                 {
-                    let kcp_conv = ::kcp::get_conv(&data);
                     let key = (src, kcp_conv);
                     if let Some(session) = sh.sessions.get(&key) {
                         let mut s = session.lock().unwrap();
                         s.last_update = Instant::now();
-                        let _ = s.kcp.input(&data);
+                        let current = s.current_ms();
+                        s.engine.input(&data, current);
+                        while let Some(frame) = s.engine.take_received() {
+                            let _ = s.incoming_tx.send(frame);
+                        }
                     } else {
-                        let session_mtu = sh.mtu;
                         let (incoming_tx, incoming_rx) = mpsc::channel::<Vec<u8>>();
                         let (vless_tx, vless_rx) = mpsc::sync_channel::<Vec<u8>>(8);
                         let (udp_tx, mut udp_rx) = tokio_mpsc::unbounded_channel::<Vec<u8>>();
 
-                        let chan_writer = ChanWriter { tx: udp_tx };
                         let session = Arc::new(Mutex::new(KcpSession::new(
                             kcp_conv,
-                            chan_writer,
+                            &sh.config,
                             incoming_tx,
                             vless_rx,
-                            session_mtu,
+                            udp_tx,
                         )));
-                        let _ = session.lock().unwrap().kcp.input(&data);
+                        {
+                            let mut guard = session.lock().unwrap();
+                            let current = guard.current_ms();
+                            guard.engine.input(&data, current);
+                            while let Some(frame) = guard.engine.take_received() {
+                                let _ = guard.incoming_tx.send(frame);
+                            }
+                        }
 
                         sh.sessions.insert(key, Arc::clone(&session));
 
@@ -536,60 +555,46 @@ async fn run_kcp_update_loop(
     tti_ms: u64,
     shutdown: super::ShutdownSignal,
 ) {
-    let mut tick = 0u32;
     let interval = Duration::from_millis(tti_ms);
     loop {
         if shutdown.is_shutdown_requested() {
             break;
         }
         tokio::time::sleep(interval).await;
-        tick += tti_ms as u32;
 
         let mut sh = shared.lock().unwrap();
-        let mut to_remove: Vec<(SocketAddr, u32)> = Vec::new();
+        let mut to_remove: Vec<(SocketAddr, u16)> = Vec::new();
 
         for (&key, session) in &sh.sessions {
             let mut s = session.lock().unwrap();
+            let current = s.current_ms();
 
-            // ── Step 1: Feed VLESS output into KCP BEFORE update ──
-            let mut had_output = false;
-
-            // Drain vless_outgoing_rx while KCP queue has room.
-            // kcp.send() always succeeds (it just pushes to snd_queue) —
-            // we use waitsnd() for backpressure to avoid unbounded queue growth.
-            let max_queue = (s.kcp.snd_wnd() as usize) * 2;
-            while s.kcp.wait_snd() < max_queue {
-                match s.vless_outgoing_rx.try_recv() {
-                    Ok(data) => {
-                        let _ = s.kcp.send(&data);
-                        had_output = true;
-                    }
-                    Err(_) => break, // channel empty or disconnected
-                }
-            }
-
-            // ── Step 2: KCP update (flushes snd_queue → output) ──
-            let _ = s.kcp.update(tick);
-
-            // ── Step 3: Deliver KCP.recv() data to VLESS handler ──
-            let mut rbuf = [0u8; 65536];
+            // Drain app output into the session's chunk queue. The relay writer
+            // side is already backpressured by the sync_channel, so this bounded
+            // in-memory queue is enough to bridge larger writes into mKCP MSS chunks.
             loop {
-                match s.kcp.recv(&mut rbuf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        let data = rbuf[..n].to_vec();
-                        let _ = s.incoming_tx.send(data);
-                        had_output = true;
+                match s.vless_outgoing_rx.try_recv() {
+                    Ok(data) => s.engine.enqueue_application_data(&data),
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        s.engine.mark_application_write_closed(current);
+                        break;
                     }
                 }
             }
 
-            if had_output {
-                s.last_update = Instant::now();
+            let output_packets = s.engine.flush(current);
+            for packet in output_packets {
+                let _ = s.udp_tx.send(packet);
             }
+            while let Some(frame) = s.engine.take_received() {
+                let _ = s.incoming_tx.send(frame);
+            }
+            s.last_update = Instant::now();
 
-            // Check if KCP session is dead (no activity for 30 seconds)
-            if s.last_update.elapsed() > Duration::from_secs(30) {
+            if matches!(s.engine.state(), XraySessionState::Terminated)
+                || s.last_update.elapsed() > Duration::from_secs(30)
+            {
                 to_remove.push(key);
             }
         }
