@@ -218,6 +218,9 @@ pub fn accept_anytls(
     mut stream: TcpStream,
     config: &AnyTlsConfig,
 ) -> Result<AnyTlsStream, AnyTlsAcceptError> {
+    // Bound the handshake to drop slowloris peers that connect but never
+    // send a ClientHello. Cleared by the caller after `accept_anytls` returns.
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
     let mut conn = match rustls::ServerConnection::new(Arc::clone(&config.tls_config)) {
         Ok(c) => c,
         Err(e) => {
@@ -284,6 +287,9 @@ pub fn accept_anytls(
             .unwrap_or_default()
     );
 
+    // Hand off without the handshake timeout — the caller installs its own
+    // post-handshake read deadlines on the bidirectional relay.
+    let _ = stream.set_read_timeout(None);
     Ok(AnyTlsStream { conn, stream })
 }
 

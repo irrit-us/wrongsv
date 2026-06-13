@@ -88,6 +88,8 @@ fn accept_shadowtls_tls(
         .map_err(|e| format!("shadowtls create conn: {e}"))?;
     let mut conn = conn;
     let mut sock = stream;
+    // Bound the TLS handshake to drop slowloris peers.
+    let _ = sock.set_read_timeout(Some(Duration::from_secs(30)));
     loop {
         match conn.complete_io(&mut sock) {
             Ok((_, _)) if !conn.is_handshaking() => break,
@@ -95,6 +97,7 @@ fn accept_shadowtls_tls(
             Err(e) => return Err(format!("shadowtls handshake: {e}").into()),
         }
     }
+    let _ = sock.set_read_timeout(None);
     Ok((conn, sock))
 }
 

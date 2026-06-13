@@ -252,6 +252,8 @@ pub(crate) fn handle_httpupgrade_connection(
             let mut conn = rustls::ServerConnection::new(Arc::clone(tls_config))
                 .map_err(|e| format!("httpupgrade+tls create: {e}"))?;
             let mut sock = stream;
+            // Bound the TLS handshake to drop slowloris peers.
+            let _ = sock.set_read_timeout(Some(Duration::from_secs(30)));
             loop {
                 match conn.complete_io(&mut sock) {
                     Ok((_, _)) if !conn.is_handshaking() => break,
@@ -259,6 +261,7 @@ pub(crate) fn handle_httpupgrade_connection(
                     Err(e) => return Err(format!("httpupgrade+tls handshake: {e}").into()),
                 }
             }
+            let _ = sock.set_read_timeout(None);
             info!("{peer} TLS+HTTPUpgrade: TLS handshake done, upgrading...");
 
             let mut header_buf = Vec::new();

@@ -138,6 +138,9 @@ pub(crate) fn handle_shadowsocks_connection(
     let peer = stream.peer_addr()?;
     trace!("{peer} Shadowsocks connection");
 
+    // Bound the salt + request-header read so a slowloris peer can't
+    // park a thread forever by connecting and sending nothing.
+    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
     let read_stream = stream.try_clone()?;
     let mut reader = wrongsv_shadowsocks::ShadowsocksReader::new(read_stream, config)?;
     let request_salt = reader.request_salt().map(Vec::from);
@@ -154,6 +157,8 @@ pub(crate) fn handle_shadowsocks_connection(
     let target = TcpStream::connect(&target_addr)?;
     target.set_nodelay(true)?;
     target.set_read_timeout(Some(Duration::from_secs(2)))?;
+    // Relay phase manages its own per-side deadlines; clear the handshake bound.
+    stream.set_read_timeout(None)?;
 
     relay_shadowsocks(
         reader,

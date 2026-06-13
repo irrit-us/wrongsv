@@ -28,6 +28,8 @@ pub(crate) fn tls_relay(
     let mut conn = rustls::ServerConnection::new(Arc::clone(tls_config))
         .map_err(|e| format!("{label} TLS create: {e}"))?;
     let mut sock = stream;
+    // Bound the TLS handshake to drop slowloris peers.
+    let _ = sock.set_read_timeout(Some(Duration::from_secs(30)));
     loop {
         match conn.complete_io(&mut sock) {
             Ok((_, _)) if !conn.is_handshaking() => break,

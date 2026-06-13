@@ -41,6 +41,8 @@ pub(crate) fn accept_tls(
     let mut conn = rustls::ServerConnection::new(Arc::clone(&config.tls_config))
         .map_err(|e| format!("tls create: {e}"))?;
     let mut stream = stream;
+    // Bound the TLS handshake to drop slowloris peers. Caller resets afterwards.
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
     loop {
         match conn.complete_io(&mut stream) {
             Ok((_, _)) if !conn.is_handshaking() => break,
@@ -48,6 +50,7 @@ pub(crate) fn accept_tls(
             Err(e) => return Err(format!("tls handshake: {e}").into()),
         }
     }
+    let _ = stream.set_read_timeout(None);
     Ok(wrongsv_anytls::AnyTlsStream::from_parts(conn, stream))
 }
 pub(crate) fn read_tls_plaintext(
