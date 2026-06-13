@@ -403,6 +403,17 @@ standard xray/v2fly AEAD path. `spawn_vmess_server` remains in
   traffic and produces no server-side metrics deltas, so KCP remains an open
   follow-up item rather than a confirmed resolved capability.
 
+### 2026-06-13 — KCP outer packet compatibility fixed, inner transport still mismatched
+
+- wrongsv KCP no longer uses the stale custom `FNV + cmd` datagram wrapper.
+  It now accepts and emits xray-style `mkcp-original` / `mkcp-aes128gcm`
+  packet masks based on the configured seed.
+- Result: current xray-core KCP clients now reach wrongsv far enough to create
+  KCP sessions; the failure moved from config-load / packet-drop to
+  `KCP closed before VLESS header`.
+- Current conclusion: the remaining KCP bug is inside the KCP stream/session
+  implementation itself, not the outer packet mask layer.
+
 ### 2026-06-13 — sing-box AnyTLS harness gap partially closed
 
 - Added reusable `AnyTLS` runtime-config generation for sing-box-family clients

@@ -9,7 +9,9 @@ use std::net::{SocketAddr, UdpSocket};
 use std::rc::Rc;
 use std::time::Duration;
 
+use aes_gcm::aead::{AeadInPlace, KeyInit};
 use kcp::Kcp;
+use sha2::Digest;
 
 mod common;
 use common::{init_logging, pick_port, spawn_tcp_echo_target};
@@ -69,6 +71,8 @@ fn encode_vless_request(
 
 // ── mKCP helpers ────────────────────────────────────────────────────────
 
+const MKCP_ORIGINAL_OVERHEAD: usize = 6;
+
 fn fnv1a_32(data: &[u8]) -> u32 {
     let mut hash: u32 = 0x811c9dc5;
     for &byte in data {
@@ -78,35 +82,90 @@ fn fnv1a_32(data: &[u8]) -> u32 {
     hash
 }
 
-fn mkcp_seal(seed: &str, cmd: u8, data: &[u8]) -> Vec<u8> {
-    let mut packet = Vec::with_capacity(3 + data.len());
-    let mut auth_input = Vec::with_capacity(seed.len() + 1 + data.len());
-    auth_input.extend_from_slice(seed.as_bytes());
-    auth_input.push(cmd);
-    auth_input.extend_from_slice(data);
-    let auth = fnv1a_32(&auth_input) as u16;
-    packet.extend_from_slice(&auth.to_be_bytes());
-    packet.push(cmd);
-    packet.extend_from_slice(data);
+fn xorfwd(data: &mut [u8]) {
+    for i in 4..data.len() {
+        data[i] ^= data[i - 4];
+    }
+}
+
+fn xorbkd(data: &mut [u8]) {
+    for i in (4..data.len()).rev() {
+        data[i] ^= data[i - 4];
+    }
+}
+
+fn mkcp_seal(seed: &str, data: &[u8]) -> Vec<u8> {
+    if seed.is_empty() {
+        let mut packet = Vec::with_capacity(MKCP_ORIGINAL_OVERHEAD + data.len() + 3);
+        packet.extend_from_slice(&[0u8; MKCP_ORIGINAL_OVERHEAD]);
+        packet[4..6].copy_from_slice(&(data.len() as u16).to_be_bytes());
+        packet.extend_from_slice(data);
+        let auth = fnv1a_32(&packet[4..]);
+        packet[..4].copy_from_slice(&auth.to_be_bytes());
+        let padded_len = if packet.len() % 4 == 0 {
+            packet.len()
+        } else {
+            packet.len() + (4 - packet.len() % 4)
+        };
+        packet.resize(padded_len, 0);
+        xorfwd(&mut packet);
+        packet.truncate(MKCP_ORIGINAL_OVERHEAD + data.len());
+        return packet;
+    }
+    let digest = sha2::Sha256::digest(seed.as_bytes());
+    let cipher = aes_gcm::Aes128Gcm::new_from_slice(&digest[..16]).unwrap();
+    let mut nonce = [0u8; 12];
+    use rand::RngCore;
+    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    let mut ciphertext = data.to_vec();
+    let tag = cipher
+        .encrypt_in_place_detached(aes_gcm::Nonce::from_slice(&nonce), b"", &mut ciphertext)
+        .unwrap();
+    let mut packet = nonce.to_vec();
+    packet.extend_from_slice(&ciphertext);
+    packet.extend_from_slice(tag.as_slice());
     packet
 }
 
-fn mkcp_open(seed: &str, packet: &[u8]) -> Option<(u8, Vec<u8>)> {
-    if packet.len() < 3 {
+fn mkcp_open(seed: &str, packet: &[u8]) -> Option<Vec<u8>> {
+    if seed.is_empty() {
+        if packet.len() < MKCP_ORIGINAL_OVERHEAD {
+            return None;
+        }
+        let mut data = packet.to_vec();
+        let padded_len = if data.len() % 4 == 0 {
+            data.len()
+        } else {
+            data.len() + (4 - data.len() % 4)
+        };
+        data.resize(padded_len, 0);
+        xorbkd(&mut data);
+        let auth = u32::from_be_bytes(data[..4].try_into().ok()?);
+        if fnv1a_32(&data[4..packet.len()]) != auth {
+            return None;
+        }
+        let length = u16::from_be_bytes(data[4..6].try_into().ok()?) as usize;
+        if packet.len().checked_sub(MKCP_ORIGINAL_OVERHEAD)? != length {
+            return None;
+        }
+        return Some(data[6..6 + length].to_vec());
+    }
+    if packet.len() < 12 + 16 {
         return None;
     }
-    let auth = u16::from_be_bytes([packet[0], packet[1]]);
-    let cmd = packet[2];
-    let data = &packet[3..];
-    let mut auth_input = Vec::with_capacity(seed.len() + 1 + data.len());
-    auth_input.extend_from_slice(seed.as_bytes());
-    auth_input.push(cmd);
-    auth_input.extend_from_slice(data);
-    let expected = fnv1a_32(&auth_input) as u16;
-    if auth != expected {
-        return None;
-    }
-    Some((cmd, data.to_vec()))
+    let digest = sha2::Sha256::digest(seed.as_bytes());
+    let cipher = aes_gcm::Aes128Gcm::new_from_slice(&digest[..16]).unwrap();
+    let split = packet.len() - 16;
+    let mut plaintext = packet[12..split].to_vec();
+    cipher
+        .decrypt_in_place_detached(
+            aes_gcm::Nonce::from_slice(&packet[..12]),
+            b"",
+            &mut plaintext,
+            aes_gcm::Tag::from_slice(&packet[split..]),
+        )
+        .ok()?;
+    Some(plaintext)
 }
 
 // ── KCP output that buffers bytes for mKCP wrapping ────────────────────
@@ -168,7 +227,7 @@ impl TestKcpClient {
     fn drain_output(&mut self) {
         let pending: Vec<u8> = self.output_buf.borrow_mut().drain(..).collect();
         if !pending.is_empty() {
-            let packet = mkcp_seal(&self.seed, 1, &pending); // CMD_DATA=1
+            let packet = mkcp_seal(&self.seed, &pending);
             let _ = self.socket.send_to(&packet, self.server_addr);
         }
     }
@@ -180,14 +239,14 @@ impl TestKcpClient {
         let _ = self.kcp.send(data);
         let output: Vec<u8> = self.output_buf.borrow_mut().drain(..).collect();
         if !output.is_empty() {
-            let packet = mkcp_seal(&self.seed, 1, &output);
+            let packet = mkcp_seal(&self.seed, &output);
             let _ = self.socket.send_to(&packet, self.server_addr);
         }
         // Flush any remaining KCP output (ACKs, retransmits, etc.)
         self.kcp.flush().unwrap();
         let output2: Vec<u8> = self.output_buf.borrow_mut().drain(..).collect();
         if !output2.is_empty() {
-            let packet = mkcp_seal(&self.seed, 1, &output2);
+            let packet = mkcp_seal(&self.seed, &output2);
             let _ = self.socket.send_to(&packet, self.server_addr);
         }
     }
@@ -207,7 +266,7 @@ impl TestKcpClient {
                     if src != self.server_addr {
                         continue;
                     }
-                    if let Some((_cmd, data)) = mkcp_open(&self.seed, &recv_buf[..n]) {
+                    if let Some(data) = mkcp_open(&self.seed, &recv_buf[..n]) {
                         let _ = self.kcp.input(&data);
                     }
                 }

@@ -14,6 +14,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use ::kcp::Kcp;
+use aes_gcm::aead::{AeadInPlace, KeyInit};
+use sha2::Digest;
 use tokio::sync::mpsc as tokio_mpsc;
 use tracing::{debug, error, info, trace, warn};
 use wrongsv_protocol::RequestCommand;
@@ -24,24 +26,15 @@ use super::*;
 
 // ── mKCP constants ─────────────────────────────────────────────────────
 
-/// 2-byte auth + 1-byte command overhead per mKCP segment.
-const MKCP_AUTH_OVERHEAD: usize = 3;
-
-const CMD_DATA: u8 = 1;
-#[allow(dead_code)]
-const CMD_ACK: u8 = 0;
-const CMD_TERMINATE: u8 = 2;
-// const CMD_PING: u8 = 3;
+const MKCP_ORIGINAL_OVERHEAD: usize = 6;
 
 // ── Config ────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
 pub(crate) struct KcpConfig {
-    pub seed: String,
     pub mtu: usize,
     pub tti: u32, // transmission interval in ms
-    #[allow(dead_code)]
-    pub header_size: usize, // mKCP segment wrapper overhead
+    packet_mask: KcpPacketMask,
 }
 
 pub(crate) fn parse_kcp_config(kc: &KcpServerConfig) -> Result<KcpConfig, String> {
@@ -53,16 +46,23 @@ pub(crate) fn parse_kcp_config(kc: &KcpServerConfig) -> Result<KcpConfig, String
     if !(10..=100).contains(&tti) {
         return Err(format!("kcp tti must be in 10..=100, got {tti}"));
     }
-    let header_size = kc.header_size.unwrap_or(MKCP_AUTH_OVERHEAD + 16); // auth + DataSegment overhead
+    let packet_mask = match kc.seed.as_deref() {
+        Some(seed) if !seed.is_empty() => {
+            let digest = sha2::Sha256::digest(seed.as_bytes());
+            let mut key = [0u8; 16];
+            key.copy_from_slice(&digest[..16]);
+            KcpPacketMask::Aes128Gcm { key }
+        }
+        _ => KcpPacketMask::Original,
+    };
     Ok(KcpConfig {
-        seed: kc.seed.clone().unwrap_or_default(),
         mtu,
         tti,
-        header_size,
+        packet_mask,
     })
 }
 
-// ── mKCP authenticator ─────────────────────────────────────────────────
+// ── mKCP packet mask ───────────────────────────────────────────────────
 
 /// 32-bit FNV1a hash of a buffer.
 fn fnv1a_32(data: &[u8]) -> u32 {
@@ -74,40 +74,109 @@ fn fnv1a_32(data: &[u8]) -> u32 {
     hash
 }
 
-/// mKCP seal: prepend 2-byte auth and 1-byte command.
-fn mkcp_seal(seed: &str, cmd: u8, data: &[u8]) -> Vec<u8> {
-    let mut packet = Vec::with_capacity(3 + data.len());
-    // Compute auth = FNV1a(seed + cmd + data) truncated to 2 bytes
-    let mut auth_input = Vec::with_capacity(seed.len() + 1 + data.len());
-    auth_input.extend_from_slice(seed.as_bytes());
-    auth_input.push(cmd);
-    auth_input.extend_from_slice(data);
-    let auth = fnv1a_32(&auth_input) as u16;
-    packet.extend_from_slice(&auth.to_be_bytes());
-    packet.push(cmd);
-    packet.extend_from_slice(data);
-    packet
+fn xorfwd(data: &mut [u8]) {
+    for i in 4..data.len() {
+        data[i] ^= data[i - 4];
+    }
 }
 
-/// mKCP open: verify 2-byte auth and extract data after command byte.
-/// Returns `Some(data)` on success, `None` if auth check fails.
-fn mkcp_open(seed: &str, packet: &[u8]) -> Option<(u8, Vec<u8>)> {
-    if packet.len() < 3 {
-        return None;
+fn xorbkd(data: &mut [u8]) {
+    for i in (4..data.len()).rev() {
+        data[i] ^= data[i - 4];
     }
-    let auth = u16::from_be_bytes([packet[0], packet[1]]);
-    let cmd = packet[2];
-    let data = &packet[3..];
+}
 
-    let mut auth_input = Vec::with_capacity(seed.len() + 1 + data.len());
-    auth_input.extend_from_slice(seed.as_bytes());
-    auth_input.push(cmd);
-    auth_input.extend_from_slice(data);
-    let expected = fnv1a_32(&auth_input) as u16;
-    if auth != expected {
-        return None;
+#[derive(Clone)]
+enum KcpPacketMask {
+    Original,
+    Aes128Gcm { key: [u8; 16] },
+}
+
+impl KcpPacketMask {
+    fn wrap(&self, plaintext: &[u8]) -> Result<Vec<u8>, io::Error> {
+        match self {
+            Self::Original => {
+                let mut packet =
+                    Vec::with_capacity(MKCP_ORIGINAL_OVERHEAD + plaintext.len() + 3);
+                packet.extend_from_slice(&[0u8; MKCP_ORIGINAL_OVERHEAD]);
+                packet[4..6].copy_from_slice(&(plaintext.len() as u16).to_be_bytes());
+                packet.extend_from_slice(plaintext);
+                let auth = fnv1a_32(&packet[4..]);
+                packet[..4].copy_from_slice(&auth.to_be_bytes());
+                let padded_len = if packet.len() % 4 == 0 {
+                    packet.len()
+                } else {
+                    packet.len() + (4 - packet.len() % 4)
+                };
+                packet.resize(padded_len, 0);
+                xorfwd(&mut packet);
+                packet.truncate(MKCP_ORIGINAL_OVERHEAD + plaintext.len());
+                Ok(packet)
+            }
+            Self::Aes128Gcm { key } => {
+                use rand::RngCore;
+
+                let cipher =
+                    aes_gcm::Aes128Gcm::new_from_slice(key).expect("AES-GCM key length");
+                let mut packet = vec![0u8; 12];
+                rand::rngs::OsRng.fill_bytes(&mut packet);
+                let nonce = aes_gcm::Nonce::from_slice(&packet[..12]);
+                let mut ciphertext = plaintext.to_vec();
+                let tag = cipher
+                    .encrypt_in_place_detached(nonce, b"", &mut ciphertext)
+                    .map_err(|e| io::Error::other(format!("mkcp wrap: {e}")))?;
+                packet.extend_from_slice(&ciphertext);
+                packet.extend_from_slice(tag.as_slice());
+                Ok(packet)
+            }
+        }
     }
-    Some((cmd, data.to_vec()))
+
+    fn unwrap(&self, packet: &[u8]) -> Option<Vec<u8>> {
+        match self {
+            Self::Original => {
+                if packet.len() < MKCP_ORIGINAL_OVERHEAD {
+                    return None;
+                }
+                let mut data = packet.to_vec();
+                let padded_len = if data.len() % 4 == 0 {
+                    data.len()
+                } else {
+                    data.len() + (4 - data.len() % 4)
+                };
+                data.resize(padded_len, 0);
+                xorbkd(&mut data);
+                let auth = u32::from_be_bytes(data[..4].try_into().ok()?);
+                if fnv1a_32(&data[4..packet.len()]) != auth {
+                    return None;
+                }
+                let length = u16::from_be_bytes(data[4..6].try_into().ok()?) as usize;
+                if packet.len().checked_sub(MKCP_ORIGINAL_OVERHEAD)? != length {
+                    return None;
+                }
+                Some(data[6..6 + length].to_vec())
+            }
+            Self::Aes128Gcm { key } => {
+                if packet.len() < 12 + 16 {
+                    return None;
+                }
+                let cipher =
+                    aes_gcm::Aes128Gcm::new_from_slice(key).expect("AES-GCM key length");
+                let nonce = aes_gcm::Nonce::from_slice(&packet[..12]);
+                let split = packet.len() - 16;
+                let mut plaintext = packet[12..split].to_vec();
+                cipher
+                    .decrypt_in_place_detached(
+                        nonce,
+                        b"",
+                        &mut plaintext,
+                        aes_gcm::Tag::from_slice(&packet[split..]),
+                    )
+                    .ok()?;
+                Some(plaintext)
+            }
+        }
+    }
 }
 
 // ── KCP output channel ─────────────────────────────────────────────────
@@ -166,8 +235,8 @@ impl KcpSession {
 
 struct KcpShared {
     sessions: HashMap<(SocketAddr, u32), Arc<Mutex<KcpSession>>>,
-    seed: String,
     mtu: usize,
+    packet_mask: KcpPacketMask,
     socket: UdpSocket,
 }
 
@@ -356,8 +425,8 @@ pub(crate) async fn run_kcp_endpoint(
 
     let shared = Arc::new(Mutex::new(KcpShared {
         sessions: HashMap::new(),
-        seed: config.seed.clone(),
         mtu: config.mtu,
+        packet_mask: config.packet_mask.clone(),
         socket: socket.try_clone()?,
     }));
 
@@ -388,83 +457,61 @@ pub(crate) async fn run_kcp_endpoint(
         match socket.recv_from(&mut buf) {
             Ok((n, src)) => {
                 let mut sh = shared.lock().unwrap();
-                if let Some((cmd, data)) = mkcp_open(&sh.seed, &buf[..n]) {
-                    if cmd == CMD_DATA && data.len() >= 4 {
-                        // Extract KCP conversation ID from the raw KCP header
-                        // (first 4 bytes of KCP segment = conv, little-endian)
-                        let kcp_conv = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-                        let kcp_data = &data; // entire data is the KCP segment
+                if let Some(data) = sh.packet_mask.unwrap(&buf[..n])
+                    && data.len() >= ::kcp::KCP_OVERHEAD
+                {
+                    let kcp_conv = ::kcp::get_conv(&data);
+                    let key = (src, kcp_conv);
+                    if let Some(session) = sh.sessions.get(&key) {
+                        let mut s = session.lock().unwrap();
+                        s.last_update = Instant::now();
+                        let _ = s.kcp.input(&data);
+                    } else {
+                        let session_mtu = sh.mtu;
+                        let (incoming_tx, incoming_rx) = mpsc::channel::<Vec<u8>>();
+                        let (vless_tx, vless_rx) = mpsc::sync_channel::<Vec<u8>>(8);
+                        let (udp_tx, mut udp_rx) = tokio_mpsc::unbounded_channel::<Vec<u8>>();
 
-                        let key = (src, kcp_conv);
-                        if let Some(session) = sh.sessions.get(&key) {
-                            let mut s = session.lock().unwrap();
-                            s.last_update = Instant::now();
-                            let _ = s.kcp.input(kcp_data);
-                        } else {
-                            // New KCP session
-                            // New KCP session — create one with VLESS relay
-                            let session_mtu = sh.mtu;
-                            // Unbounded: KCP recv window bounds the data, so this won't OOM.
-                            // Must NOT use sync_channel — a blocked update loop prevents ACKs.
-                            let (incoming_tx, incoming_rx) = mpsc::channel::<Vec<u8>>();
-                            // Channel: VLESS handler → KCP send (small capacity for backpressure)
-                            let (vless_tx, vless_rx) = mpsc::sync_channel::<Vec<u8>>(8);
-                            // Channel: KCP output → UDP sender
-                            let (udp_tx, mut udp_rx) = tokio_mpsc::unbounded_channel::<Vec<u8>>();
+                        let chan_writer = ChanWriter { tx: udp_tx };
+                        let session = Arc::new(Mutex::new(KcpSession::new(
+                            kcp_conv,
+                            chan_writer,
+                            incoming_tx,
+                            vless_rx,
+                            session_mtu,
+                        )));
+                        let _ = session.lock().unwrap().kcp.input(&data);
 
-                            let chan_writer = ChanWriter { tx: udp_tx };
-                            let session = Arc::new(Mutex::new(KcpSession::new(
-                                kcp_conv,
-                                chan_writer,
-                                incoming_tx,
-                                vless_rx,
-                                session_mtu,
-                            )));
-                            let _ = session.lock().unwrap().kcp.input(kcp_data);
+                        sh.sessions.insert(key, Arc::clone(&session));
 
-                            sh.sessions.insert(key, Arc::clone(&session));
+                        let v = Arc::clone(&validator);
+                        let ks = kyber_sk;
+                        std::thread::spawn(move || {
+                            let stream = KcpRelayStream::new(incoming_rx, vless_tx);
+                            if let Err(e) = handle_vless_over_kcp(stream, v, ks, src) {
+                                warn!("{src} KCP stream error: {e}");
+                            }
+                        });
 
-                            // Spawn VLESS handler thread
-                            let v = Arc::clone(&validator);
-                            let ks = kyber_sk;
-                            std::thread::spawn(move || {
-                                let stream = KcpRelayStream::new(incoming_rx, vless_tx);
-                                if let Err(e) = handle_vless_over_kcp(stream, v, ks, src) {
-                                    warn!("{src} KCP stream error: {e}");
-                                }
-                                // Dropping stream drops vless_tx → signals update loop
-                            });
-
-                            // Spawn KCP output → UDP send task
-                            let sock = sh.socket.try_clone().unwrap();
-                            let send_seed = sh.seed.clone();
-                            tokio::spawn(async move {
-                                while let Some(raw_kcp_data) = udp_rx.recv().await {
-                                    let packet = mkcp_seal(&send_seed, CMD_DATA, &raw_kcp_data);
-                                    // Retry on WouldBlock — the socket is nonblocking
-                                    // (inherited from main socket via try_clone).
-                                    loop {
-                                        match sock.send_to(&packet, src) {
-                                            Ok(_) => break,
-                                            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                                                // Kernel UDP send buffer full; yield and retry.
-                                                tokio::time::sleep(Duration::from_millis(1)).await;
-                                            }
-                                            Err(_) => break, // other errors: drop packet
+                        let sock = sh.socket.try_clone().unwrap();
+                        let packet_mask = sh.packet_mask.clone();
+                        tokio::spawn(async move {
+                            while let Some(raw_kcp_data) = udp_rx.recv().await {
+                                let Ok(packet) = packet_mask.wrap(&raw_kcp_data) else {
+                                    break;
+                                };
+                                loop {
+                                    match sock.send_to(&packet, src) {
+                                        Ok(_) => break,
+                                        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                                            tokio::time::sleep(Duration::from_millis(1)).await;
                                         }
+                                        Err(_) => break,
                                     }
                                 }
-                            });
-                        }
-                    } else if cmd == CMD_TERMINATE {
-                        // Remove session
-                        if data.len() >= 4 {
-                            let kcp_conv = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-                            let key = (src, kcp_conv);
-                            sh.sessions.remove(&key);
-                        }
+                            }
+                        });
                     }
-                    // ACK and PING are handled by the KCP layer internally
                 }
             }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -922,38 +969,37 @@ mod tests {
     }
 
     #[test]
-    fn test_mkcp_seal_open_roundtrip() {
-        let seed = "test-seed";
-        let cmd = CMD_DATA;
+    fn test_kcp_original_mask_roundtrip() {
+        let mask = KcpPacketMask::Original;
         let data = b"hello kcp";
-
-        let packet = mkcp_seal(seed, cmd, data);
-        assert_eq!(packet.len(), 3 + data.len());
-        assert_eq!(packet[2], cmd);
-
-        let result = mkcp_open(seed, &packet);
-        assert!(result.is_some());
-        let (parsed_cmd, parsed_data) = result.unwrap();
-        assert_eq!(parsed_cmd, cmd);
-        assert_eq!(parsed_data, data);
+        let packet = mask.wrap(data).unwrap();
+        assert_eq!(mask.unwrap(&packet).unwrap(), data);
     }
 
     #[test]
-    fn test_mkcp_auth_rejects_wrong_seed() {
-        let packet = mkcp_seal("right-seed", CMD_DATA, b"data");
-        assert!(mkcp_open("wrong-seed", &packet).is_none());
+    fn test_kcp_aes128gcm_mask_roundtrip() {
+        let digest = sha2::Sha256::digest(b"right-seed");
+        let mut key = [0u8; 16];
+        key.copy_from_slice(&digest[..16]);
+        let mask = KcpPacketMask::Aes128Gcm { key };
+        let packet = mask.wrap(b"data").unwrap();
+        assert_eq!(mask.unwrap(&packet).unwrap(), b"data");
     }
 
     #[test]
-    fn test_mkcp_auth_rejects_corrupted() {
-        let mut packet = mkcp_seal("seed", CMD_DATA, b"data");
-        packet[0] ^= 1; // flip one auth byte
-        assert!(mkcp_open("seed", &packet).is_none());
-    }
-
-    #[test]
-    fn test_mkcp_short_packet() {
-        assert!(mkcp_open("seed", b"ab").is_none()); // too short
+    fn test_kcp_aes128gcm_mask_rejects_wrong_key() {
+        let digest1 = sha2::Sha256::digest(b"right-seed");
+        let digest2 = sha2::Sha256::digest(b"wrong-seed");
+        let mut key1 = [0u8; 16];
+        let mut key2 = [0u8; 16];
+        key1.copy_from_slice(&digest1[..16]);
+        key2.copy_from_slice(&digest2[..16]);
+        let packet = KcpPacketMask::Aes128Gcm { key: key1 }
+            .wrap(b"data")
+            .unwrap();
+        assert!(KcpPacketMask::Aes128Gcm { key: key2 }
+            .unwrap(&packet)
+            .is_none());
     }
 
     #[test]
@@ -969,9 +1015,9 @@ mod tests {
             write_buffer_size: None,
         };
         let kc = parse_kcp_config(&cfg).unwrap();
-        assert_eq!(kc.seed, "");
         assert_eq!(kc.mtu, 1350);
         assert_eq!(kc.tti, 50);
+        assert!(matches!(kc.packet_mask, KcpPacketMask::Original));
     }
 
     #[test]
@@ -987,9 +1033,8 @@ mod tests {
             write_buffer_size: None,
         };
         let kc = parse_kcp_config(&cfg).unwrap();
-        assert_eq!(kc.seed, "my-secret");
         assert_eq!(kc.mtu, 1400);
         assert_eq!(kc.tti, 20);
-        assert_eq!(kc.header_size, 25);
+        assert!(matches!(kc.packet_mask, KcpPacketMask::Aes128Gcm { .. }));
     }
 }
