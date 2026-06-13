@@ -5,7 +5,7 @@ use std::thread;
 use std::time::Duration;
 use tracing::{debug, info, trace, warn};
 use wrongsv_protocol::{RequestCommand, RequestHeader};
-use wrongsv_vless::MemoryValidator;
+use wrongsv_vless::{MemoryValidator, Validator};
 use wrongsv_vless::vision::{TrafficState, VisionWriter};
 
 use crate::config::AnyTlsServerConfig;
@@ -67,13 +67,30 @@ pub(crate) fn handle_anytls_connection(
     };
     info!("{peer} AnyTLS handshake complete");
 
+    let fallback_email = {
+        let users = validator.get_all();
+        if users.len() == 1 {
+            users[0].email.clone()
+        } else {
+            String::new()
+        }
+    };
+
     // Protocol detection: read first post-auth byte
     let (mut conn, mut stream_sock) = tls_stream.into_parts();
     let (proto, first_byte) =
         wrongsv_anytls::detect_post_auth_protocol(&mut conn, &mut stream_sock)?;
 
     if proto == wrongsv_anytls::PostAuthProtocol::SingAnyTls {
-        return handle_sing_anytls_session(conn, stream_sock, peer, validator, kyber_sk, metrics);
+        return handle_sing_anytls_session(
+            conn,
+            stream_sock,
+            peer,
+            validator,
+            kyber_sk,
+            metrics,
+            fallback_email,
+        );
     }
 
     // VLESS path: reconstruct AnyTlsStream and read the full header.
@@ -178,6 +195,7 @@ pub(crate) fn handle_sing_anytls_session(
     validator: Arc<MemoryValidator>,
     kyber_sk: Option<[u8; 64]>,
     metrics: Arc<wrongsv_metrics::Registry>,
+    fallback_email: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use wrongsv_anytls::session::{self, SessionWriter, WriteJob};
 
@@ -203,6 +221,7 @@ pub(crate) fn handle_sing_anytls_session(
                 validator.clone(),
                 kyber_sk,
                 Arc::clone(&metrics),
+                fallback_email.clone(),
             );
         },
     )?;
@@ -218,6 +237,7 @@ pub(crate) fn handle_sing_stream(
     validator: Arc<MemoryValidator>,
     kyber_sk: Option<[u8; 64]>,
     metrics: Arc<wrongsv_metrics::Registry>,
+    fallback_email: String,
 ) {
     let sid = stream.id;
 
@@ -240,7 +260,7 @@ pub(crate) fn handle_sing_stream(
     let result = if first_data[0] == 0x00 {
         handle_sing_stream_vless(stream, writer, first_data, peer, validator, kyber_sk, metrics)
     } else {
-        handle_sing_stream_socks(stream, writer, first_data, peer)
+        handle_sing_stream_socks(stream, writer, first_data, peer, metrics, fallback_email)
     };
 
     if let Err(e) = result {
@@ -253,6 +273,8 @@ pub(crate) fn handle_sing_stream_socks(
     writer: wrongsv_anytls::session::SessionWriter,
     first_data: Vec<u8>,
     peer: std::net::SocketAddr,
+    metrics: Arc<wrongsv_metrics::Registry>,
+    fallback_email: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let sid = stream.id;
 
@@ -275,13 +297,15 @@ pub(crate) fn handle_sing_stream_socks(
     } else {
         Vec::new()
     };
+    let tap = wrongsv_metrics::MetricsTap::new(metrics, fallback_email);
+    let _conn_guard = tap.track_connection();
 
     relay_sing_raw(
         stream,
         writer,
         target,
         remaining,
-        wrongsv_metrics::MetricsTap::disabled(),
+        tap,
     )?;
     Ok(())
 }

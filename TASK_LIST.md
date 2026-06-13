@@ -408,13 +408,15 @@ standard xray/v2fly AEAD path. `spawn_vmess_server` remains in
 - Added reusable `AnyTLS` runtime-config generation for sing-box-family clients
   in `wrongsv-external-tests`.
 - `sing-box` now passes `anytls_tcp`
-  (`wrongsv-external-tests/results/singbox-anytls-check-1`), so `anytls` is no
+  (`wrongsv-external-tests/results/singbox-anytls-check-3`), so `anytls` is no
   longer a harness gap for the core sing-box path.
+- The standalone sing-anytls SOCKS5 branch now also records per-user byte and
+  connection counters when wrongsv is configured with a single user email.
 - `Hiddify` still fails the same scenario
-  (`wrongsv-external-tests/results/hiddify-anytls-check-2`), but the failure is
-  at the GUI/runtime automation layer rather than the AnyTLS server protocol:
-  the app never reaches a usable local proxy listener from the current
-  automated flow.
+  (`wrongsv-external-tests/results/hiddify-anytls-check-4`). The deeper cause is
+  now confirmed: Hiddify's packaged core on this box rejects
+  `type: "anytls"` as an unknown outbound type, so this remains a
+  Hiddify-specific client/runtime gap rather than a wrongsv server defect.
 
 ### 2026-06-13 — Phase 3 traffic verification needs TUN privileges or mobile build
 
