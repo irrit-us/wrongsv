@@ -15,6 +15,8 @@ pub enum AddonsError {
     Marshal(#[from] prost::EncodeError),
     #[error("failed to unmarshal addons: {0}")]
     Unmarshal(#[from] prost::DecodeError),
+    #[error("addons proto too large for u8 wire-format length: {0} bytes (max 255)")]
+    TooLarge(usize),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -27,6 +29,9 @@ pub fn encode_header_addons(buf: &mut BytesMut, addons: &Addons) -> Result<(), A
         return Ok(());
     }
     let bytes = addons.encode_to_vec();
+    if bytes.len() > u8::MAX as usize {
+        return Err(AddonsError::TooLarge(bytes.len()));
+    }
     buf.put_u8(bytes.len() as u8);
     buf.put_slice(&bytes);
     Ok(())
@@ -92,5 +97,22 @@ mod tests {
         let decoded = decode_header_addons(&mut cursor).unwrap();
         assert_eq!(decoded.flow, "xtls-rprx-vision");
         assert_eq!(decoded.kyber_ct, b"0123456789ABCDEF");
+    }
+
+    #[test]
+    fn test_oversized_addons_errors_instead_of_truncating() {
+        // ML-KEM-512 ciphertext is 768 bytes; once wrapped in the addons
+        // proto with a flow field, the total exceeds the 255-byte limit
+        // imposed by the 1-byte length prefix.  The old encoder silently
+        // truncated `bytes.len() as u8`, corrupting the wire format.
+        let addons = Addons {
+            flow: "xtls-rprx-vision".to_string(),
+            kyber_ct: vec![0xAB; 768],
+        };
+        let mut buf = BytesMut::new();
+        match encode_header_addons(&mut buf, &addons) {
+            Err(AddonsError::TooLarge(n)) => assert!(n > 255, "got {n}"),
+            other => panic!("expected TooLarge, got {other:?}"),
+        }
     }
 }
