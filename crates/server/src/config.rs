@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use base64::Engine as _;
 use serde::Deserialize;
 
@@ -69,6 +71,11 @@ pub struct Config {
     /// over request sessions hidden behind viewer/text fetches.
     #[serde(default)]
     pub gdocsviewer: Option<GdocsViewerServerConfig>,
+    /// WireGuard inbound configuration. When set, wrongsv exposes a
+    /// userspace WireGuard endpoint that serves one or more virtual TCP
+    /// services inside the tunnel.
+    #[serde(default)]
+    pub wireguard: Option<WireGuardServerConfig>,
     /// Hysteria2 inbound configuration. When set, the listener accepts
     /// Hysteria2 QUIC/TCP/UDP traffic instead of VLESS.
     #[serde(default)]
@@ -421,6 +428,43 @@ fn default_gdocsviewer_request_bytes() -> usize {
     1_100
 }
 
+/// WireGuard peer configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct WireGuardPeerConfig {
+    pub public_key: String,
+    #[serde(default)]
+    pub preshared_key: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+    pub allowed_ips: Vec<String>,
+}
+
+/// A virtual TCP service exported inside the WireGuard tunnel.
+#[derive(Debug, Clone, Deserialize)]
+pub struct WireGuardForwardConfig {
+    pub service: String,
+    pub target: String,
+}
+
+/// WireGuard userspace server configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct WireGuardServerConfig {
+    pub private_key: String,
+    #[serde(default = "default_wireguard_mtu")]
+    pub mtu: u32,
+    pub server_cidrs: Vec<String>,
+    #[serde(default)]
+    pub routes: Vec<String>,
+    #[serde(default)]
+    pub peers: Vec<WireGuardPeerConfig>,
+    #[serde(default)]
+    pub forwards: Vec<WireGuardForwardConfig>,
+}
+
+fn default_wireguard_mtu() -> u32 {
+    1400
+}
+
 /// Hysteria2 authentication user.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Hysteria2UserConfig {
@@ -693,6 +737,22 @@ pub(crate) fn is_strict_uuid_text(s: &str) -> bool {
     hex_len == 32
 }
 
+fn is_valid_cidr_text(value: &str) -> bool {
+    let Some((ip_text, prefix_text)) = value.split_once('/') else {
+        return false;
+    };
+    let Ok(ip) = std::net::IpAddr::from_str(ip_text) else {
+        return false;
+    };
+    let Ok(prefix) = prefix_text.parse::<u8>() else {
+        return false;
+    };
+    match ip {
+        std::net::IpAddr::V4(_) => prefix <= 32,
+        std::net::IpAddr::V6(_) => prefix <= 128,
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct UserConfig {
     /// UUID string
@@ -785,6 +845,24 @@ pub enum ConfigError {
     GdocsViewerMissingUsers,
     #[error("Google Docs Viewer shared_key must be base64 for exactly 32 bytes")]
     GdocsViewerInvalidSharedKey,
+    #[error("WireGuard inbound cannot be combined with VLESS users")]
+    WireGuardWithVlessUsers,
+    #[error("WireGuard inbound cannot be combined with VLESS transport layers")]
+    WireGuardWithVlessTransport,
+    #[error("WireGuard inbound cannot be combined with other non-VLESS protocols")]
+    WireGuardWithNonVless,
+    #[error("WireGuard inbound requires at least one peer")]
+    WireGuardMissingPeers,
+    #[error("WireGuard inbound requires at least one forward rule")]
+    WireGuardMissingForwards,
+    #[error("WireGuard keys must be base64 for exactly 32 bytes")]
+    WireGuardInvalidKey,
+    #[error("WireGuard CIDRs must be valid CIDR strings")]
+    WireGuardInvalidCidr,
+    #[error("WireGuard forward service endpoints must be valid socket addresses")]
+    WireGuardInvalidService,
+    #[error("WireGuard forward targets must be valid TCP socket addresses")]
+    WireGuardInvalidTarget,
     #[error("Hysteria2 inbound cannot be combined with VLESS users")]
     Hysteria2WithVlessUsers,
     #[error("Hysteria2 inbound cannot be combined with VLESS transport layers")]
@@ -883,6 +961,7 @@ impl Config {
             || self.hysteria2.is_some()
             || self.tuic.is_some()
             || self.vmess.is_some()
+            || self.wireguard.is_some()
     }
 
     /// True when any stream-based framing transport (WebSocket,
@@ -933,6 +1012,7 @@ impl Config {
             self.tuic.is_some(),
             self.xhttp.is_some(),
             self.vmess.is_some(),
+            self.wireguard.is_some(),
         ]
         .into_iter()
         .filter(|&e| e)
@@ -1046,6 +1126,57 @@ impl Config {
                     if !seen.insert(&u.id) {
                         return Err(ConfigError::VmessDuplicateUuid);
                     }
+                }
+            }
+        }
+
+        if let Some(wireguard) = &self.wireguard {
+            self.check_non_vless_no_users(ConfigError::WireGuardWithVlessUsers)?;
+            self.check_non_vless_no_transports(ConfigError::WireGuardWithVlessTransport)?;
+            if self.has_any_non_vless_inbound_except_wireguard() {
+                return Err(ConfigError::WireGuardWithNonVless);
+            }
+            if wireguard.peers.is_empty() {
+                return Err(ConfigError::WireGuardMissingPeers);
+            }
+            if wireguard.forwards.is_empty() {
+                return Err(ConfigError::WireGuardMissingForwards);
+            }
+            let decode_key = |value: &str| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(value)
+                    .ok()
+                    .filter(|decoded| decoded.len() == 32)
+            };
+            if decode_key(&wireguard.private_key).is_none()
+                || wireguard
+                    .peers
+                    .iter()
+                    .any(|peer| decode_key(&peer.public_key).is_none())
+                || wireguard.peers.iter().any(|peer| {
+                    peer.preshared_key
+                        .as_deref()
+                        .is_some_and(|psk| decode_key(psk).is_none())
+                })
+            {
+                return Err(ConfigError::WireGuardInvalidKey);
+            }
+            for cidr in &wireguard.server_cidrs {
+                if !is_valid_cidr_text(cidr) {
+                    return Err(ConfigError::WireGuardInvalidCidr);
+                }
+            }
+            for cidr in wireguard.peers.iter().flat_map(|peer| peer.allowed_ips.iter()) {
+                if !is_valid_cidr_text(cidr) {
+                    return Err(ConfigError::WireGuardInvalidCidr);
+                }
+            }
+            for forward in &wireguard.forwards {
+                if forward.service.parse::<std::net::SocketAddr>().is_err() {
+                    return Err(ConfigError::WireGuardInvalidService);
+                }
+                if forward.target.parse::<std::net::SocketAddr>().is_err() {
+                    return Err(ConfigError::WireGuardInvalidTarget);
                 }
             }
         }
@@ -1317,6 +1448,7 @@ impl Config {
             || self.mixed.is_some()
             || self.trojan.is_some()
             || self.vmess.is_some()
+            || self.wireguard.is_some()
     }
 
     fn has_any_non_vless_inbound_except_tuic(&self) -> bool {
@@ -1324,6 +1456,16 @@ impl Config {
             || self.mixed.is_some()
             || self.trojan.is_some()
             || self.hysteria2.is_some()
+            || self.vmess.is_some()
+            || self.wireguard.is_some()
+    }
+
+    fn has_any_non_vless_inbound_except_wireguard(&self) -> bool {
+        self.shadowsocks.is_some()
+            || self.mixed.is_some()
+            || self.trojan.is_some()
+            || self.hysteria2.is_some()
+            || self.tuic.is_some()
             || self.vmess.is_some()
     }
 }
@@ -1375,6 +1517,7 @@ flow = "xtls-rprx-vision"
             xhttp: None,
             meek: None,
             gdocsviewer: None,
+            wireguard: None,
             hysteria2: None,
             tuic: None,
             quic: None,
@@ -1413,6 +1556,7 @@ flow = "xtls-rprx-vision"
             xhttp: None,
             meek: None,
             gdocsviewer: None,
+            wireguard: None,
             hysteria2: None,
             tuic: None,
             quic: None,

@@ -535,9 +535,27 @@ standard xray/v2fly AEAD path. `spawn_vmess_server` remains in
   V2Ray test binary with the `gdocsviewer` transport registered for this
   verification path.
 - External verification now passes at
-  `wrongsv-external-tests/results/v2ray-gdocs-check-5/vless_gdocsviewer/report.json`
-  and `wrongsv-external-tests/results/v2ray-gdocs-check-5/matrix.json`, so
+  `wrongsv-external-tests/results/v2ray-gdocs-check-6/vless_gdocsviewer/report.json`
+  and `wrongsv-external-tests/results/v2ray-gdocs-check-6/matrix.json`, so
   `server.v2ray_docs_transport` is no longer open.
+
+### 2026-06-14 — WireGuard server-side mode implemented for Mihomo-class clients
+
+- Added a bundled userspace helper under
+  `helpers/wireguard-service-bridge/`, using upstream V2Ray WireGuard and
+  gVisor stack packages to expose static virtual TCP services inside a
+  WireGuard tunnel without requiring a system TUN device.
+- Added `[wireguard]` config support in wrongsv plus a runtime branch that
+  builds and supervises the helper under the normal wrongsv lifecycle, with
+  parent-child shutdown tied through a pipe so the helper does not leak after
+  the parent exits.
+- Added `configs/wireguard.toml` and external harness coverage through Mihomo
+  YAML runtime builders and tunnel-visible target URLs.
+- External verification now passes at
+  `wrongsv-external-tests/results/clash-verge-wireguard-check-2/matrix.json`
+  and
+  `wrongsv-external-tests/results/flclash-wireguard-check-2/matrix.json`,
+  so `server.mihomo_wireguard_protocol` is no longer open.
 
 ### 2026-06-13 — ShadowTLS v3 interop fixed for sing-box / Hiddify
 

@@ -48,6 +48,8 @@ pub(crate) mod meek;
 pub(crate) use meek::*;
 pub(crate) mod gdocsviewer;
 pub(crate) use gdocsviewer::*;
+pub(crate) mod wireguard;
+pub(crate) use wireguard::*;
 pub(crate) mod hysteria2;
 pub(crate) use hysteria2::*;
 pub(crate) mod tuic;
@@ -170,6 +172,7 @@ pub struct InboundServer {
     xhttp_config: Option<XhttpConfig>,
     meek_config: Option<MeekConfig>,
     gdocsviewer_config: Option<GdocsViewerConfig>,
+    wireguard_config: Option<WireGuardConfig>,
     hysteria2_config: Option<Hysteria2Config>,
     tuic_config: Option<TuicConfig>,
     quic_config: Option<QuicConfig>,
@@ -288,6 +291,19 @@ impl InboundServer {
                     } else {
                         " (origin)"
                     }
+                );
+                Some(cfg)
+            }
+            None => None,
+        };
+        let wireguard_config = match &config.wireguard {
+            Some(wc) => {
+                let cfg = parse_wireguard_config(&config.listen, wc)?;
+                info!(
+                    "WireGuard enabled on {} ({} peer(s), {} forward(s))",
+                    config.listen,
+                    cfg.peers.len(),
+                    cfg.forwards.len()
                 );
                 Some(cfg)
             }
@@ -443,6 +459,7 @@ impl InboundServer {
             xhttp_config,
             meek_config,
             gdocsviewer_config,
+            wireguard_config,
             hysteria2_config,
             tuic_config,
             quic_config,
@@ -582,6 +599,10 @@ impl InboundServer {
                 ))
                 .map_err(|e| std::io::Error::other(e.to_string()).into());
         }
+        if let Some(config) = self.wireguard_config.clone() {
+            return run_wireguard_endpoint(config, shutdown)
+                .map_err(|e| std::io::Error::other(e.to_string()).into());
+        }
         let listener = TcpListener::bind(&self.config.listen)?;
         self.run_with_listener(listener, shutdown)
     }
@@ -614,6 +635,8 @@ impl InboundServer {
             "VLESS Meek"
         } else if self.gdocsviewer_config.is_some() {
             "VLESS Google Docs Viewer"
+        } else if self.wireguard_config.is_some() {
+            "WireGuard"
         } else if self.webtransport_config.is_some() {
             "VLESS WebTransport"
         } else {

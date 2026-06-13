@@ -612,6 +612,7 @@ mod tests {
             xhttp: None,
             meek: None,
             gdocsviewer: None,
+            wireguard: None,
             hysteria2: None,
             tuic: None,
             quic: None,

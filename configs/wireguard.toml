@@ -1,0 +1,20 @@
+# WireGuard userspace tunnel service for client compatibility testing.
+#
+# Exposes a virtual TCP service inside the tunnel and forwards it to a
+# local target server on the wrongsv host.
+
+listen = "0.0.0.0:51820"
+
+[wireguard]
+private_key = "gJ2bkwJoR/mZyVVzv9VWQ3t+yZ6R37/C5VXhaOSUgWI="
+mtu = 1400
+server_cidrs = ["10.66.66.1/32"]
+
+[[wireguard.peers]]
+public_key = "mvBoFRzzhoWrCZC9nQkrr57AG6oY03qzZ3+kDVumBG8="
+allowed_ips = ["10.66.66.2/32"]
+email = "user@example.com"
+
+[[wireguard.forwards]]
+service = "10.66.66.1:8080"
+target = "127.0.0.1:3300"
