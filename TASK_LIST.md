@@ -403,6 +403,19 @@ standard xray/v2fly AEAD path. `spawn_vmess_server` remains in
   traffic and produces no server-side metrics deltas, so KCP remains an open
   follow-up item rather than a confirmed resolved capability.
 
+### 2026-06-13 — sing-box AnyTLS harness gap partially closed
+
+- Added reusable `AnyTLS` runtime-config generation for sing-box-family clients
+  in `wrongsv-external-tests`.
+- `sing-box` now passes `anytls_tcp`
+  (`wrongsv-external-tests/results/singbox-anytls-check-1`), so `anytls` is no
+  longer a harness gap for the core sing-box path.
+- `Hiddify` still fails the same scenario
+  (`wrongsv-external-tests/results/hiddify-anytls-check-2`), but the failure is
+  at the GUI/runtime automation layer rather than the AnyTLS server protocol:
+  the app never reaches a usable local proxy listener from the current
+  automated flow.
+
 ### 2026-06-13 — Phase 3 traffic verification needs TUN privileges or mobile build
 
 Set up the wrongsv-external-tests pipeline end-to-end against a wrongsv VLESS+TLS+vision
