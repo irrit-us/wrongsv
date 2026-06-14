@@ -64,6 +64,8 @@ pub(crate) mod trojan_handler;
 pub(crate) use trojan_handler::*;
 pub(crate) mod quic;
 pub(crate) use quic::*;
+pub(crate) mod quic_obfs;
+pub(crate) use quic_obfs::*;
 pub(crate) mod kcp;
 pub(crate) use kcp::*;
 pub(crate) mod webtransport;

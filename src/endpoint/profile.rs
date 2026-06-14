@@ -1,7 +1,7 @@
 use clap::ValueEnum;
 use serde::Serialize;
 
-use crate::endpoint::OuterSecurity;
+use crate::endpoint::{Component, EndpointModel, OuterSecurity, PayloadNetwork, ProtocolInternalSecurity};
 
 #[derive(Debug, ValueEnum, Clone, Copy, PartialEq, Eq, Serialize)]
 #[allow(clippy::enum_variant_names)]
@@ -48,6 +48,21 @@ pub(crate) enum EndpointProfile {
     /// VMess AEAD (AES-128-GCM encrypted proxy)
     #[clap(name = "vmess")]
     Vmess,
+    /// Shadowsocks AEAD / AEAD-2022 inbound
+    #[clap(name = "shadowsocks")]
+    Shadowsocks,
+    /// Trojan over TLS inbound
+    #[clap(name = "trojan")]
+    Trojan,
+    /// Hysteria2 QUIC inbound
+    #[clap(name = "hysteria2")]
+    Hysteria2,
+    /// TUIC QUIC inbound
+    #[clap(name = "tuic")]
+    Tuic,
+    /// Mixed SOCKS4/4A/SOCKS5/HTTP proxy inbound
+    #[clap(name = "mixed")]
+    Mixed,
     /// WireGuard tunnel service
     #[clap(name = "wireguard")]
     WireGuard,
@@ -71,6 +86,11 @@ pub(crate) fn detect_profile(
         Some(config) if config.webtransport.is_some() => EndpointProfile::WebTransport,
         Some(config) if config.shadowtls.is_some() => EndpointProfile::ShadowTls,
         Some(config) if config.vmess.is_some() => EndpointProfile::Vmess,
+        Some(config) if config.shadowsocks.is_some() => EndpointProfile::Shadowsocks,
+        Some(config) if config.trojan.is_some() => EndpointProfile::Trojan,
+        Some(config) if config.hysteria2.is_some() => EndpointProfile::Hysteria2,
+        Some(config) if config.tuic.is_some() => EndpointProfile::Tuic,
+        Some(config) if config.mixed.is_some() => EndpointProfile::Mixed,
         Some(config) if config.wireguard.is_some() => EndpointProfile::WireGuard,
         Some(config) if config.tls.is_some() => EndpointProfile::Tls,
         _ => EndpointProfile::Raw,
@@ -87,7 +107,10 @@ pub(crate) fn resolve_outer_security(
         | EndpointProfile::Tls
         | EndpointProfile::Quic
         | EndpointProfile::WebTransport
-        | EndpointProfile::ShadowTls => Some(OuterSecurity::Tls),
+        | EndpointProfile::ShadowTls
+        | EndpointProfile::Trojan
+        | EndpointProfile::Hysteria2
+        | EndpointProfile::Tuic => Some(OuterSecurity::Tls),
         EndpointProfile::WebSocket => cfg
             .and_then(|c| c.websocket.as_ref())
             .and_then(|ws| ws.tls.as_ref())
@@ -115,13 +138,53 @@ pub(crate) fn resolve_outer_security(
         EndpointProfile::Raw
         | EndpointProfile::Kcp
         | EndpointProfile::Vmess
+        | EndpointProfile::Shadowsocks
+        | EndpointProfile::Mixed
         | EndpointProfile::WireGuard => None,
     }
+}
+
+pub(crate) fn build_endpoint_model(
+    cfg: Option<&wrongsv_server::Config>,
+    profile: EndpointProfile,
+    flow: &str,
+) -> EndpointModel {
+    let mut model = EndpointModel::from_profile(profile, resolve_outer_security(cfg, profile), flow);
+    match (cfg, profile) {
+        (Some(config), EndpointProfile::Shadowsocks) => {
+            if let Some(shadowsocks) = &config.shadowsocks {
+                model.protocol_internal_security = Some(if shadowsocks.method.starts_with("2022-") {
+                    ProtocolInternalSecurity::Shadowsocks2022Aead
+                } else {
+                    ProtocolInternalSecurity::ShadowsocksAead
+                });
+                if !shadowsocks.udp {
+                    model.payload_networks = vec![PayloadNetwork::Tcp];
+                    model.base_carriers = vec![crate::endpoint::BaseCarrier::Tcp];
+                }
+            }
+        }
+        (Some(config), EndpointProfile::Hysteria2) => {
+            if let Some(hysteria2) = &config.hysteria2 {
+                if hysteria2.disable_udp {
+                    model.payload_networks = vec![PayloadNetwork::Tcp];
+                }
+                if let Some(obfs) = &hysteria2.obfs {
+                    if obfs.obfs_type == "salamander" {
+                        model.components.camouflage.push(Component::Salamander);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    model
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::endpoint::{Component, PayloadNetwork, ProxyProtocol};
 
     #[test]
     fn detect_profile_prefers_explicit_override() {
@@ -169,5 +232,31 @@ key = "key"
             resolve_outer_security(Some(&config), profile),
             Some(OuterSecurity::Tls)
         );
+    }
+
+    #[test]
+    fn detect_profile_and_build_model_for_hysteria2_salamander() {
+        let config: wrongsv_server::Config = toml::from_str(
+            r#"
+listen = "0.0.0.0:443"
+
+[hysteria2]
+password = "secret"
+disable_udp = true
+
+[hysteria2.obfs]
+type = "salamander"
+password = "obfs-secret"
+"#,
+        )
+        .expect("config should parse");
+        let profile = detect_profile(Some(&config), None);
+        assert_eq!(profile, EndpointProfile::Hysteria2);
+        let model = build_endpoint_model(Some(&config), profile, "");
+        assert_eq!(model.protocol, ProxyProtocol::Hysteria2);
+        assert_eq!(model.transport, Some(crate::endpoint::TransportMethod::Quic));
+        assert_eq!(model.outer_security, Some(OuterSecurity::Tls));
+        assert_eq!(model.payload_networks, vec![PayloadNetwork::Tcp]);
+        assert!(model.components.camouflage.contains(&Component::Salamander));
     }
 }

@@ -58,16 +58,22 @@ pub(crate) struct ResolvedEndpoint {
     pub protocol_internal_security: Option<ProtocolInternalSecurity>,
     pub transport: Option<TransportMethod>,
     pub outer_security: Option<OuterSecurity>,
-    pub base_carrier: BaseCarrier,
+    pub base_carriers: Vec<BaseCarrier>,
     pub active_components: EndpointComponents,
     pub stack_summary: String,
 }
 
 const VLESS_PAYLOADS: &[PayloadNetwork] = &[PayloadNetwork::Tcp, PayloadNetwork::Udp];
 const VMESS_PAYLOADS: &[PayloadNetwork] = &[PayloadNetwork::Tcp];
+const SHADOWSOCKS_PAYLOADS: &[PayloadNetwork] = &[PayloadNetwork::Tcp, PayloadNetwork::Udp];
+const TROJAN_PAYLOADS: &[PayloadNetwork] = &[PayloadNetwork::Tcp, PayloadNetwork::Udp];
+const HYSTERIA2_PAYLOADS: &[PayloadNetwork] = &[PayloadNetwork::Tcp, PayloadNetwork::Udp];
+const TUIC_PAYLOADS: &[PayloadNetwork] = &[PayloadNetwork::Tcp, PayloadNetwork::Udp];
+const MIXED_PAYLOADS: &[PayloadNetwork] = &[PayloadNetwork::Tcp];
 const WIREGUARD_PAYLOADS: &[PayloadNetwork] = &[PayloadNetwork::Ip];
 const VLESS_CAMOUFLAGE_COMPONENTS: &[Component] = &[Component::AnyTls, Component::ShadowTls];
 const VLESS_PERFORMANCE_COMPONENTS: &[Component] = &[Component::Vision];
+const HYSTERIA2_CAMOUFLAGE_COMPONENTS: &[Component] = &[Component::Salamander];
 const EMPTY_COMPONENTS: &[Component] = &[];
 const VLESS_TRANSPORTS: &[TransportMethod] = &[
     TransportMethod::Raw,
@@ -141,6 +147,146 @@ pub(crate) fn protocol_descriptor(protocol: ProxyProtocol) -> &'static ProtocolD
                 network: EMPTY_COMPONENTS,
             },
         },
+        ProxyProtocol::Shadowsocks => &ProtocolDescriptor {
+            id: ProxyProtocol::Shadowsocks,
+            display_name: "Shadowsocks",
+            payload_networks: PayloadDescriptor {
+                supported: SHADOWSOCKS_PAYLOADS,
+                default: SHADOWSOCKS_PAYLOADS,
+                user_configurable: true,
+            },
+            transport: LayerDescriptor {
+                mode: LayerMode::Fixed,
+                supported: &[TransportMethod::Raw],
+                default: Some(TransportMethod::Raw),
+                fixed_value: Some(TransportMethod::Raw),
+            },
+            outer_security: LayerDescriptor {
+                mode: LayerMode::Forbidden,
+                supported: &[],
+                default: None,
+                fixed_value: None,
+            },
+            protocol_internal_security: Some(ProtocolInternalSecurity::ShadowsocksAead),
+            components: ComponentDescriptorSet {
+                camouflage: EMPTY_COMPONENTS,
+                ingress: EMPTY_COMPONENTS,
+                performance: EMPTY_COMPONENTS,
+                network: EMPTY_COMPONENTS,
+            },
+        },
+        ProxyProtocol::Trojan => &ProtocolDescriptor {
+            id: ProxyProtocol::Trojan,
+            display_name: "Trojan",
+            payload_networks: PayloadDescriptor {
+                supported: TROJAN_PAYLOADS,
+                default: TROJAN_PAYLOADS,
+                user_configurable: true,
+            },
+            transport: LayerDescriptor {
+                mode: LayerMode::Fixed,
+                supported: &[TransportMethod::Raw],
+                default: Some(TransportMethod::Raw),
+                fixed_value: Some(TransportMethod::Raw),
+            },
+            outer_security: LayerDescriptor {
+                mode: LayerMode::Fixed,
+                supported: &[OuterSecurity::Tls],
+                default: Some(OuterSecurity::Tls),
+                fixed_value: Some(OuterSecurity::Tls),
+            },
+            protocol_internal_security: None,
+            components: ComponentDescriptorSet {
+                camouflage: EMPTY_COMPONENTS,
+                ingress: EMPTY_COMPONENTS,
+                performance: EMPTY_COMPONENTS,
+                network: EMPTY_COMPONENTS,
+            },
+        },
+        ProxyProtocol::Hysteria2 => &ProtocolDescriptor {
+            id: ProxyProtocol::Hysteria2,
+            display_name: "Hysteria2",
+            payload_networks: PayloadDescriptor {
+                supported: HYSTERIA2_PAYLOADS,
+                default: HYSTERIA2_PAYLOADS,
+                user_configurable: true,
+            },
+            transport: LayerDescriptor {
+                mode: LayerMode::Fixed,
+                supported: &[TransportMethod::Quic],
+                default: Some(TransportMethod::Quic),
+                fixed_value: Some(TransportMethod::Quic),
+            },
+            outer_security: LayerDescriptor {
+                mode: LayerMode::Fixed,
+                supported: &[OuterSecurity::Tls],
+                default: Some(OuterSecurity::Tls),
+                fixed_value: Some(OuterSecurity::Tls),
+            },
+            protocol_internal_security: None,
+            components: ComponentDescriptorSet {
+                camouflage: HYSTERIA2_CAMOUFLAGE_COMPONENTS,
+                ingress: EMPTY_COMPONENTS,
+                performance: EMPTY_COMPONENTS,
+                network: EMPTY_COMPONENTS,
+            },
+        },
+        ProxyProtocol::Tuic => &ProtocolDescriptor {
+            id: ProxyProtocol::Tuic,
+            display_name: "TUIC",
+            payload_networks: PayloadDescriptor {
+                supported: TUIC_PAYLOADS,
+                default: TUIC_PAYLOADS,
+                user_configurable: true,
+            },
+            transport: LayerDescriptor {
+                mode: LayerMode::Fixed,
+                supported: &[TransportMethod::Quic],
+                default: Some(TransportMethod::Quic),
+                fixed_value: Some(TransportMethod::Quic),
+            },
+            outer_security: LayerDescriptor {
+                mode: LayerMode::Fixed,
+                supported: &[OuterSecurity::Tls],
+                default: Some(OuterSecurity::Tls),
+                fixed_value: Some(OuterSecurity::Tls),
+            },
+            protocol_internal_security: None,
+            components: ComponentDescriptorSet {
+                camouflage: EMPTY_COMPONENTS,
+                ingress: EMPTY_COMPONENTS,
+                performance: EMPTY_COMPONENTS,
+                network: EMPTY_COMPONENTS,
+            },
+        },
+        ProxyProtocol::Mixed => &ProtocolDescriptor {
+            id: ProxyProtocol::Mixed,
+            display_name: "Mixed",
+            payload_networks: PayloadDescriptor {
+                supported: MIXED_PAYLOADS,
+                default: MIXED_PAYLOADS,
+                user_configurable: false,
+            },
+            transport: LayerDescriptor {
+                mode: LayerMode::Forbidden,
+                supported: &[],
+                default: None,
+                fixed_value: None,
+            },
+            outer_security: LayerDescriptor {
+                mode: LayerMode::Forbidden,
+                supported: &[],
+                default: None,
+                fixed_value: None,
+            },
+            protocol_internal_security: None,
+            components: ComponentDescriptorSet {
+                camouflage: EMPTY_COMPONENTS,
+                ingress: EMPTY_COMPONENTS,
+                performance: EMPTY_COMPONENTS,
+                network: EMPTY_COMPONENTS,
+            },
+        },
         ProxyProtocol::WireGuard => &ProtocolDescriptor {
             id: ProxyProtocol::WireGuard,
             display_name: "WireGuard",
@@ -184,7 +330,7 @@ pub(crate) fn resolve_endpoint(model: &EndpointModel) -> ResolvedEndpoint {
         protocol_internal_security: model.protocol_internal_security,
         transport,
         outer_security,
-        base_carrier: model.base_carrier,
+        base_carriers: model.base_carriers.clone(),
         active_components: model.components.clone(),
         stack_summary,
     }
@@ -203,7 +349,7 @@ fn build_stack_summary(model: &EndpointModel, display_name: &str) -> String {
     if let Some(security) = model.outer_security {
         layers.push(outer_security_label(security).to_string());
     }
-    layers.push(base_carrier_label(model.base_carrier).to_string());
+    layers.push(base_carriers_label(&model.base_carriers));
     layers.join(" -> ")
 }
 
@@ -241,11 +387,15 @@ fn outer_security_label(security: OuterSecurity) -> &'static str {
     }
 }
 
-fn base_carrier_label(carrier: BaseCarrier) -> &'static str {
-    match carrier {
-        BaseCarrier::Tcp => "TCP",
-        BaseCarrier::Udp => "UDP",
-    }
+fn base_carriers_label(carriers: &[BaseCarrier]) -> String {
+    carriers
+        .iter()
+        .map(|carrier| match carrier {
+            BaseCarrier::Tcp => "TCP",
+            BaseCarrier::Udp => "UDP",
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 use crate::endpoint::{
-    detect_profile, resolve_outer_security, Component, EndpointModel, EndpointProfile as Transport,
+    build_endpoint_model, detect_profile, Component, EndpointModel, EndpointProfile as Transport,
     OuterSecurity, PayloadNetwork, ProxyProtocol, TransportMethod,
 };
 
@@ -49,7 +49,6 @@ pub(crate) fn resolve_client_values(
 
     match toml_config {
         Some(ref cfg) => {
-            let transport_outer_security = resolve_outer_security(Some(cfg), transport);
             let uuid = match transport {
                 Transport::Vmess => cfg
                     .vmess
@@ -165,8 +164,7 @@ pub(crate) fn resolve_client_values(
                 .as_ref()
                 .map(|wg| wg.mtu)
                 .unwrap_or(1400);
-            let endpoint =
-                EndpointModel::from_profile(transport, transport_outer_security, flow);
+            let endpoint = build_endpoint_model(Some(cfg), transport, flow);
 
             ClientConfigValues {
                 endpoint,
@@ -193,11 +191,7 @@ pub(crate) fn resolve_client_values(
             }
         }
         None => ClientConfigValues {
-            endpoint: EndpointModel::from_profile(
-                transport,
-                resolve_outer_security(None, transport),
-                "xtls-rprx-vision",
-            ),
+            endpoint: build_endpoint_model(None, transport, "xtls-rprx-vision"),
             uuid: build_uuid().to_string(),
             flow: "xtls-rprx-vision".to_string(),
             port: build_port().to_string(),

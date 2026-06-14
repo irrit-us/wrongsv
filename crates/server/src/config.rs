@@ -488,11 +488,21 @@ pub struct Hysteria2TlsConfig {
     pub dest: Option<String>,
 }
 
+/// Hysteria2 optional packet obfuscation configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Hysteria2ObfsConfig {
+    /// Obfuscation type. Currently `salamander` is supported.
+    #[serde(rename = "type")]
+    pub obfs_type: String,
+    /// Shared obfuscation password / key.
+    pub password: String,
+}
+
 /// Hysteria2 server-side configuration.
 ///
 /// Supports password and `username:password` authentication, TCP relay,
-/// and UDP relay over QUIC. Obfuscation and realm/NAT traversal are
-/// intentionally left for future slices.
+/// and UDP relay over QUIC. Salamander packet obfuscation is supported;
+/// realm/NAT traversal is intentionally left for future slices.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Hysteria2ServerConfig {
     /// Single-password authentication value.
@@ -516,6 +526,9 @@ pub struct Hysteria2ServerConfig {
     /// Optional UDP session idle timeout in seconds.
     #[serde(default = "default_hysteria2_udp_idle_timeout")]
     pub udp_idle_timeout: u64,
+    /// Optional packet obfuscation component.
+    #[serde(default)]
+    pub obfs: Option<Hysteria2ObfsConfig>,
     /// Optional TLS configuration for the QUIC listener.
     #[serde(default)]
     pub tls: Option<Hysteria2TlsConfig>,
@@ -873,6 +886,10 @@ pub enum ConfigError {
     Hysteria2MissingAuth,
     #[error("Hysteria2 user passwords must be non-empty")]
     Hysteria2InvalidPassword,
+    #[error("Hysteria2 obfuscation type must be `salamander`")]
+    Hysteria2InvalidObfsType,
+    #[error("Hysteria2 salamander password must be at least 4 bytes")]
+    Hysteria2InvalidObfsPassword,
     #[error("TUIC inbound cannot be combined with VLESS users")]
     TuicWithVlessUsers,
     #[error("TUIC inbound cannot be combined with VLESS transport layers")]
@@ -1081,6 +1098,14 @@ impl Config {
             if hysteria2.password.as_deref().is_none_or(str::is_empty) && hysteria2.users.is_empty()
             {
                 return Err(ConfigError::Hysteria2MissingAuth);
+            }
+            if let Some(obfs) = &hysteria2.obfs {
+                if obfs.obfs_type != "salamander" {
+                    return Err(ConfigError::Hysteria2InvalidObfsType);
+                }
+                if obfs.password.len() < 4 {
+                    return Err(ConfigError::Hysteria2InvalidObfsPassword);
+                }
             }
         }
 
@@ -1857,6 +1882,26 @@ password = "alice-password"
     }
 
     #[test]
+    fn test_parse_hysteria2_salamander_obfs_config() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[hysteria2]
+password = "secret"
+
+[hysteria2.obfs]
+type = "salamander"
+password = "obfs-secret"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        let hysteria2 = config.hysteria2.unwrap();
+        let obfs = hysteria2.obfs.expect("obfs config should be present");
+        assert_eq!(obfs.obfs_type, "salamander");
+        assert_eq!(obfs.password, "obfs-secret");
+    }
+
+    #[test]
     fn test_hysteria2_rejects_missing_auth() {
         let toml = r#"
 listen = "0.0.0.0:443"
@@ -1886,6 +1931,44 @@ password = "secret"
         assert!(matches!(
             config.validate(),
             Err(ConfigError::Hysteria2InvalidPassword)
+        ));
+    }
+
+    #[test]
+    fn test_hysteria2_rejects_invalid_obfs_type() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[hysteria2]
+password = "secret"
+
+[hysteria2.obfs]
+type = "gecko"
+password = "obfs-secret"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::Hysteria2InvalidObfsType)
+        ));
+    }
+
+    #[test]
+    fn test_hysteria2_rejects_short_obfs_password() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[hysteria2]
+password = "secret"
+
+[hysteria2.obfs]
+type = "salamander"
+password = "abc"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::Hysteria2InvalidObfsPassword)
         ));
     }
 

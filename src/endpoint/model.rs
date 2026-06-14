@@ -8,6 +8,16 @@ pub(crate) enum ProxyProtocol {
     Vless,
     #[serde(rename = "vmess")]
     Vmess,
+    #[serde(rename = "shadowsocks")]
+    Shadowsocks,
+    #[serde(rename = "trojan")]
+    Trojan,
+    #[serde(rename = "hysteria2")]
+    Hysteria2,
+    #[serde(rename = "tuic")]
+    Tuic,
+    #[serde(rename = "mixed")]
+    Mixed,
     #[serde(rename = "wireguard")]
     WireGuard,
 }
@@ -58,6 +68,10 @@ pub(crate) enum OuterSecurity {
 pub(crate) enum ProtocolInternalSecurity {
     #[serde(rename = "vmess_aead")]
     VmessAead,
+    #[serde(rename = "shadowsocks_aead")]
+    ShadowsocksAead,
+    #[serde(rename = "shadowsocks_2022")]
+    Shadowsocks2022Aead,
     #[serde(rename = "wireguard_noise")]
     WireGuardNoise,
 }
@@ -78,6 +92,8 @@ pub(crate) enum Component {
     AnyTls,
     #[serde(rename = "shadowtls")]
     ShadowTls,
+    #[serde(rename = "salamander")]
+    Salamander,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
@@ -104,7 +120,7 @@ pub(crate) struct EndpointModel {
     pub transport: Option<TransportMethod>,
     pub outer_security: Option<OuterSecurity>,
     pub protocol_internal_security: Option<ProtocolInternalSecurity>,
-    pub base_carrier: BaseCarrier,
+    pub base_carriers: Vec<BaseCarrier>,
     pub components: EndpointComponents,
 }
 
@@ -123,7 +139,7 @@ impl EndpointModel {
                 transport: None,
                 outer_security: None,
                 protocol_internal_security: Some(ProtocolInternalSecurity::VmessAead),
-                base_carrier: BaseCarrier::Tcp,
+                base_carriers: vec![BaseCarrier::Tcp],
                 components: EndpointComponents::default(),
             },
             Transport::WireGuard => EndpointModel {
@@ -132,21 +148,66 @@ impl EndpointModel {
                 transport: None,
                 outer_security: None,
                 protocol_internal_security: Some(ProtocolInternalSecurity::WireGuardNoise),
-                base_carrier: BaseCarrier::Udp,
+                base_carriers: vec![BaseCarrier::Udp],
+                components: EndpointComponents::default(),
+            },
+            Transport::Shadowsocks => EndpointModel {
+                protocol: ProxyProtocol::Shadowsocks,
+                payload_networks: vec![PayloadNetwork::Tcp, PayloadNetwork::Udp],
+                transport: Some(TransportMethod::Raw),
+                outer_security: None,
+                protocol_internal_security: Some(ProtocolInternalSecurity::ShadowsocksAead),
+                base_carriers: vec![BaseCarrier::Tcp, BaseCarrier::Udp],
+                components: EndpointComponents::default(),
+            },
+            Transport::Trojan => EndpointModel {
+                protocol: ProxyProtocol::Trojan,
+                payload_networks: vec![PayloadNetwork::Tcp, PayloadNetwork::Udp],
+                transport: Some(TransportMethod::Raw),
+                outer_security: Some(OuterSecurity::Tls),
+                protocol_internal_security: None,
+                base_carriers: vec![BaseCarrier::Tcp],
+                components: EndpointComponents::default(),
+            },
+            Transport::Hysteria2 => EndpointModel {
+                protocol: ProxyProtocol::Hysteria2,
+                payload_networks: vec![PayloadNetwork::Tcp, PayloadNetwork::Udp],
+                transport: Some(TransportMethod::Quic),
+                outer_security: Some(OuterSecurity::Tls),
+                protocol_internal_security: None,
+                base_carriers: vec![BaseCarrier::Udp],
+                components: EndpointComponents::default(),
+            },
+            Transport::Tuic => EndpointModel {
+                protocol: ProxyProtocol::Tuic,
+                payload_networks: vec![PayloadNetwork::Tcp, PayloadNetwork::Udp],
+                transport: Some(TransportMethod::Quic),
+                outer_security: Some(OuterSecurity::Tls),
+                protocol_internal_security: None,
+                base_carriers: vec![BaseCarrier::Udp],
+                components: EndpointComponents::default(),
+            },
+            Transport::Mixed => EndpointModel {
+                protocol: ProxyProtocol::Mixed,
+                payload_networks: vec![PayloadNetwork::Tcp],
+                transport: None,
+                outer_security: None,
+                protocol_internal_security: None,
+                base_carriers: vec![BaseCarrier::Tcp],
                 components: EndpointComponents::default(),
             },
             Transport::Reality => Self::vless_model(
                 vision_enabled,
                 Some(TransportMethod::Raw),
                 Some(OuterSecurity::Reality),
-                BaseCarrier::Tcp,
+                vec![BaseCarrier::Tcp],
                 EndpointComponents::default(),
             ),
             Transport::AnyTls => Self::vless_model(
                 vision_enabled,
                 Some(TransportMethod::Raw),
                 Some(OuterSecurity::Tls),
-                BaseCarrier::Tcp,
+                vec![BaseCarrier::Tcp],
                 EndpointComponents {
                     camouflage: vec![Component::AnyTls],
                     ..EndpointComponents::default()
@@ -156,84 +217,84 @@ impl EndpointModel {
                 vision_enabled,
                 Some(TransportMethod::Raw),
                 Some(OuterSecurity::Tls),
-                BaseCarrier::Tcp,
+                vec![BaseCarrier::Tcp],
                 EndpointComponents::default(),
             ),
             Transport::Raw => Self::vless_model(
                 vision_enabled,
                 Some(TransportMethod::Raw),
                 None,
-                BaseCarrier::Tcp,
+                vec![BaseCarrier::Tcp],
                 EndpointComponents::default(),
             ),
             Transport::WebSocket => Self::vless_model(
                 vision_enabled,
                 Some(TransportMethod::WebSocket),
                 transport_outer_security,
-                BaseCarrier::Tcp,
+                vec![BaseCarrier::Tcp],
                 EndpointComponents::default(),
             ),
             Transport::HttpUpgrade => Self::vless_model(
                 vision_enabled,
                 Some(TransportMethod::HttpUpgrade),
                 transport_outer_security,
-                BaseCarrier::Tcp,
+                vec![BaseCarrier::Tcp],
                 EndpointComponents::default(),
             ),
             Transport::Grpc => Self::vless_model(
                 vision_enabled,
                 Some(TransportMethod::Grpc),
                 transport_outer_security,
-                BaseCarrier::Tcp,
+                vec![BaseCarrier::Tcp],
                 EndpointComponents::default(),
             ),
             Transport::Xhttp => Self::vless_model(
                 vision_enabled,
                 Some(TransportMethod::Xhttp),
                 transport_outer_security,
-                BaseCarrier::Tcp,
+                vec![BaseCarrier::Tcp],
                 EndpointComponents::default(),
             ),
             Transport::Meek => Self::vless_model(
                 false,
                 Some(TransportMethod::Meek),
                 transport_outer_security,
-                BaseCarrier::Tcp,
+                vec![BaseCarrier::Tcp],
                 EndpointComponents::default(),
             ),
             Transport::GdocsViewer => Self::vless_model(
                 false,
                 Some(TransportMethod::GdocsViewer),
                 transport_outer_security,
-                BaseCarrier::Tcp,
+                vec![BaseCarrier::Tcp],
                 EndpointComponents::default(),
             ),
             Transport::Quic => Self::vless_model(
                 vision_enabled,
                 Some(TransportMethod::Quic),
                 Some(OuterSecurity::Tls),
-                BaseCarrier::Udp,
+                vec![BaseCarrier::Udp],
                 EndpointComponents::default(),
             ),
             Transport::Kcp => Self::vless_model(
                 vision_enabled,
                 Some(TransportMethod::Kcp),
                 None,
-                BaseCarrier::Udp,
+                vec![BaseCarrier::Udp],
                 EndpointComponents::default(),
             ),
             Transport::WebTransport => Self::vless_model(
                 vision_enabled,
                 Some(TransportMethod::WebTransport),
                 Some(OuterSecurity::Tls),
-                BaseCarrier::Udp,
+                vec![BaseCarrier::Udp],
                 EndpointComponents::default(),
             ),
             Transport::ShadowTls => Self::vless_model(
                 vision_enabled,
                 Some(TransportMethod::Raw),
                 Some(OuterSecurity::Tls),
-                BaseCarrier::Tcp,
+                vec![BaseCarrier::Tcp],
                 EndpointComponents {
                     camouflage: vec![Component::ShadowTls],
                     ..EndpointComponents::default()
@@ -246,7 +307,7 @@ impl EndpointModel {
         vision_enabled: bool,
         transport: Option<TransportMethod>,
         outer_security: Option<OuterSecurity>,
-        base_carrier: BaseCarrier,
+        base_carriers: Vec<BaseCarrier>,
         mut components: EndpointComponents,
     ) -> Self {
         if vision_enabled {
@@ -262,7 +323,7 @@ impl EndpointModel {
             transport,
             outer_security,
             protocol_internal_security: None,
-            base_carrier,
+            base_carriers,
             components,
         }
     }
@@ -280,7 +341,7 @@ mod tests {
     fn raw_vless_uses_tcp_without_outer_security() {
         let model = EndpointModel::from_profile(Transport::Raw, None, "");
         assert_eq!(model.protocol, ProxyProtocol::Vless);
-        assert_eq!(model.base_carrier, BaseCarrier::Tcp);
+        assert_eq!(model.base_carriers, vec![BaseCarrier::Tcp]);
         assert_eq!(model.transport, Some(TransportMethod::Raw));
         assert_eq!(model.outer_security, None);
         assert_eq!(model.payload_networks, vec![PayloadNetwork::Tcp, PayloadNetwork::Udp]);
@@ -290,7 +351,7 @@ mod tests {
     fn kcp_vless_uses_udp_base_carrier() {
         let model = EndpointModel::from_profile(Transport::Kcp, None, "");
         assert_eq!(model.transport, Some(TransportMethod::Kcp));
-        assert_eq!(model.base_carrier, BaseCarrier::Udp);
+        assert_eq!(model.base_carriers, vec![BaseCarrier::Udp]);
         assert_eq!(model.outer_security, None);
     }
 
@@ -300,7 +361,7 @@ mod tests {
         assert_eq!(model.protocol, ProxyProtocol::WireGuard);
         assert_eq!(model.protocol_internal_security, Some(ProtocolInternalSecurity::WireGuardNoise));
         assert_eq!(model.payload_networks, vec![PayloadNetwork::Ip]);
-        assert_eq!(model.base_carrier, BaseCarrier::Udp);
+        assert_eq!(model.base_carriers, vec![BaseCarrier::Udp]);
     }
 
     #[test]

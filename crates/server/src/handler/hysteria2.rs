@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::convert::TryFrom;
+use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,6 +28,7 @@ pub(crate) struct Hysteria2Config {
     pub disable_udp: bool,
     pub down_mbps: Option<u64>,
     pub ignore_client_bandwidth: bool,
+    pub obfs: Option<SalamanderConfig>,
 }
 
 #[derive(Clone)]
@@ -74,6 +76,9 @@ pub(crate) fn parse_hysteria2_config(
         disable_udp: cfg.disable_udp,
         down_mbps: cfg.down_mbps,
         ignore_client_bandwidth: cfg.ignore_client_bandwidth,
+        obfs: cfg.obfs.as_ref().map(|obfs| SalamanderConfig {
+            password: obfs.password.as_bytes().to_vec(),
+        }),
     })
 }
 
@@ -140,10 +145,22 @@ pub(crate) async fn run_hysteria2_endpoint(
 }
 
 fn create_hysteria2_endpoint(listen: &str, config: &Hysteria2Config) -> Result<Endpoint, H2Error> {
-    Ok(Endpoint::server(
-        config.quic_config.clone(),
-        listen.parse::<SocketAddr>()?,
-    )?)
+    let addr = listen.parse::<SocketAddr>()?;
+    if let Some(obfs) = &config.obfs {
+        let runtime = quinn::default_runtime()
+            .ok_or_else(|| io::Error::other("no async runtime found"))?;
+        let socket = std::net::UdpSocket::bind(addr)?;
+        let socket = runtime.wrap_udp_socket(socket)?;
+        let socket = wrap_async_udp_socket_salamander(socket, &obfs.password)
+            .map_err(io::Error::other)?;
+        return Ok(Endpoint::new_with_abstract_socket(
+            quinn::EndpointConfig::default(),
+            Some(config.quic_config.clone()),
+            socket,
+            runtime,
+        )?);
+    }
+    Ok(Endpoint::server(config.quic_config.clone(), addr)?)
 }
 
 async fn handle_hysteria2_connection(
@@ -690,6 +707,7 @@ mod tests {
             disable_udp: false,
             down_mbps: Some(100),
             ignore_client_bandwidth: false,
+            obfs: None,
         }
     }
 
@@ -756,6 +774,7 @@ mod tests {
     async fn build_hysteria2_test_client(
         cert_pem: &str,
         server_addr: SocketAddr,
+        obfs_password: Option<&[u8]>,
     ) -> Result<(quinn::Endpoint, QuinnConnection), H2Error> {
         let roots = build_root_store(cert_pem);
         let mut client_crypto = rustls::ClientConfig::builder()
@@ -765,7 +784,21 @@ mod tests {
         let client_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(client_crypto)
             .map_err(|e| std::io::Error::other(format!("client crypto: {e}")))?;
         let client_config = quinn::ClientConfig::new(Arc::new(client_crypto));
-        let mut endpoint = quinn::Endpoint::client("[::]:0".parse()?)?;
+        let runtime = quinn::default_runtime()
+            .ok_or_else(|| std::io::Error::other("no async runtime found"))?;
+        let socket = std::net::UdpSocket::bind("[::]:0".parse::<SocketAddr>()?)?;
+        let socket = runtime.wrap_udp_socket(socket)?;
+        let socket = match obfs_password {
+            Some(password) => wrap_async_udp_socket_salamander(socket, password)
+                .map_err(std::io::Error::other)?,
+            None => socket,
+        };
+        let mut endpoint = quinn::Endpoint::new_with_abstract_socket(
+            quinn::EndpointConfig::default(),
+            None,
+            socket,
+            runtime,
+        )?;
         endpoint.set_default_client_config(client_config);
         let conn = endpoint.connect(server_addr, "foo.cloudfront.net")?.await?;
         Ok((endpoint, conn))
@@ -775,8 +808,10 @@ mod tests {
         cert_pem: &str,
         server_addr: SocketAddr,
         auth: &str,
+        obfs_password: Option<&[u8]>,
     ) -> Result<(quinn::Endpoint, QuinnConnection), H2Error> {
-        let (endpoint, conn) = build_hysteria2_test_client(cert_pem, server_addr).await?;
+        let (endpoint, conn) =
+            build_hysteria2_test_client(cert_pem, server_addr, obfs_password).await?;
         let h3_conn = H3QuinnConnection::new(conn.clone());
         let mut builder = h3::client::builder();
         builder.enable_datagram(true);
@@ -925,10 +960,11 @@ mod tests {
             disable_udp: false,
             down_mbps: Some(100),
             ignore_client_bandwidth: false,
+            obfs: None,
         };
         let (echo_addr, echo_handle) = spawn_tcp_echo_server().await?;
         let (server_addr, server_handle) = spawn_hysteria2_test_server(config).await?;
-        let (_endpoint, conn) = authenticate_hysteria2(&cert, server_addr, "secret").await?;
+        let (_endpoint, conn) = authenticate_hysteria2(&cert, server_addr, "secret", None).await?;
 
         let (mut send, mut recv) = conn.open_bi().await?;
         let mut req = Vec::new();
@@ -968,12 +1004,52 @@ mod tests {
             disable_udp: false,
             down_mbps: Some(100),
             ignore_client_bandwidth: false,
+            obfs: None,
         };
         let (echo_addr, echo_handle) = spawn_udp_echo_server().await?;
         let (server_addr, server_handle) = spawn_hysteria2_test_server(config).await?;
-        let (_endpoint, conn) = authenticate_hysteria2(&cert, server_addr, "secret").await?;
+        let (_endpoint, conn) = authenticate_hysteria2(&cert, server_addr, "secret", None).await?;
 
         let session_id = 42u32;
+        let packet =
+            encode_hysteria2_udp_message(session_id, 1, 0, 1, &format!("{echo_addr}"), b"pong")?;
+        conn.send_datagram(Bytes::from(packet))?;
+        let datagram = tokio::time::timeout(Duration::from_secs(2), conn.read_datagram())
+            .await
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "udp timeout"))??;
+        let parsed = parse_hysteria2_udp_message(datagram.as_ref())?;
+        assert_eq!(parsed.0, session_id);
+        assert_eq!(parsed.5, b"pong");
+
+        server_handle.abort();
+        echo_handle.abort();
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hysteria2_salamander_udp_relay_roundtrip() -> Result<(), H2Error> {
+        ensure_rustls_provider();
+        let (cert, key) = wrongsv_anytls::generate_self_signed_cert().unwrap();
+        let tls = build_hysteria2_tls_config(&cert, &key).unwrap();
+        let config = Hysteria2Config {
+            password_auths: vec![Hysteria2AuthEntry {
+                auth: "secret".into(),
+                metrics_key: String::new(),
+            }],
+            quic_config: build_hysteria2_quic_config(tls).unwrap(),
+            disable_udp: false,
+            down_mbps: Some(100),
+            ignore_client_bandwidth: false,
+            obfs: Some(SalamanderConfig {
+                password: b"obfs-secret".to_vec(),
+            }),
+        };
+        let (echo_addr, echo_handle) = spawn_udp_echo_server().await?;
+        let (server_addr, server_handle) = spawn_hysteria2_test_server(config).await?;
+        let (_endpoint, conn) =
+            authenticate_hysteria2(&cert, server_addr, "secret", Some(b"obfs-secret")).await?;
+
+        let session_id = 99u32;
         let packet =
             encode_hysteria2_udp_message(session_id, 1, 0, 1, &format!("{echo_addr}"), b"pong")?;
         conn.send_datagram(Bytes::from(packet))?;

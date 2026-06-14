@@ -83,6 +83,22 @@ fn validate_client_format_support(
             }
         }
         ProxyProtocol::Vmess => {}
+        ProxyProtocol::Shadowsocks
+        | ProxyProtocol::Trojan
+        | ProxyProtocol::Hysteria2
+        | ProxyProtocol::Tuic
+        | ProxyProtocol::Mixed => {
+            return Err(format!(
+                "{} export is not implemented for {} format",
+                descriptor.display_name,
+                match format {
+                    ClientFormat::Mihomo => "mihomo",
+                    ClientFormat::SingBox => "sing-box",
+                    ClientFormat::Xray => "xray",
+                    ClientFormat::Hiddify => "hiddify",
+                }
+            ));
+        }
     }
     Ok(())
 }
@@ -1234,7 +1250,12 @@ mod tests {
             | Transport::GdocsViewer
             | Transport::Kcp
             | Transport::Vmess
+            | Transport::Shadowsocks
+            | Transport::Mixed
             | Transport::WireGuard => None,
+            Transport::Trojan | Transport::Hysteria2 | Transport::Tuic => {
+                Some(OuterSecurity::Tls)
+            }
         };
         ClientConfigValues {
             endpoint: EndpointModel::from_profile(
@@ -1468,6 +1489,43 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("WireGuard export is not implemented"));
+    }
+
+    #[test]
+    fn diagnostics_detect_hysteria2_salamander_and_unsupported_export() {
+        let unique = format!(
+            "wrongsv-hysteria2-{}.toml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(unique);
+        std::fs::write(
+            &path,
+            r#"
+listen = "0.0.0.0:443"
+
+[hysteria2]
+password = "secret"
+
+[hysteria2.obfs]
+type = "salamander"
+password = "obfs-secret"
+"#,
+        )
+        .expect("test config should write");
+        let vals = resolve_client_values(path.to_str(), None, "example.com");
+        std::fs::remove_file(&path).ok();
+        let diagnostics = build_endpoint_diagnostics(&vals, Some(ClientFormat::Mihomo));
+        assert_eq!(diagnostics.descriptor.display_name, "Hysteria2");
+        assert!(diagnostics
+            .resolved
+            .active_components
+            .camouflage
+            .contains(&Component::Salamander));
+        let export = diagnostics.export.expect("export diagnostics should be present");
+        assert!(!export.supported);
     }
 
     #[test]
