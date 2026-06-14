@@ -116,6 +116,30 @@ cargo test --test xray_lifecycle
 | WebSocket XUDP relay | VLESS over WS → Mux.Cool/XUDP UDP echo |
 | HTTPUpgrade TCP relay | VLESS over HTTPUpgrade → local HTTP response |
 
+## External client harness (`wrongsv-external-tests`)
+
+For end-to-end coverage against full GUI/CLI proxy clients (FlClash, Hiddify,
+sing-box, mihomo, clash-verge-rev, xray-core, v2ray), use the sibling repo
+`wrongsv-external-tests/`, checked out next to `wrongsv/`:
+
+```bash
+cd ../wrongsv-external-tests
+
+# End-to-end: generate client config from wrongsv config, run client, simulate
+# traffic, scrape metrics
+node run-client-suite.js --client sing-box
+node run-client-suite.js --client xray-core --wrongsv-config ../wrongsv/configs/reality-vision.toml
+node run-client-suite.js --client flclash
+node run-client-suite.js --client hiddify
+
+# Capability-driven multi-scenario audit
+node run-client-matrix.js --client clash-verge-rev
+node run-client-matrix.js --client v2ray
+```
+
+See `wrongsv-external-tests/README.md` for the full architecture, supported
+clients, and capability matrix.
+
 ## Stress test
 
 ```bash
