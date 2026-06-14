@@ -92,8 +92,10 @@ pub(crate) enum Component {
     AnyTls,
     #[serde(rename = "shadowtls")]
     ShadowTls,
-    #[serde(rename = "salamander")]
-    Salamander,
+    #[serde(rename = "hysteria-salamander")]
+    HysteriaSalamander,
+    #[serde(rename = "hysteria-gecko")]
+    HysteriaGecko,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]

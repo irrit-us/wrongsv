@@ -1523,9 +1523,44 @@ password = "obfs-secret"
             .resolved
             .active_components
             .camouflage
-            .contains(&Component::Salamander));
+            .contains(&Component::HysteriaSalamander));
         let export = diagnostics.export.expect("export diagnostics should be present");
         assert!(!export.supported);
+    }
+
+    #[test]
+    fn diagnostics_detect_hysteria2_gecko_and_unsupported_export() {
+        let unique = format!(
+            "wrongsv-hysteria2-gecko-{}.toml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(unique);
+        std::fs::write(
+            &path,
+            r#"
+listen = "0.0.0.0:443"
+
+[hysteria2]
+password = "secret"
+
+[hysteria2.obfs]
+type = "gecko"
+password = "obfs-secret"
+"#,
+        )
+        .expect("test config should write");
+        let vals = resolve_client_values(path.to_str(), None, "example.com");
+        std::fs::remove_file(&path).ok();
+        let diagnostics = build_endpoint_diagnostics(&vals, Some(ClientFormat::Mihomo));
+        assert!(diagnostics
+            .resolved
+            .active_components
+            .camouflage
+            .contains(&Component::HysteriaGecko));
+        assert!(!diagnostics.export.expect("export diagnostics should exist").supported);
     }
 
     #[test]

@@ -26,7 +26,7 @@ documentation and maps it to wrongsv implementation status.
 | Outline-style Shadowsocks prefixes | Implemented for generated TCP and UDP response salts; prefixed client salts are accepted as ordinary Shadowsocks salts | Outline |
 | Mixed SOCKS4/4A / SOCKS5 / HTTP proxy | Implemented for SOCKS4/4A CONNECT, SOCKS5 CONNECT, HTTP absolute-form forwarding, and HTTP CONNECT. Optional shared credentials apply to SOCKS5/HTTP; SOCKS4/4A is rejected when credentials are set. | GOST, sing-box, xray, local client proxy protocols |
 | Trojan over TLS TCP/UDP | Implemented for TLS-wrapped TCP CONNECT, UDP ASSOCIATE packet relay, SHA224 password authentication, SOCKS5-style address headers, pipelined payload relay, decrypted plaintext fallback for invalid post-TLS probes, and real-client lifecycle coverage. | trojan-gfw, xray, sing-box, mihomo |
-| Hysteria2 | Implemented for HTTP/3 `/auth` authentication, `Hysteria-UDP` negotiation, `Hysteria-CC-RX` bandwidth hints, TCP relay over bidirectional QUIC streams, UDP relay over QUIC datagrams, fragment reassembly, and Salamander packet obfuscation. | sing-box, Hysteria 2 |
+| Hysteria2 | Implemented for HTTP/3 `/auth` authentication, `Hysteria-UDP` negotiation, `Hysteria-CC-RX` bandwidth hints, TCP relay over bidirectional QUIC streams, UDP relay over QUIC datagrams, fragment reassembly, and Hysteria Salamander/Gecko packet obfuscation. | sing-box, Hysteria 2 |
 | TUIC | Implemented for HTTP/3 `/auth` authentication, TLS-exporter token derivation, TCP relay over bidirectional QUIC streams, UDP relay over QUIC datagrams, dissociate handling, heartbeat handling, and fragment reassembly. | sing-box |
 | WireGuard tunnel service | Implemented for a userspace WireGuard endpoint with static virtual TCP services inside the tunnel, peer key validation, userspace packet processing, and real-client Mihomo/FlClash coverage. | mihomo |
 | VLESS + WebTransport | Implemented for HTTP/3 WebTransport carrier with bidirectional stream VLESS relay, TLS (self-signed or custom), configurable path, optional host validation, TCP/Vision/UDP relay (GOST-compatible). | GOST |
@@ -45,7 +45,7 @@ documentation and maps it to wrongsv implementation status.
 | Trojan | The original protocol performs a real TLS handshake, then sends `hex(SHA224(password))`, CRLF, a SOCKS5-like request, CRLF, and optional pipelined payload. Valid TCP requests open a direct tunnel; UDP ASSOCIATE packets carry address, port, length, CRLF, and payload; invalid post-TLS traffic can be relayed to a fallback endpoint. Source: https://trojan-gfw.github.io/trojan/protocol | TLS-wrapped TCP CONNECT, UDP ASSOCIATE packet relay, multi-password auth, pipelined payload, plaintext fallback, and sing-box/mihomo/xray real-client TCP/UDP lifecycle coverage are implemented. | Carrier variants such as WebSocket/gRPC where clients support them. |
 | xray-core | Inbound protocols include HTTP, Shadowsocks, SOCKS, Trojan, VLESS, VMess, WireGuard, Hysteria, and TUN. Transports include raw, XHTTP, mKCP, gRPC, WebSocket, HTTPUpgrade, Hysteria; security includes TLS and REALITY. Mux.Cool can distribute UDP as XUDP over an established stream. Sources: https://xtls.github.io/en/config/inbounds/ and https://xtls.github.io/en/config/transports/ and https://xtls.github.io/en/config/outbounds/trojan.html and https://xtls.github.io/en/development/protocols/vless.html and https://xtls.github.io/en/development/protocols/muxcool.html | VLESS + REALITY + Vision lifecycle tests exist; VLESS + WebSocket TCP, HTTPUpgrade TCP, gRPC TCP, XHTTP TCP, and Mux.Cool/XUDP UDP lifecycle tests exist; Shadowsocks AEAD/AEAD-2022 TCP/UDP with real-client lifecycle tests, mixed SOCKS4/4A/SOCKS5/HTTP proxy, Trojan TLS TCP/UDP with real-client lifecycle tests added; VMess AEAD implemented; userspace WireGuard tunnel service now exists for Mihomo-class client coverage. | Broader full-tunnel WireGuard routing/NAT modes. |
 | sing-box | Inbounds include mixed, SOCKS, HTTP, Shadowsocks, VMess, Trojan, Naive, Hysteria, ShadowTLS, VLESS, TUIC, Hysteria2, AnyTLS, tun, redirect, and tproxy. Trojan inbound requires users and TLS; Shadowsocks inbound lists AEAD 2022 and classic AEAD methods. VLESS outbound supports V2Ray transports, defaults UDP packet encoding to `xudp`, and also supports `packetaddr`. Sources: https://sing-box.sagernet.org/configuration/inbound/ and https://sing-box.sagernet.org/configuration/inbound/trojan/ and https://sing-box.sagernet.org/configuration/inbound/shadowsocks/ and https://sing-box.sagernet.org/configuration/outbound/trojan/ and https://sing-box.sagernet.org/configuration/outbound/vless/ | VLESS + REALITY lifecycle tests, VLESS packetaddr UDP lifecycle tests, VLESS + WebSocket TCP, HTTPUpgrade TCP, gRPC TCP, XHTTP TCP, and Mux.Cool/XUDP UDP lifecycle tests, AnyTLS/sing-anytls tests, Shadowsocks AEAD/AEAD-2022 TCP/UDP with real-client lifecycle tests, mixed SOCKS4/4A/SOCKS5/HTTP proxy, Trojan TLS TCP/UDP with real-client lifecycle tests, and TUIC/Hysteria2 server-side coverage added; VMess AEAD implemented. | Naive inbound, tun/redirect/tproxy modes. |
-| Hysteria2 | Official docs describe a QUIC transport with HTTP/3-style `/auth` handshake, UDP enablement flag, bandwidth negotiation, TCP stream requests, UDP datagrams, fragmenting support, and optional obfuscation such as Salamander/Gecko. Source: https://v2.hysteria.network/docs/developers/Protocol/ and https://v2.hysteria.network/docs/advanced/Full-Server-Config/ | HTTP/3 auth, QUIC stream TCP relay, QUIC datagram UDP relay, auth response headers, config validation, and Salamander obfuscation are implemented. | Gecko obfuscation, realms / broader NAT-traversal slices. |
+| Hysteria2 | Official docs describe a QUIC transport with HTTP/3-style `/auth` handshake, UDP enablement flag, bandwidth negotiation, TCP stream requests, UDP datagrams, fragmenting support, and optional obfuscation such as Salamander/Gecko. Source: https://v2.hysteria.network/docs/developers/Protocol/ and https://v2.hysteria.network/docs/advanced/Full-Server-Config/ | HTTP/3 auth, QUIC stream TCP relay, QUIC datagram UDP relay, auth response headers, config validation, and Salamander/Gecko obfuscation are implemented. | Realms / broader NAT-traversal slices. |
 | TUIC | TUIC v5 uses QUIC over TLS with a client-authenticate stream, a TLS exporter-derived token, TCP CONNECT over bidirectional streams, UDP packet relay over datagrams or streams, dissociate messages, and heartbeat support. Source: https://github.com/EAimTY/tuic/blob/main/spec.md | HTTP/3 auth, TLS exporter token validation, TCP stream relay, UDP datagram relay, dissociate handling, and fragment reassembly are implemented. | Real-client lifecycle coverage and any optional extensions not exercised yet. |
 
 ## Protocol Specs
@@ -88,7 +88,7 @@ SNI should be a major CDN-backed domain (e.g. `www.microsoft.com`, `www.apple.co
 
 ```
 Primary:   VLESS + REALITY + Vision (TCP/443)
-Fallback:  Hysteria2 + Salamander (UDP/443)
+Fallback:  Hysteria2 + Hysteria Salamander/Gecko (UDP/443)
 ```
 
 Run both on the same server. URLTest failover selects the fastest working path
@@ -99,7 +99,7 @@ like random bytes.
 | Config | Transport | Protocol |
 |--------|-----------|----------|
 | `reality-vision.toml` | TCP/443 | VLESS + REALITY + Vision |
-| `hysteria2.toml` | UDP/443 | Hysteria2 + Salamander obfuscation |
+| `hysteria2.toml` | UDP/443 | Hysteria2 + Hysteria Salamander/Gecko obfuscation |
 
 ### Tier 3 — CDN-Friendly (WebSocket behind Nginx/Caddy)
 
@@ -133,7 +133,7 @@ mimicry.
 
 | Use Case | Primary Protocol | Fallback | Key Config |
 |----------|-----------------|----------|------------|
-| Maximum stealth | VLESS + REALITY + Vision | Hysteria2 + Salamander | `reality-vision.toml` + `hysteria2.toml` |
+| Maximum stealth | VLESS + REALITY + Vision | Hysteria2 + Hysteria Salamander/Gecko | `reality-vision.toml` + `hysteria2.toml` |
 | CDN fronting | VLESS + WS + TLS | — | Custom TLS cert + `[websocket]` |
 | No key distribution | ShadowTLS v3 | AnyTLS | `shadowtls.toml` + `anytls-vision.toml` |
 | Post-quantum | VLESS + REALITY + Vision + ML-KEM-512 | — | `kyber-vision.toml` |

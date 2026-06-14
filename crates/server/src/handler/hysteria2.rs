@@ -28,13 +28,19 @@ pub(crate) struct Hysteria2Config {
     pub disable_udp: bool,
     pub down_mbps: Option<u64>,
     pub ignore_client_bandwidth: bool,
-    pub obfs: Option<SalamanderConfig>,
+    pub obfs: Option<HysteriaObfsConfig>,
 }
 
 #[derive(Clone)]
 pub(crate) struct Hysteria2AuthEntry {
     pub auth: String,
     pub metrics_key: String,
+}
+
+#[derive(Clone)]
+pub(crate) enum HysteriaObfsConfig {
+    HysteriaSalamander(SalamanderConfig),
+    HysteriaGecko(GeckoConfig),
 }
 
 pub(crate) fn parse_hysteria2_config(
@@ -76,8 +82,19 @@ pub(crate) fn parse_hysteria2_config(
         disable_udp: cfg.disable_udp,
         down_mbps: cfg.down_mbps,
         ignore_client_bandwidth: cfg.ignore_client_bandwidth,
-        obfs: cfg.obfs.as_ref().map(|obfs| SalamanderConfig {
-            password: obfs.password.as_bytes().to_vec(),
+        obfs: cfg.obfs.as_ref().map(|obfs| match obfs.obfs_type.as_str() {
+            "gecko" => HysteriaObfsConfig::HysteriaGecko(GeckoConfig {
+                password: obfs.password.as_bytes().to_vec(),
+                min_packet_size: obfs
+                    .min_packet_size
+                    .unwrap_or(GECKO_DEFAULT_MIN_PACKET_SIZE),
+                max_packet_size: obfs
+                    .max_packet_size
+                    .unwrap_or(GECKO_DEFAULT_MAX_PACKET_SIZE),
+            }),
+            _ => HysteriaObfsConfig::HysteriaSalamander(SalamanderConfig {
+                password: obfs.password.as_bytes().to_vec(),
+            }),
         }),
     })
 }
@@ -151,8 +168,18 @@ fn create_hysteria2_endpoint(listen: &str, config: &Hysteria2Config) -> Result<E
             .ok_or_else(|| io::Error::other("no async runtime found"))?;
         let socket = std::net::UdpSocket::bind(addr)?;
         let socket = runtime.wrap_udp_socket(socket)?;
-        let socket = wrap_async_udp_socket_salamander(socket, &obfs.password)
-            .map_err(io::Error::other)?;
+        let socket = match obfs {
+            HysteriaObfsConfig::HysteriaSalamander(obfs) => {
+                wrap_async_udp_socket_salamander(socket, &obfs.password)
+            }
+            HysteriaObfsConfig::HysteriaGecko(obfs) => wrap_async_udp_socket_gecko(
+                socket,
+                &obfs.password,
+                obfs.min_packet_size,
+                obfs.max_packet_size,
+            ),
+        }
+        .map_err(io::Error::other)?;
         return Ok(Endpoint::new_with_abstract_socket(
             quinn::EndpointConfig::default(),
             Some(config.quic_config.clone()),
@@ -771,10 +798,17 @@ mod tests {
         roots
     }
 
+    #[derive(Clone, Copy)]
+    enum TestObfsMode<'a> {
+        None,
+        HysteriaSalamander(&'a [u8]),
+        HysteriaGecko(&'a [u8]),
+    }
+
     async fn build_hysteria2_test_client(
         cert_pem: &str,
         server_addr: SocketAddr,
-        obfs_password: Option<&[u8]>,
+        obfs_mode: TestObfsMode<'_>,
     ) -> Result<(quinn::Endpoint, QuinnConnection), H2Error> {
         let roots = build_root_store(cert_pem);
         let mut client_crypto = rustls::ClientConfig::builder()
@@ -788,10 +822,18 @@ mod tests {
             .ok_or_else(|| std::io::Error::other("no async runtime found"))?;
         let socket = std::net::UdpSocket::bind("[::]:0".parse::<SocketAddr>()?)?;
         let socket = runtime.wrap_udp_socket(socket)?;
-        let socket = match obfs_password {
-            Some(password) => wrap_async_udp_socket_salamander(socket, password)
-                .map_err(std::io::Error::other)?,
-            None => socket,
+        let socket = match obfs_mode {
+            TestObfsMode::None => socket,
+            TestObfsMode::HysteriaSalamander(password) => {
+                wrap_async_udp_socket_salamander(socket, password).map_err(std::io::Error::other)?
+            }
+            TestObfsMode::HysteriaGecko(password) => wrap_async_udp_socket_gecko(
+                socket,
+                password,
+                GECKO_DEFAULT_MIN_PACKET_SIZE,
+                GECKO_DEFAULT_MAX_PACKET_SIZE,
+            )
+            .map_err(std::io::Error::other)?,
         };
         let mut endpoint = quinn::Endpoint::new_with_abstract_socket(
             quinn::EndpointConfig::default(),
@@ -808,10 +850,10 @@ mod tests {
         cert_pem: &str,
         server_addr: SocketAddr,
         auth: &str,
-        obfs_password: Option<&[u8]>,
+        obfs_mode: TestObfsMode<'_>,
     ) -> Result<(quinn::Endpoint, QuinnConnection), H2Error> {
         let (endpoint, conn) =
-            build_hysteria2_test_client(cert_pem, server_addr, obfs_password).await?;
+            build_hysteria2_test_client(cert_pem, server_addr, obfs_mode).await?;
         let h3_conn = H3QuinnConnection::new(conn.clone());
         let mut builder = h3::client::builder();
         builder.enable_datagram(true);
@@ -964,7 +1006,8 @@ mod tests {
         };
         let (echo_addr, echo_handle) = spawn_tcp_echo_server().await?;
         let (server_addr, server_handle) = spawn_hysteria2_test_server(config).await?;
-        let (_endpoint, conn) = authenticate_hysteria2(&cert, server_addr, "secret", None).await?;
+        let (_endpoint, conn) =
+            authenticate_hysteria2(&cert, server_addr, "secret", TestObfsMode::None).await?;
 
         let (mut send, mut recv) = conn.open_bi().await?;
         let mut req = Vec::new();
@@ -1008,7 +1051,8 @@ mod tests {
         };
         let (echo_addr, echo_handle) = spawn_udp_echo_server().await?;
         let (server_addr, server_handle) = spawn_hysteria2_test_server(config).await?;
-        let (_endpoint, conn) = authenticate_hysteria2(&cert, server_addr, "secret", None).await?;
+        let (_endpoint, conn) =
+            authenticate_hysteria2(&cert, server_addr, "secret", TestObfsMode::None).await?;
 
         let session_id = 42u32;
         let packet =
@@ -1040,16 +1084,67 @@ mod tests {
             disable_udp: false,
             down_mbps: Some(100),
             ignore_client_bandwidth: false,
-            obfs: Some(SalamanderConfig {
+            obfs: Some(HysteriaObfsConfig::HysteriaSalamander(SalamanderConfig {
                 password: b"obfs-secret".to_vec(),
-            }),
+            })),
         };
         let (echo_addr, echo_handle) = spawn_udp_echo_server().await?;
         let (server_addr, server_handle) = spawn_hysteria2_test_server(config).await?;
-        let (_endpoint, conn) =
-            authenticate_hysteria2(&cert, server_addr, "secret", Some(b"obfs-secret")).await?;
+        let (_endpoint, conn) = authenticate_hysteria2(
+            &cert,
+            server_addr,
+            "secret",
+            TestObfsMode::HysteriaSalamander(b"obfs-secret"),
+        )
+        .await?;
 
         let session_id = 99u32;
+        let packet =
+            encode_hysteria2_udp_message(session_id, 1, 0, 1, &format!("{echo_addr}"), b"pong")?;
+        conn.send_datagram(Bytes::from(packet))?;
+        let datagram = tokio::time::timeout(Duration::from_secs(2), conn.read_datagram())
+            .await
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "udp timeout"))??;
+        let parsed = parse_hysteria2_udp_message(datagram.as_ref())?;
+        assert_eq!(parsed.0, session_id);
+        assert_eq!(parsed.5, b"pong");
+
+        server_handle.abort();
+        echo_handle.abort();
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hysteria2_gecko_udp_relay_roundtrip() -> Result<(), H2Error> {
+        ensure_rustls_provider();
+        let (cert, key) = wrongsv_anytls::generate_self_signed_cert().unwrap();
+        let tls = build_hysteria2_tls_config(&cert, &key).unwrap();
+        let config = Hysteria2Config {
+            password_auths: vec![Hysteria2AuthEntry {
+                auth: "secret".into(),
+                metrics_key: String::new(),
+            }],
+            quic_config: build_hysteria2_quic_config(tls).unwrap(),
+            disable_udp: false,
+            down_mbps: Some(100),
+            ignore_client_bandwidth: false,
+            obfs: Some(HysteriaObfsConfig::HysteriaGecko(GeckoConfig {
+                password: b"obfs-secret".to_vec(),
+                min_packet_size: 640,
+                max_packet_size: 1200,
+            })),
+        };
+        let (echo_addr, echo_handle) = spawn_udp_echo_server().await?;
+        let (server_addr, server_handle) = spawn_hysteria2_test_server(config).await?;
+        let (_endpoint, conn) = authenticate_hysteria2(
+            &cert,
+            server_addr,
+            "secret",
+            TestObfsMode::HysteriaGecko(b"obfs-secret"),
+        )
+        .await?;
+
+        let session_id = 100u32;
         let packet =
             encode_hysteria2_udp_message(session_id, 1, 0, 1, &format!("{echo_addr}"), b"pong")?;
         conn.send_datagram(Bytes::from(packet))?;

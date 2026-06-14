@@ -73,7 +73,10 @@ const MIXED_PAYLOADS: &[PayloadNetwork] = &[PayloadNetwork::Tcp];
 const WIREGUARD_PAYLOADS: &[PayloadNetwork] = &[PayloadNetwork::Ip];
 const VLESS_CAMOUFLAGE_COMPONENTS: &[Component] = &[Component::AnyTls, Component::ShadowTls];
 const VLESS_PERFORMANCE_COMPONENTS: &[Component] = &[Component::Vision];
-const HYSTERIA2_CAMOUFLAGE_COMPONENTS: &[Component] = &[Component::Salamander];
+const HYSTERIA2_CAMOUFLAGE_COMPONENTS: &[Component] = &[
+    Component::HysteriaSalamander,
+    Component::HysteriaGecko,
+];
 const EMPTY_COMPONENTS: &[Component] = &[];
 const VLESS_TRANSPORTS: &[TransportMethod] = &[
     TransportMethod::Raw,

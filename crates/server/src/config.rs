@@ -491,17 +491,23 @@ pub struct Hysteria2TlsConfig {
 /// Hysteria2 optional packet obfuscation configuration.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Hysteria2ObfsConfig {
-    /// Obfuscation type. Currently `salamander` is supported.
+    /// Obfuscation type. Supported values: `salamander`, `gecko`.
     #[serde(rename = "type")]
     pub obfs_type: String,
     /// Shared obfuscation password / key.
     pub password: String,
+    /// Optional Gecko minimum packet size.
+    #[serde(default)]
+    pub min_packet_size: Option<usize>,
+    /// Optional Gecko maximum packet size.
+    #[serde(default)]
+    pub max_packet_size: Option<usize>,
 }
 
 /// Hysteria2 server-side configuration.
 ///
 /// Supports password and `username:password` authentication, TCP relay,
-/// and UDP relay over QUIC. Salamander packet obfuscation is supported;
+/// and UDP relay over QUIC. Salamander and Gecko packet obfuscation are supported;
 /// realm/NAT traversal is intentionally left for future slices.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Hysteria2ServerConfig {
@@ -886,10 +892,12 @@ pub enum ConfigError {
     Hysteria2MissingAuth,
     #[error("Hysteria2 user passwords must be non-empty")]
     Hysteria2InvalidPassword,
-    #[error("Hysteria2 obfuscation type must be `salamander`")]
+    #[error("Hysteria2 obfuscation type must be `salamander` or `gecko`")]
     Hysteria2InvalidObfsType,
     #[error("Hysteria2 salamander password must be at least 4 bytes")]
     Hysteria2InvalidObfsPassword,
+    #[error("Hysteria2 Gecko packet-size range is invalid")]
+    Hysteria2InvalidObfsPacketSize,
     #[error("TUIC inbound cannot be combined with VLESS users")]
     TuicWithVlessUsers,
     #[error("TUIC inbound cannot be combined with VLESS transport layers")]
@@ -1100,11 +1108,18 @@ impl Config {
                 return Err(ConfigError::Hysteria2MissingAuth);
             }
             if let Some(obfs) = &hysteria2.obfs {
-                if obfs.obfs_type != "salamander" {
+                if !matches!(obfs.obfs_type.as_str(), "salamander" | "gecko") {
                     return Err(ConfigError::Hysteria2InvalidObfsType);
                 }
                 if obfs.password.len() < 4 {
                     return Err(ConfigError::Hysteria2InvalidObfsPassword);
+                }
+                if obfs.obfs_type == "gecko" {
+                    let min = obfs.min_packet_size.unwrap_or(512);
+                    let max = obfs.max_packet_size.unwrap_or(1200);
+                    if min == 0 || max == 0 || min > max || max > 2048 {
+                        return Err(ConfigError::Hysteria2InvalidObfsPacketSize);
+                    }
                 }
             }
         }
@@ -1902,6 +1917,29 @@ password = "obfs-secret"
     }
 
     #[test]
+    fn test_parse_hysteria2_gecko_obfs_config() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[hysteria2]
+password = "secret"
+
+[hysteria2.obfs]
+type = "gecko"
+password = "obfs-secret"
+min_packet_size = 640
+max_packet_size = 1200
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        let hysteria2 = config.hysteria2.unwrap();
+        let obfs = hysteria2.obfs.expect("obfs config should be present");
+        assert_eq!(obfs.obfs_type, "gecko");
+        assert_eq!(obfs.min_packet_size, Some(640));
+        assert_eq!(obfs.max_packet_size, Some(1200));
+    }
+
+    #[test]
     fn test_hysteria2_rejects_missing_auth() {
         let toml = r#"
 listen = "0.0.0.0:443"
@@ -1943,7 +1981,7 @@ listen = "0.0.0.0:443"
 password = "secret"
 
 [hysteria2.obfs]
-type = "gecko"
+type = "unknown"
 password = "obfs-secret"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
@@ -1969,6 +2007,27 @@ password = "abc"
         assert!(matches!(
             config.validate(),
             Err(ConfigError::Hysteria2InvalidObfsPassword)
+        ));
+    }
+
+    #[test]
+    fn test_hysteria2_rejects_invalid_gecko_packet_range() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[hysteria2]
+password = "secret"
+
+[hysteria2.obfs]
+type = "gecko"
+password = "obfs-secret"
+min_packet_size = 1500
+max_packet_size = 1200
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::Hysteria2InvalidObfsPacketSize)
         ));
     }
 

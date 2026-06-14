@@ -171,7 +171,16 @@ pub(crate) fn build_endpoint_model(
                 }
                 if let Some(obfs) = &hysteria2.obfs {
                     if obfs.obfs_type == "salamander" {
-                        model.components.camouflage.push(Component::Salamander);
+                        model
+                            .components
+                            .camouflage
+                            .push(Component::HysteriaSalamander);
+                    }
+                    if obfs.obfs_type == "gecko" {
+                        model
+                            .components
+                            .camouflage
+                            .push(Component::HysteriaGecko);
                     }
                 }
             }
@@ -257,6 +266,33 @@ password = "obfs-secret"
         assert_eq!(model.transport, Some(crate::endpoint::TransportMethod::Quic));
         assert_eq!(model.outer_security, Some(OuterSecurity::Tls));
         assert_eq!(model.payload_networks, vec![PayloadNetwork::Tcp]);
-        assert!(model.components.camouflage.contains(&Component::Salamander));
+        assert!(model
+            .components
+            .camouflage
+            .contains(&Component::HysteriaSalamander));
+    }
+
+    #[test]
+    fn detect_profile_and_build_model_for_hysteria2_gecko() {
+        let config: wrongsv_server::Config = toml::from_str(
+            r#"
+listen = "0.0.0.0:443"
+
+[hysteria2]
+password = "secret"
+
+[hysteria2.obfs]
+type = "gecko"
+password = "obfs-secret"
+"#,
+        )
+        .expect("config should parse");
+        let profile = detect_profile(Some(&config), None);
+        assert_eq!(profile, EndpointProfile::Hysteria2);
+        let model = build_endpoint_model(Some(&config), profile, "");
+        assert!(model
+            .components
+            .camouflage
+            .contains(&Component::HysteriaGecko));
     }
 }

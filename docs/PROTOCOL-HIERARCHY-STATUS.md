@@ -52,7 +52,7 @@ Status labels used here:
 
 | Protocol/profile | Server | Endpoint layer | Client export | Notes |
 | --- | --- | --- | --- | --- |
-| Hysteria2 | implemented | implemented | missing | fixed QUIC + fixed TLS; Salamander camouflage now implemented |
+| Hysteria2 | implemented | implemented | missing | fixed QUIC + fixed TLS; `hysteria-salamander` and `hysteria-gecko` camouflage components now implemented |
 | TUIC | implemented | implemented | missing | fixed QUIC + fixed TLS; export adapters still missing |
 
 ### 1.6 Tunnel protocols
@@ -108,8 +108,8 @@ Status labels used here:
 | vision | implemented | VLESS | performance-oriented VLESS flow marker |
 | anytls | implemented | VLESS | modeled as camouflage around a raw/TLS VLESS stack |
 | shadowtls | implemented | VLESS | modeled as camouflage around a raw/TLS VLESS stack |
-| salamander | implemented | Hysteria2 | per-packet QUIC UDP obfuscation |
-| gecko | missing | Hysteria2 | upstream Hysteria obfuscation variant; next direct follow-up after Salamander |
+| hysteria-salamander | implemented | Hysteria2 | per-packet QUIC UDP obfuscation |
+| hysteria-gecko | implemented | Hysteria2 | Salamander-based QUIC long-header fragmentation and padding |
 
 ### 5.2 Ingress
 
@@ -159,24 +159,19 @@ These are the main remaining obstacles to fully satisfying
 This queue is ordered by a mix of upstream popularity, architectural fit with
 the endpoint model, and implementation size.
 
-1. `Hysteria2 Gecko obfuscation`
-   - Same upstream component family as Salamander.
-   - Reuses the new QUIC obfuscation layer.
-   - Popular enough upstream to justify being the next camouflage slice.
-
-2. `Hysteria2/TUIC/Trojan/Shadowsocks export adapters`
+1. `Hysteria2/TUIC/Trojan/Shadowsocks export adapters`
    - Server support exists.
    - Endpoint diagnostics now recognize these protocols.
    - Export parity is the main missing user-facing gap.
 
-3. `Normalize ingress components`
+2. `Normalize ingress components`
    - Convert fallback destinations and similar deployment features into
      `components.ingress` instead of handler-local knobs.
 
-4. `Full routed WireGuard mode`
+3. `Full routed WireGuard mode`
    - Expand from fixed service forwarding to fuller tunnel routing/NAT behavior.
 
-5. `Naive inbound`
+4. `Naive inbound`
    - Popular in sing-box and adjacent ecosystems, but a larger protocol slice
      than the Hysteria2 component follow-ups.
 
