@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use crate::Transport;
+use crate::endpoint::EndpointProfile as Transport;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum ProxyProtocol {
@@ -24,6 +24,8 @@ pub(crate) enum PayloadNetwork {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum TransportMethod {
+    #[serde(rename = "raw")]
+    Raw,
     #[serde(rename = "websocket")]
     WebSocket,
     #[serde(rename = "httpupgrade")]
@@ -107,7 +109,7 @@ pub(crate) struct EndpointModel {
 }
 
 impl EndpointModel {
-    pub(crate) fn from_transport_profile(
+    pub(crate) fn from_profile(
         profile: Transport,
         transport_outer_security: Option<OuterSecurity>,
         flow: &str,
@@ -135,14 +137,14 @@ impl EndpointModel {
             },
             Transport::Reality => Self::vless_model(
                 vision_enabled,
-                None,
+                Some(TransportMethod::Raw),
                 Some(OuterSecurity::Reality),
                 BaseCarrier::Tcp,
                 EndpointComponents::default(),
             ),
             Transport::AnyTls => Self::vless_model(
                 vision_enabled,
-                None,
+                Some(TransportMethod::Raw),
                 Some(OuterSecurity::Tls),
                 BaseCarrier::Tcp,
                 EndpointComponents {
@@ -152,14 +154,14 @@ impl EndpointModel {
             ),
             Transport::Tls => Self::vless_model(
                 vision_enabled,
-                None,
+                Some(TransportMethod::Raw),
                 Some(OuterSecurity::Tls),
                 BaseCarrier::Tcp,
                 EndpointComponents::default(),
             ),
             Transport::Raw => Self::vless_model(
                 vision_enabled,
-                None,
+                Some(TransportMethod::Raw),
                 None,
                 BaseCarrier::Tcp,
                 EndpointComponents::default(),
@@ -229,7 +231,7 @@ impl EndpointModel {
             ),
             Transport::ShadowTls => Self::vless_model(
                 vision_enabled,
-                None,
+                Some(TransportMethod::Raw),
                 Some(OuterSecurity::Tls),
                 BaseCarrier::Tcp,
                 EndpointComponents {
@@ -276,17 +278,17 @@ mod tests {
 
     #[test]
     fn raw_vless_uses_tcp_without_outer_security() {
-        let model = EndpointModel::from_transport_profile(Transport::Raw, None, "");
+        let model = EndpointModel::from_profile(Transport::Raw, None, "");
         assert_eq!(model.protocol, ProxyProtocol::Vless);
         assert_eq!(model.base_carrier, BaseCarrier::Tcp);
-        assert_eq!(model.transport, None);
+        assert_eq!(model.transport, Some(TransportMethod::Raw));
         assert_eq!(model.outer_security, None);
         assert_eq!(model.payload_networks, vec![PayloadNetwork::Tcp, PayloadNetwork::Udp]);
     }
 
     #[test]
     fn kcp_vless_uses_udp_base_carrier() {
-        let model = EndpointModel::from_transport_profile(Transport::Kcp, None, "");
+        let model = EndpointModel::from_profile(Transport::Kcp, None, "");
         assert_eq!(model.transport, Some(TransportMethod::Kcp));
         assert_eq!(model.base_carrier, BaseCarrier::Udp);
         assert_eq!(model.outer_security, None);
@@ -294,7 +296,7 @@ mod tests {
 
     #[test]
     fn wireguard_exposes_ip_payloads() {
-        let model = EndpointModel::from_transport_profile(Transport::WireGuard, None, "");
+        let model = EndpointModel::from_profile(Transport::WireGuard, None, "");
         assert_eq!(model.protocol, ProxyProtocol::WireGuard);
         assert_eq!(model.protocol_internal_security, Some(ProtocolInternalSecurity::WireGuardNoise));
         assert_eq!(model.payload_networks, vec![PayloadNetwork::Ip]);
@@ -303,7 +305,7 @@ mod tests {
 
     #[test]
     fn vision_becomes_performance_component_and_removes_udp() {
-        let model = EndpointModel::from_transport_profile(
+        let model = EndpointModel::from_profile(
             Transport::Reality,
             Some(OuterSecurity::Reality),
             "xtls-rprx-vision",

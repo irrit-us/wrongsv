@@ -897,7 +897,10 @@ fn xray_format(server_host: &str, client_name: &str, vals: &ClientConfigValues) 
         Some(TransportMethod::Xhttp) => "xhttp",
         Some(TransportMethod::Quic) | Some(TransportMethod::WebTransport) => "quic",
         Some(TransportMethod::Kcp) => "mkcp",
-        Some(TransportMethod::Meek) | Some(TransportMethod::GdocsViewer) | None => "tcp",
+        Some(TransportMethod::Meek)
+        | Some(TransportMethod::GdocsViewer)
+        | Some(TransportMethod::Raw)
+        | None => "tcp",
     };
 
     let security: Option<&str> = match vals.outer_security() {
@@ -1234,7 +1237,7 @@ mod tests {
             | Transport::WireGuard => None,
         };
         ClientConfigValues {
-            endpoint: EndpointModel::from_transport_profile(
+            endpoint: EndpointModel::from_profile(
                 transport,
                 outer_security,
                 "xtls-rprx-vision",
@@ -1353,7 +1356,7 @@ mod tests {
     fn singbox_has_packet_encoding() {
         let mut vals = test_vals(Transport::Raw);
         vals.flow.clear();
-        vals.endpoint = EndpointModel::from_transport_profile(Transport::Raw, None, "");
+        vals.endpoint = EndpointModel::from_profile(Transport::Raw, None, "");
         let json = singbox_format("1.2.3.4", "test", &vals);
         assert!(json.contains(r#""packet_encoding": "packetaddr""#));
     }
@@ -1396,7 +1399,7 @@ mod tests {
     #[test]
     fn mihomo_wireguard_uses_normalized_protocol_model() {
         let mut vals = test_vals(Transport::WireGuard);
-        vals.endpoint = EndpointModel::from_transport_profile(Transport::WireGuard, None, "");
+        vals.endpoint = EndpointModel::from_profile(Transport::WireGuard, None, "");
         let json = mihomo_format("1.2.3.4", "test", &vals);
         assert!(json.contains(r#""type": "wireguard""#));
         assert!(json.contains(r#""private-key": "wireguard-private-key""#));
@@ -1407,7 +1410,7 @@ mod tests {
     #[test]
     fn singbox_wireguard_uses_normalized_protocol_model() {
         let mut vals = test_vals(Transport::WireGuard);
-        vals.endpoint = EndpointModel::from_transport_profile(Transport::WireGuard, None, "");
+        vals.endpoint = EndpointModel::from_profile(Transport::WireGuard, None, "");
         let json = singbox_format("1.2.3.4", "test", &vals);
         assert!(json.contains(r#""type": "wireguard""#));
         assert!(json.contains(r#""local_address""#));
@@ -1417,7 +1420,7 @@ mod tests {
     #[test]
     fn xray_wireguard_export_fails_cleanly() {
         let mut vals = test_vals(Transport::WireGuard);
-        vals.endpoint = EndpointModel::from_transport_profile(Transport::WireGuard, None, "");
+        vals.endpoint = EndpointModel::from_profile(Transport::WireGuard, None, "");
         let err = generate_client_config(ClientFormat::Xray, "1.2.3.4", "test", &vals)
             .expect_err("wireguard xray export should fail");
         assert!(err.contains("WireGuard export is not implemented"));
@@ -1436,7 +1439,7 @@ mod tests {
     fn singbox_omits_network_when_both_payload_networks_are_enabled() {
         let mut vals = test_vals(Transport::Raw);
         vals.flow.clear();
-        vals.endpoint = EndpointModel::from_transport_profile(Transport::Raw, None, "");
+        vals.endpoint = EndpointModel::from_profile(Transport::Raw, None, "");
         let json = singbox_format("1.2.3.4", "test", &vals);
         assert!(!json.contains(r#""network": "tcp""#));
     }
@@ -1456,7 +1459,7 @@ mod tests {
     #[test]
     fn diagnostics_report_export_failure() {
         let mut vals = test_vals(Transport::WireGuard);
-        vals.endpoint = EndpointModel::from_transport_profile(Transport::WireGuard, None, "");
+        vals.endpoint = EndpointModel::from_profile(Transport::WireGuard, None, "");
         let diagnostics = build_endpoint_diagnostics(&vals, Some(ClientFormat::Xray));
         let export = diagnostics.export.expect("export diagnostics should be present");
         assert!(!export.supported);

@@ -10,6 +10,8 @@ use crate::endpoint::model::{
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum LayerMode {
     Selectable,
+    Required,
+    Optional,
     Fixed,
     Forbidden,
     BackendDefined,
@@ -68,6 +70,7 @@ const VLESS_CAMOUFLAGE_COMPONENTS: &[Component] = &[Component::AnyTls, Component
 const VLESS_PERFORMANCE_COMPONENTS: &[Component] = &[Component::Vision];
 const EMPTY_COMPONENTS: &[Component] = &[];
 const VLESS_TRANSPORTS: &[TransportMethod] = &[
+    TransportMethod::Raw,
     TransportMethod::WebSocket,
     TransportMethod::HttpUpgrade,
     TransportMethod::Grpc,
@@ -93,11 +96,11 @@ pub(crate) fn protocol_descriptor(protocol: ProxyProtocol) -> &'static ProtocolD
             transport: LayerDescriptor {
                 mode: LayerMode::Selectable,
                 supported: VLESS_TRANSPORTS,
-                default: None,
+                default: Some(TransportMethod::Raw),
                 fixed_value: None,
             },
             outer_security: LayerDescriptor {
-                mode: LayerMode::Selectable,
+                mode: LayerMode::Optional,
                 supported: VLESS_SECURITIES,
                 default: None,
                 fixed_value: None,
@@ -218,6 +221,7 @@ fn payloads_label(payloads: &[PayloadNetwork]) -> String {
 
 fn transport_label(transport: TransportMethod) -> &'static str {
     match transport {
+        TransportMethod::Raw => "RAW",
         TransportMethod::WebSocket => "WebSocket",
         TransportMethod::HttpUpgrade => "HTTPUpgrade",
         TransportMethod::Grpc => "gRPC",
@@ -264,6 +268,8 @@ mod tests {
     #[test]
     fn vless_descriptor_declares_component_categories() {
         let descriptor = protocol_descriptor(ProxyProtocol::Vless);
+        assert_eq!(descriptor.transport.default, Some(TransportMethod::Raw));
+        assert_eq!(descriptor.outer_security.mode, LayerMode::Optional);
         assert_eq!(descriptor.components.camouflage, VLESS_CAMOUFLAGE_COMPONENTS);
         assert_eq!(descriptor.components.performance, VLESS_PERFORMANCE_COMPONENTS);
         assert!(descriptor.components.network.is_empty());
@@ -271,7 +277,7 @@ mod tests {
 
     #[test]
     fn resolved_stack_summary_lists_layers_in_order() {
-        let model = EndpointModel::from_transport_profile(
+        let model = EndpointModel::from_profile(
             crate::Transport::WebSocket,
             Some(OuterSecurity::Tls),
             "xtls-rprx-vision",
@@ -285,7 +291,7 @@ mod tests {
 
     #[test]
     fn resolved_stack_summary_for_wireguard_uses_ip_and_udp() {
-        let model = EndpointModel::from_transport_profile(crate::Transport::WireGuard, None, "");
+        let model = EndpointModel::from_profile(crate::Transport::WireGuard, None, "");
         let resolved = resolve_endpoint(&model);
         assert_eq!(
             resolved.stack_summary,
@@ -294,9 +300,16 @@ mod tests {
     }
 
     #[test]
+    fn resolved_stack_summary_for_raw_vless_includes_raw_transport() {
+        let model = EndpointModel::from_profile(crate::Transport::Raw, None, "");
+        let resolved = resolve_endpoint(&model);
+        assert_eq!(resolved.stack_summary, "Payload TCP/UDP -> VLESS -> RAW -> TCP");
+    }
+
+    #[test]
     fn component_flags_are_preserved_in_resolved_endpoint() {
         let mut model =
-            EndpointModel::from_transport_profile(
+            EndpointModel::from_profile(
                 crate::Transport::ShadowTls,
                 Some(OuterSecurity::Tls),
                 "xtls-rprx-vision",

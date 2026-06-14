@@ -1,7 +1,7 @@
 use crate::endpoint::{
-    Component, EndpointModel, OuterSecurity, PayloadNetwork, ProxyProtocol, TransportMethod,
+    detect_profile, resolve_outer_security, Component, EndpointModel, EndpointProfile as Transport,
+    OuterSecurity, PayloadNetwork, ProxyProtocol, TransportMethod,
 };
-use crate::Transport;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ClientConfigValues {
@@ -45,28 +45,11 @@ pub(crate) fn resolve_client_values(
         toml::from_str::<wrongsv_server::Config>(&content).ok()
     });
 
-    let transport = transport_override.unwrap_or_else(|| match &toml_config {
-        Some(cfg) if cfg.reality.is_some() => Transport::Reality,
-        Some(cfg) if cfg.anytls.is_some() => Transport::AnyTls,
-        Some(cfg) if cfg.websocket.is_some() => Transport::WebSocket,
-        Some(cfg) if cfg.httpupgrade.is_some() => Transport::HttpUpgrade,
-        Some(cfg) if cfg.grpc.is_some() => Transport::Grpc,
-        Some(cfg) if cfg.xhttp.is_some() => Transport::Xhttp,
-        Some(cfg) if cfg.meek.is_some() => Transport::Meek,
-        Some(cfg) if cfg.gdocsviewer.is_some() => Transport::GdocsViewer,
-        Some(cfg) if cfg.quic.is_some() => Transport::Quic,
-        Some(cfg) if cfg.kcp.is_some() => Transport::Kcp,
-        Some(cfg) if cfg.webtransport.is_some() => Transport::WebTransport,
-        Some(cfg) if cfg.shadowtls.is_some() => Transport::ShadowTls,
-        Some(cfg) if cfg.vmess.is_some() => Transport::Vmess,
-        Some(cfg) if cfg.wireguard.is_some() => Transport::WireGuard,
-        Some(cfg) if cfg.tls.is_some() => Transport::Tls,
-        _ => Transport::Raw,
-    });
+    let transport = detect_profile(toml_config.as_ref(), transport_override);
 
     match toml_config {
         Some(ref cfg) => {
-            let transport_outer_security = transport_outer_security(Some(cfg), transport);
+            let transport_outer_security = resolve_outer_security(Some(cfg), transport);
             let uuid = match transport {
                 Transport::Vmess => cfg
                     .vmess
@@ -183,7 +166,7 @@ pub(crate) fn resolve_client_values(
                 .map(|wg| wg.mtu)
                 .unwrap_or(1400);
             let endpoint =
-                EndpointModel::from_transport_profile(transport, transport_outer_security, flow);
+                EndpointModel::from_profile(transport, transport_outer_security, flow);
 
             ClientConfigValues {
                 endpoint,
@@ -210,9 +193,9 @@ pub(crate) fn resolve_client_values(
             }
         }
         None => ClientConfigValues {
-            endpoint: EndpointModel::from_transport_profile(
+            endpoint: EndpointModel::from_profile(
                 transport,
-                transport_outer_security(None, transport),
+                resolve_outer_security(None, transport),
                 "xtls-rprx-vision",
             ),
             uuid: build_uuid().to_string(),
@@ -236,45 +219,6 @@ pub(crate) fn resolve_client_values(
             wireguard_allowed_ips: vec!["10.66.66.1/32".to_string()],
             wireguard_mtu: 1400,
         },
-    }
-}
-
-fn transport_outer_security(
-    cfg: Option<&wrongsv_server::Config>,
-    transport: Transport,
-) -> Option<OuterSecurity> {
-    match transport {
-        Transport::Reality => Some(OuterSecurity::Reality),
-        Transport::AnyTls
-        | Transport::Tls
-        | Transport::Quic
-        | Transport::WebTransport
-        | Transport::ShadowTls => Some(OuterSecurity::Tls),
-        Transport::WebSocket => cfg
-            .and_then(|c| c.websocket.as_ref())
-            .and_then(|ws| ws.tls.as_ref())
-            .map(|_| OuterSecurity::Tls),
-        Transport::HttpUpgrade => cfg
-            .and_then(|c| c.httpupgrade.as_ref())
-            .and_then(|httpupgrade| httpupgrade.tls.as_ref())
-            .map(|_| OuterSecurity::Tls),
-        Transport::Grpc => cfg
-            .and_then(|c| c.grpc.as_ref())
-            .and_then(|grpc| grpc.tls.as_ref())
-            .map(|_| OuterSecurity::Tls),
-        Transport::Xhttp => cfg
-            .and_then(|c| c.xhttp.as_ref())
-            .and_then(|xhttp| xhttp.tls.as_ref())
-            .map(|_| OuterSecurity::Tls),
-        Transport::Meek => cfg
-            .and_then(|c| c.meek.as_ref())
-            .and_then(|meek| meek.tls.as_ref())
-            .map(|_| OuterSecurity::Tls),
-        Transport::GdocsViewer => cfg
-            .and_then(|c| c.gdocsviewer.as_ref())
-            .and_then(|gdocs| gdocs.tls.as_ref())
-            .map(|_| OuterSecurity::Tls),
-        Transport::Raw | Transport::Kcp | Transport::Vmess | Transport::WireGuard => None,
     }
 }
 

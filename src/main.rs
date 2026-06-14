@@ -7,55 +7,7 @@ use wrongsv_server::Config;
 mod client_config;
 mod endpoint;
 
-#[derive(Debug, ValueEnum, Clone, Copy, PartialEq)]
-#[allow(clippy::enum_variant_names)]
-enum Transport {
-    /// REALITY TLS (X25519 ECDH + HKDF auth)
-    Reality,
-    /// AnyTLS (SHA-256 password auth over TLS)
-    #[clap(name = "anytls")]
-    AnyTls,
-    /// Plain TLS 1.3 (compatible with sing-box/mihomo TLS transport)
-    Tls,
-    /// Raw TCP (no TLS layer)
-    Raw,
-    /// WebSocket carrier (optional TLS)
-    #[clap(name = "ws")]
-    WebSocket,
-    /// HTTPUpgrade carrier
-    #[clap(name = "httpupgrade")]
-    HttpUpgrade,
-    /// gRPC carrier (HTTP/2 + gRPC frames)
-    #[clap(name = "grpc")]
-    Grpc,
-    /// XHTTP (SplitHTTP) carrier
-    #[clap(name = "xhttp")]
-    Xhttp,
-    /// Meek request transport
-    #[clap(name = "meek")]
-    Meek,
-    /// Google Docs Viewer request transport
-    #[clap(name = "gdocsviewer")]
-    GdocsViewer,
-    /// QUIC carrier
-    #[clap(name = "quic")]
-    Quic,
-    /// KCP (mKCP) carrier
-    #[clap(name = "kcp")]
-    Kcp,
-    /// WebTransport carrier (HTTP/3)
-    #[clap(name = "webtransport")]
-    WebTransport,
-    /// ShadowTLS (TLS 1.3 + HMAC auth)
-    #[clap(name = "shadowtls")]
-    ShadowTls,
-    /// VMess AEAD (AES-128-GCM encrypted proxy)
-    #[clap(name = "vmess")]
-    Vmess,
-    /// WireGuard tunnel service
-    #[clap(name = "wireguard")]
-    WireGuard,
-}
+pub(crate) use endpoint::EndpointProfile as Transport;
 
 #[derive(Debug, ValueEnum, Clone, Copy, PartialEq)]
 enum ClientFormat {
@@ -147,9 +99,9 @@ struct Cli {
     #[arg(long, default_value = "wrongsv")]
     client_name: String,
 
-    /// Override profile detection (reality, anytls, tls, raw, ws, httpupgrade, grpc, xhttp, meek, gdocsviewer, quic, kcp, webtransport, shadowtls, vmess, wireguard)
-    #[arg(long)]
-    transport: Option<Transport>,
+    /// Override endpoint profile detection (use --transport as a compatibility alias)
+    #[arg(long = "profile", alias = "transport")]
+    profile: Option<Transport>,
 
     /// Client config format: mihomo (default), sing-box, xray, hiddify
     #[arg(long, default_value = "mihomo")]
@@ -255,7 +207,7 @@ fn main() {
     if cli.print_client_config {
         let vals = client_config::resolve_client_values(
             cli.config.as_deref(),
-            cli.transport,
+            cli.profile,
             &cli.servername,
         );
         let json = client_config::generate_client_config(
@@ -274,7 +226,7 @@ fn main() {
     if cli.print_endpoint_diagnostics {
         let vals = client_config::resolve_client_values(
             cli.config.as_deref(),
-            cli.transport,
+            cli.profile,
             &cli.servername,
         );
         let diagnostics = client_config::build_endpoint_diagnostics(&vals, Some(cli.format));
@@ -288,7 +240,7 @@ fn main() {
     if let Some(ref path) = cli.write_client_config {
         let vals = client_config::resolve_client_values(
             cli.config.as_deref(),
-            cli.transport,
+            cli.profile,
             &cli.servername,
         );
         let json = client_config::generate_client_config(
