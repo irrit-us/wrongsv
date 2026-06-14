@@ -4,7 +4,10 @@ use crate::endpoint_registry::{
     protocol_descriptor, resolve_endpoint, ComponentDescriptorSet, LayerMode, ProtocolDescriptor,
     ResolvedEndpoint,
 };
-use crate::protocol_model::{BaseCarrier, Component, EndpointComponents, EndpointModel, OuterSecurity, ProxyProtocol, TransportMethod};
+use crate::protocol_model::{
+    Component, EndpointComponents, EndpointModel, OuterSecurity, PayloadNetwork, ProxyProtocol,
+    TransportMethod,
+};
 use crate::{ClientFormat, Transport};
 
 // ---------------------------------------------------------------------------
@@ -22,7 +25,6 @@ pub(crate) struct ClientConfigValues {
     pub short_id: String,
     pub x25519_pk: String,
     pub servername: String,
-    pub has_tls: bool,
     pub ws_path: String,
     pub grpc_service_name: String,
     pub kcp_seed: String,
@@ -94,6 +96,7 @@ pub(crate) fn resolve_client_values(
 
     match toml_config {
         Some(ref cfg) => {
+            let transport_outer_security = transport_outer_security(Some(cfg), transport);
             let uuid = match transport {
                 Transport::Vmess => cfg
                     .vmess
@@ -209,33 +212,8 @@ pub(crate) fn resolve_client_values(
                 .as_ref()
                 .map(|wg| wg.mtu)
                 .unwrap_or(1400);
-            // Detect TLS: true for TLS-layer transports, true for stream
-            // transports that have a tls sub-config, true for QUIC (built-in).
-            let has_tls = match transport {
-                Transport::Reality
-                | Transport::AnyTls
-                | Transport::Tls
-                | Transport::Quic
-                | Transport::WebTransport
-                | Transport::ShadowTls
-                | Transport::WireGuard => true,
-                Transport::WebSocket => cfg
-                    .websocket
-                    .as_ref()
-                    .and_then(|w| w.tls.as_ref())
-                    .is_some(),
-                Transport::HttpUpgrade => cfg
-                    .httpupgrade
-                    .as_ref()
-                    .and_then(|h| h.tls.as_ref())
-                    .is_some(),
-                Transport::Grpc => cfg.grpc.as_ref().and_then(|g| g.tls.as_ref()).is_some(),
-                Transport::Xhttp => cfg.xhttp.as_ref().and_then(|x| x.tls.as_ref()).is_some(),
-                Transport::Meek => false,
-                Transport::GdocsViewer => false,
-                Transport::Kcp | Transport::Raw | Transport::Vmess => false,
-            };
-            let endpoint = EndpointModel::from_transport_profile(transport, has_tls, flow);
+            let endpoint =
+                EndpointModel::from_transport_profile(transport, transport_outer_security, flow);
 
             ClientConfigValues {
                 endpoint,
@@ -245,7 +223,6 @@ pub(crate) fn resolve_client_values(
                 short_id: sid,
                 x25519_pk: pk,
                 servername,
-                has_tls,
                 ws_path,
                 grpc_service_name,
                 kcp_seed,
@@ -265,16 +242,7 @@ pub(crate) fn resolve_client_values(
         None => ClientConfigValues {
             endpoint: EndpointModel::from_transport_profile(
                 transport,
-                matches!(
-                    transport,
-                    Transport::Reality
-                        | Transport::AnyTls
-                        | Transport::Tls
-                        | Transport::Quic
-                        | Transport::WebTransport
-                        | Transport::ShadowTls
-                        | Transport::WireGuard
-                ),
+                transport_outer_security(None, transport),
                 "xtls-rprx-vision",
             ),
             uuid: build_uuid().to_string(),
@@ -283,16 +251,6 @@ pub(crate) fn resolve_client_values(
             short_id: build_sid().to_string(),
             x25519_pk: build_pk().to_string(),
             servername: servername_override.to_string(),
-            has_tls: matches!(
-                transport,
-                Transport::Reality
-                    | Transport::AnyTls
-                    | Transport::Tls
-                    | Transport::Quic
-                    | Transport::WebTransport
-                    | Transport::ShadowTls
-                    | Transport::WireGuard
-            ),
             ws_path: "/".to_string(),
             grpc_service_name: "GunService".to_string(),
             kcp_seed: String::new(),
@@ -308,6 +266,45 @@ pub(crate) fn resolve_client_values(
             wireguard_allowed_ips: vec!["10.66.66.1/32".to_string()],
             wireguard_mtu: 1400,
         },
+    }
+}
+
+fn transport_outer_security(
+    cfg: Option<&wrongsv_server::Config>,
+    transport: Transport,
+) -> Option<OuterSecurity> {
+    match transport {
+        Transport::Reality => Some(OuterSecurity::Reality),
+        Transport::AnyTls
+        | Transport::Tls
+        | Transport::Quic
+        | Transport::WebTransport
+        | Transport::ShadowTls => Some(OuterSecurity::Tls),
+        Transport::WebSocket => cfg
+            .and_then(|c| c.websocket.as_ref())
+            .and_then(|ws| ws.tls.as_ref())
+            .map(|_| OuterSecurity::Tls),
+        Transport::HttpUpgrade => cfg
+            .and_then(|c| c.httpupgrade.as_ref())
+            .and_then(|httpupgrade| httpupgrade.tls.as_ref())
+            .map(|_| OuterSecurity::Tls),
+        Transport::Grpc => cfg
+            .and_then(|c| c.grpc.as_ref())
+            .and_then(|grpc| grpc.tls.as_ref())
+            .map(|_| OuterSecurity::Tls),
+        Transport::Xhttp => cfg
+            .and_then(|c| c.xhttp.as_ref())
+            .and_then(|xhttp| xhttp.tls.as_ref())
+            .map(|_| OuterSecurity::Tls),
+        Transport::Meek => cfg
+            .and_then(|c| c.meek.as_ref())
+            .and_then(|meek| meek.tls.as_ref())
+            .map(|_| OuterSecurity::Tls),
+        Transport::GdocsViewer => cfg
+            .and_then(|c| c.gdocsviewer.as_ref())
+            .and_then(|gdocs| gdocs.tls.as_ref())
+            .map(|_| OuterSecurity::Tls),
+        Transport::Raw | Transport::Kcp | Transport::Vmess | Transport::WireGuard => None,
     }
 }
 
@@ -457,6 +454,10 @@ impl ClientConfigValues {
         self.endpoint.protocol
     }
 
+    fn supports_payload(&self, payload: PayloadNetwork) -> bool {
+        self.endpoint.payload_networks.contains(&payload)
+    }
+
     fn transport_method(&self) -> Option<TransportMethod> {
         self.endpoint.transport
     }
@@ -469,8 +470,51 @@ impl ClientConfigValues {
         self.endpoint.has_component(component)
     }
 
-    fn base_carrier(&self) -> BaseCarrier {
-        self.endpoint.base_carrier
+    fn enabled_payload_network_field(&self) -> Option<&'static str> {
+        match (
+            self.supports_payload(PayloadNetwork::Tcp),
+            self.supports_payload(PayloadNetwork::Udp),
+        ) {
+            (true, true) => None,
+            (true, false) => Some("tcp"),
+            (false, true) => Some("udp"),
+            _ => None,
+        }
+    }
+
+    fn udp_packet_encoding(&self) -> Option<&'static str> {
+        self.supports_payload(PayloadNetwork::Udp)
+            .then_some("packetaddr")
+    }
+
+    fn singbox_tls(&self) -> Option<SingBoxTls<'_>> {
+        match self.outer_security() {
+            Some(OuterSecurity::Reality) => Some(SingBoxTls {
+                enabled: true,
+                server_name: &self.servername,
+                insecure: None,
+                utls: Some(SingBoxUtls {
+                    enabled: true,
+                    fingerprint: "chrome",
+                }),
+                reality: Some(SingBoxReality {
+                    enabled: true,
+                    public_key: &self.x25519_pk,
+                    short_id: &self.short_id,
+                }),
+            }),
+            Some(OuterSecurity::Tls) => Some(SingBoxTls {
+                enabled: true,
+                server_name: &self.servername,
+                insecure: Some(true),
+                utls: Some(SingBoxUtls {
+                    enabled: true,
+                    fingerprint: "chrome",
+                }),
+                reality: None,
+            }),
+            None => None,
+        }
     }
 }
 
@@ -644,13 +688,6 @@ fn mihomo_format(server_host: &str, client_name: &str, vals: &ClientConfigValues
             }),
         ),
         Some(OuterSecurity::Tls) => (
-            Some(true),
-            Some("chrome"),
-            Some(vals.servername.as_str()),
-            Some(true),
-            None,
-        ),
-        _ if vals.has_tls => (
             Some(true),
             Some("chrome"),
             Some(vals.servername.as_str()),
@@ -911,47 +948,11 @@ fn singbox_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
         return serde_json::to_string_pretty(&config).expect("SingBoxConfig should serialize");
     }
 
-    let tls = if vals.has_tls {
-        match vals.outer_security() {
-            Some(OuterSecurity::Reality) => Some(SingBoxTls {
-                enabled: true,
-                server_name: &vals.servername,
-                insecure: None,
-                utls: Some(SingBoxUtls {
-                    enabled: true,
-                    fingerprint: "chrome",
-                }),
-                reality: Some(SingBoxReality {
-                    enabled: true,
-                    public_key: &vals.x25519_pk,
-                    short_id: &vals.short_id,
-                }),
-            }),
-            Some(OuterSecurity::Tls) => Some(SingBoxTls {
-                enabled: true,
-                server_name: &vals.servername,
-                insecure: Some(true),
-                utls: Some(SingBoxUtls {
-                    enabled: true,
-                    fingerprint: "chrome",
-                }),
-                reality: None,
-            }),
-            None => None,
-        }
-    } else {
-        None
-    };
+    let tls = vals.singbox_tls();
 
-    let network: Option<&str> = match vals.transport_method() {
-        Some(TransportMethod::Quic) | Some(TransportMethod::Kcp) => None, // QUIC/KCP don't use tcp/udp network
-        _ => Some(match vals.transport_method() {
-            Some(TransportMethod::Kcp) => "udp",
-            _ => "tcp",
-        }),
-    };
+    let network = vals.enabled_payload_network_field();
 
-    let packet_encoding: Option<&str> = Some("packetaddr");
+    let packet_encoding = vals.udp_packet_encoding();
 
     let transport: Option<serde_json::Value> = match vals.transport_method() {
         Some(TransportMethod::WebSocket) => serde_json::to_value(SingBoxWsTransport {
@@ -1480,47 +1481,11 @@ fn hiddify_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
         return serde_json::to_string_pretty(&config).expect("HiddifyConfig should serialize");
     }
 
-    let tls = if vals.has_tls {
-        match vals.outer_security() {
-            Some(OuterSecurity::Reality) => Some(SingBoxTls {
-                enabled: true,
-                server_name: &vals.servername,
-                insecure: None,
-                utls: Some(SingBoxUtls {
-                    enabled: true,
-                    fingerprint: "chrome",
-                }),
-                reality: Some(SingBoxReality {
-                    enabled: true,
-                    public_key: &vals.x25519_pk,
-                    short_id: &vals.short_id,
-                }),
-            }),
-            Some(OuterSecurity::Tls) => Some(SingBoxTls {
-                enabled: true,
-                server_name: &vals.servername,
-                insecure: Some(true),
-                utls: Some(SingBoxUtls {
-                    enabled: true,
-                    fingerprint: "chrome",
-                }),
-                reality: None,
-            }),
-            None => None,
-        }
-    } else {
-        None
-    };
+    let tls = vals.singbox_tls();
 
-    let network: Option<&str> = match vals.transport_method() {
-        Some(TransportMethod::Quic) | Some(TransportMethod::Kcp) => None,
-        _ => Some(match vals.base_carrier() {
-            BaseCarrier::Udp => "udp",
-            _ => "tcp",
-        }),
-    };
+    let network = vals.enabled_payload_network_field();
 
-    let packet_encoding: Option<&str> = Some("packetaddr");
+    let packet_encoding = vals.udp_packet_encoding();
 
     let transport: Option<serde_json::Value> = match vals.transport_method() {
         Some(TransportMethod::WebSocket) => serde_json::to_value(SingBoxWsTransport {
@@ -1618,20 +1583,11 @@ mod tests {
     use super::*;
 
     fn test_vals(transport: Transport) -> ClientConfigValues {
-        let has_tls = matches!(
-            transport,
-            Transport::Reality
-                | Transport::AnyTls
-                | Transport::Tls
-                | Transport::Quic
-                | Transport::WebTransport
-                | Transport::ShadowTls
-                | Transport::WireGuard
-        );
+        let outer_security = transport_outer_security(None, transport);
         ClientConfigValues {
             endpoint: EndpointModel::from_transport_profile(
                 transport,
-                has_tls,
+                outer_security,
                 "xtls-rprx-vision",
             ),
             uuid: "test-uuid-1234".into(),
@@ -1640,7 +1596,6 @@ mod tests {
             short_id: "abcd1234".into(),
             x25519_pk: "test-pubkey-base64".into(),
             servername: "example.com".into(),
-            has_tls,
             ws_path: "/ws-path".into(),
             grpc_service_name: "TestService".into(),
             kcp_seed: "test-seed".into(),
@@ -1747,8 +1702,17 @@ mod tests {
 
     #[test]
     fn singbox_has_packet_encoding() {
-        let json = singbox_format("1.2.3.4", "test", &test_vals(Transport::Reality));
+        let mut vals = test_vals(Transport::Raw);
+        vals.flow.clear();
+        vals.endpoint = EndpointModel::from_transport_profile(Transport::Raw, None, "");
+        let json = singbox_format("1.2.3.4", "test", &vals);
         assert!(json.contains(r#""packet_encoding": "packetaddr""#));
+    }
+
+    #[test]
+    fn singbox_omits_packet_encoding_when_udp_payload_is_disabled() {
+        let json = singbox_format("1.2.3.4", "test", &test_vals(Transport::Reality));
+        assert!(!json.contains(r#""packet_encoding": "packetaddr""#));
     }
 
     // ── Mihomo new transport tests ──────────────────────────────────────
@@ -1783,7 +1747,7 @@ mod tests {
     #[test]
     fn mihomo_wireguard_uses_normalized_protocol_model() {
         let mut vals = test_vals(Transport::WireGuard);
-        vals.endpoint = EndpointModel::from_transport_profile(Transport::WireGuard, true, "");
+        vals.endpoint = EndpointModel::from_transport_profile(Transport::WireGuard, None, "");
         let json = mihomo_format("1.2.3.4", "test", &vals);
         assert!(json.contains(r#""type": "wireguard""#));
         assert!(json.contains(r#""private-key": "wireguard-private-key""#));
@@ -1794,7 +1758,7 @@ mod tests {
     #[test]
     fn singbox_wireguard_uses_normalized_protocol_model() {
         let mut vals = test_vals(Transport::WireGuard);
-        vals.endpoint = EndpointModel::from_transport_profile(Transport::WireGuard, true, "");
+        vals.endpoint = EndpointModel::from_transport_profile(Transport::WireGuard, None, "");
         let json = singbox_format("1.2.3.4", "test", &vals);
         assert!(json.contains(r#""type": "wireguard""#));
         assert!(json.contains(r#""local_address""#));
@@ -1804,7 +1768,7 @@ mod tests {
     #[test]
     fn xray_wireguard_export_fails_cleanly() {
         let mut vals = test_vals(Transport::WireGuard);
-        vals.endpoint = EndpointModel::from_transport_profile(Transport::WireGuard, true, "");
+        vals.endpoint = EndpointModel::from_transport_profile(Transport::WireGuard, None, "");
         let err = generate_client_config(ClientFormat::Xray, "1.2.3.4", "test", &vals)
             .expect_err("wireguard xray export should fail");
         assert!(err.contains("WireGuard export is not implemented"));
@@ -1817,6 +1781,15 @@ mod tests {
         let err = generate_client_config(ClientFormat::Mihomo, "1.2.3.4", "test", &vals)
             .expect_err("unsupported component category should fail");
         assert!(err.contains("supported network component"));
+    }
+
+    #[test]
+    fn singbox_omits_network_when_both_payload_networks_are_enabled() {
+        let mut vals = test_vals(Transport::Raw);
+        vals.flow.clear();
+        vals.endpoint = EndpointModel::from_transport_profile(Transport::Raw, None, "");
+        let json = singbox_format("1.2.3.4", "test", &vals);
+        assert!(!json.contains(r#""network": "tcp""#));
     }
 
     #[test]
@@ -1834,7 +1807,7 @@ mod tests {
     #[test]
     fn diagnostics_report_export_failure() {
         let mut vals = test_vals(Transport::WireGuard);
-        vals.endpoint = EndpointModel::from_transport_profile(Transport::WireGuard, true, "");
+        vals.endpoint = EndpointModel::from_transport_profile(Transport::WireGuard, None, "");
         let diagnostics = build_endpoint_diagnostics(&vals, Some(ClientFormat::Xray));
         let export = diagnostics.export.expect("export diagnostics should be present");
         assert!(!export.supported);
@@ -1843,6 +1816,41 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("WireGuard export is not implemented"));
+    }
+
+    #[test]
+    fn resolve_client_values_detects_meek_tls_outer_security() {
+        let unique = format!(
+            "wrongsv-meek-{}.toml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(unique);
+        std::fs::write(
+            &path,
+            r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+email = "user@example.com"
+flow = ""
+
+[meek]
+path = "/meek"
+
+[meek.tls]
+certificate = "cert"
+key = "key"
+"#,
+        )
+        .expect("test config should write");
+        let vals = resolve_client_values(path.to_str(), Some(Transport::Meek), "example.com");
+        std::fs::remove_file(&path).ok();
+        assert_eq!(vals.transport_method(), Some(TransportMethod::Meek));
+        assert_eq!(vals.outer_security(), Some(OuterSecurity::Tls));
     }
 
     #[test]

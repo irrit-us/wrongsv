@@ -109,7 +109,7 @@ pub(crate) struct EndpointModel {
 impl EndpointModel {
     pub(crate) fn from_transport_profile(
         profile: Transport,
-        has_tls: bool,
+        transport_outer_security: Option<OuterSecurity>,
         flow: &str,
     ) -> Self {
         let vision_enabled = flow == "xtls-rprx-vision";
@@ -167,42 +167,42 @@ impl EndpointModel {
             Transport::WebSocket => Self::vless_model(
                 vision_enabled,
                 Some(TransportMethod::WebSocket),
-                has_tls.then_some(OuterSecurity::Tls),
+                transport_outer_security,
                 BaseCarrier::Tcp,
                 EndpointComponents::default(),
             ),
             Transport::HttpUpgrade => Self::vless_model(
                 vision_enabled,
                 Some(TransportMethod::HttpUpgrade),
-                has_tls.then_some(OuterSecurity::Tls),
+                transport_outer_security,
                 BaseCarrier::Tcp,
                 EndpointComponents::default(),
             ),
             Transport::Grpc => Self::vless_model(
                 vision_enabled,
                 Some(TransportMethod::Grpc),
-                has_tls.then_some(OuterSecurity::Tls),
+                transport_outer_security,
                 BaseCarrier::Tcp,
                 EndpointComponents::default(),
             ),
             Transport::Xhttp => Self::vless_model(
                 vision_enabled,
                 Some(TransportMethod::Xhttp),
-                has_tls.then_some(OuterSecurity::Tls),
+                transport_outer_security,
                 BaseCarrier::Tcp,
                 EndpointComponents::default(),
             ),
             Transport::Meek => Self::vless_model(
                 false,
                 Some(TransportMethod::Meek),
-                has_tls.then_some(OuterSecurity::Tls),
+                transport_outer_security,
                 BaseCarrier::Tcp,
                 EndpointComponents::default(),
             ),
             Transport::GdocsViewer => Self::vless_model(
                 false,
                 Some(TransportMethod::GdocsViewer),
-                has_tls.then_some(OuterSecurity::Tls),
+                transport_outer_security,
                 BaseCarrier::Tcp,
                 EndpointComponents::default(),
             ),
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn raw_vless_uses_tcp_without_outer_security() {
-        let model = EndpointModel::from_transport_profile(Transport::Raw, false, "");
+        let model = EndpointModel::from_transport_profile(Transport::Raw, None, "");
         assert_eq!(model.protocol, ProxyProtocol::Vless);
         assert_eq!(model.base_carrier, BaseCarrier::Tcp);
         assert_eq!(model.transport, None);
@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn kcp_vless_uses_udp_base_carrier() {
-        let model = EndpointModel::from_transport_profile(Transport::Kcp, false, "");
+        let model = EndpointModel::from_transport_profile(Transport::Kcp, None, "");
         assert_eq!(model.transport, Some(TransportMethod::Kcp));
         assert_eq!(model.base_carrier, BaseCarrier::Udp);
         assert_eq!(model.outer_security, None);
@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn wireguard_exposes_ip_payloads() {
-        let model = EndpointModel::from_transport_profile(Transport::WireGuard, false, "");
+        let model = EndpointModel::from_transport_profile(Transport::WireGuard, None, "");
         assert_eq!(model.protocol, ProxyProtocol::WireGuard);
         assert_eq!(model.protocol_internal_security, Some(ProtocolInternalSecurity::WireGuardNoise));
         assert_eq!(model.payload_networks, vec![PayloadNetwork::Ip]);
@@ -303,8 +303,11 @@ mod tests {
 
     #[test]
     fn vision_becomes_performance_component_and_removes_udp() {
-        let model =
-            EndpointModel::from_transport_profile(Transport::Reality, true, "xtls-rprx-vision");
+        let model = EndpointModel::from_transport_profile(
+            Transport::Reality,
+            Some(OuterSecurity::Reality),
+            "xtls-rprx-vision",
+        );
         assert!(model.has_component(Component::Vision));
         assert_eq!(model.payload_networks, vec![PayloadNetwork::Tcp]);
     }

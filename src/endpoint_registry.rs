@@ -273,7 +273,7 @@ mod tests {
     fn resolved_stack_summary_lists_layers_in_order() {
         let model = EndpointModel::from_transport_profile(
             crate::Transport::WebSocket,
-            true,
+            Some(OuterSecurity::Tls),
             "xtls-rprx-vision",
         );
         let resolved = resolve_endpoint(&model);
@@ -285,7 +285,7 @@ mod tests {
 
     #[test]
     fn resolved_stack_summary_for_wireguard_uses_ip_and_udp() {
-        let model = EndpointModel::from_transport_profile(crate::Transport::WireGuard, true, "");
+        let model = EndpointModel::from_transport_profile(crate::Transport::WireGuard, None, "");
         let resolved = resolve_endpoint(&model);
         assert_eq!(
             resolved.stack_summary,
@@ -296,7 +296,11 @@ mod tests {
     #[test]
     fn component_flags_are_preserved_in_resolved_endpoint() {
         let mut model =
-            EndpointModel::from_transport_profile(crate::Transport::ShadowTls, true, "xtls-rprx-vision");
+            EndpointModel::from_transport_profile(
+                crate::Transport::ShadowTls,
+                Some(OuterSecurity::Tls),
+                "xtls-rprx-vision",
+            );
         model.components.ingress.push(Component::ShadowTls);
         let resolved = resolve_endpoint(&model);
         assert!(resolved.active_components.camouflage.contains(&Component::ShadowTls));
