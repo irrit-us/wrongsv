@@ -73,6 +73,7 @@ jobs:
           CARGO_BUILD_RUSTFLAGS: ${{ matrix.rustflags }}
           TARGET_CFLAGS: ${{ matrix.target_cflags }}
           TARGET_CXXFLAGS: ${{ matrix.target_cflags }}
+          CROSS_CONTAINER_OPTS: "--env PROTOC=/usr/local/bin/protoc"
 
       - name: Build (native)
         if: ${{ !matrix.use_cross }}
