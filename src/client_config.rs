@@ -1,7 +1,7 @@
 use serde::Serialize;
 
-use crate::endpoint_registry::{protocol_descriptor, resolve_endpoint, LayerMode};
-use crate::protocol_model::{BaseCarrier, Component, EndpointModel, OuterSecurity, ProxyProtocol, TransportMethod};
+use crate::endpoint_registry::{protocol_descriptor, resolve_endpoint, ComponentDescriptorSet, LayerMode};
+use crate::protocol_model::{BaseCarrier, Component, EndpointComponents, EndpointModel, OuterSecurity, ProxyProtocol, TransportMethod};
 use crate::{ClientFormat, Transport};
 
 // ---------------------------------------------------------------------------
@@ -334,6 +334,7 @@ fn validate_client_format_support(
             descriptor.display_name
         ));
     }
+    validate_component_support(descriptor.display_name, &resolved.active_components, descriptor.components)?;
 
     match resolved.protocol {
         ProxyProtocol::Vless => {
@@ -364,6 +365,35 @@ fn validate_client_format_support(
             }
         }
         ProxyProtocol::Vmess => {}
+    }
+    Ok(())
+}
+
+fn validate_component_support(
+    display_name: &str,
+    active: &EndpointComponents,
+    declared: ComponentDescriptorSet,
+) -> Result<(), String> {
+    validate_component_bucket(display_name, "camouflage", &active.camouflage, declared.camouflage)?;
+    validate_component_bucket(display_name, "ingress", &active.ingress, declared.ingress)?;
+    validate_component_bucket(display_name, "performance", &active.performance, declared.performance)?;
+    validate_component_bucket(display_name, "network", &active.network, declared.network)?;
+    Ok(())
+}
+
+fn validate_component_bucket(
+    display_name: &str,
+    bucket: &str,
+    active: &[Component],
+    supported: &[Component],
+) -> Result<(), String> {
+    for component in active {
+        if !supported.contains(component) {
+            return Err(format!(
+                "{} does not declare {:?} as a supported {} component",
+                display_name, component, bucket
+            ));
+        }
     }
     Ok(())
 }
@@ -1724,6 +1754,15 @@ mod tests {
         let err = generate_client_config(ClientFormat::Xray, "1.2.3.4", "test", &vals)
             .expect_err("wireguard xray export should fail");
         assert!(err.contains("WireGuard export is not implemented"));
+    }
+
+    #[test]
+    fn unsupported_component_bucket_fails_validation() {
+        let mut vals = test_vals(Transport::Raw);
+        vals.endpoint.components.network.push(Component::Vision);
+        let err = generate_client_config(ClientFormat::Mihomo, "1.2.3.4", "test", &vals)
+            .expect_err("unsupported component category should fail");
+        assert!(err.contains("supported network component"));
     }
 
     #[test]
