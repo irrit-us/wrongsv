@@ -1,5 +1,5 @@
 use crate::protocol_model::{
-    BaseCarrier, EndpointComponents, EndpointModel, OuterSecurity, PayloadNetwork,
+    BaseCarrier, Component, EndpointComponents, EndpointModel, OuterSecurity, PayloadNetwork,
     ProtocolInternalSecurity, ProxyProtocol, TransportMethod,
 };
 
@@ -28,6 +28,14 @@ pub(crate) struct PayloadDescriptor {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ComponentDescriptorSet {
+    pub camouflage: &'static [Component],
+    pub ingress: &'static [Component],
+    pub performance: &'static [Component],
+    pub network: &'static [Component],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ProtocolDescriptor {
     pub id: ProxyProtocol,
     pub display_name: &'static str,
@@ -35,6 +43,7 @@ pub(crate) struct ProtocolDescriptor {
     pub transport: LayerDescriptor<TransportMethod>,
     pub outer_security: LayerDescriptor<OuterSecurity>,
     pub protocol_internal_security: Option<ProtocolInternalSecurity>,
+    pub components: ComponentDescriptorSet,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +61,9 @@ pub(crate) struct ResolvedEndpoint {
 const VLESS_PAYLOADS: &[PayloadNetwork] = &[PayloadNetwork::Tcp, PayloadNetwork::Udp];
 const VMESS_PAYLOADS: &[PayloadNetwork] = &[PayloadNetwork::Tcp];
 const WIREGUARD_PAYLOADS: &[PayloadNetwork] = &[PayloadNetwork::Ip];
+const VLESS_CAMOUFLAGE_COMPONENTS: &[Component] = &[Component::AnyTls, Component::ShadowTls];
+const VLESS_PERFORMANCE_COMPONENTS: &[Component] = &[Component::Vision];
+const EMPTY_COMPONENTS: &[Component] = &[];
 const VLESS_TRANSPORTS: &[TransportMethod] = &[
     TransportMethod::WebSocket,
     TransportMethod::HttpUpgrade,
@@ -88,6 +100,12 @@ pub(crate) fn protocol_descriptor(protocol: ProxyProtocol) -> &'static ProtocolD
                 fixed_value: None,
             },
             protocol_internal_security: None,
+            components: ComponentDescriptorSet {
+                camouflage: VLESS_CAMOUFLAGE_COMPONENTS,
+                ingress: EMPTY_COMPONENTS,
+                performance: VLESS_PERFORMANCE_COMPONENTS,
+                network: EMPTY_COMPONENTS,
+            },
         },
         ProxyProtocol::Vmess => &ProtocolDescriptor {
             id: ProxyProtocol::Vmess,
@@ -110,6 +128,12 @@ pub(crate) fn protocol_descriptor(protocol: ProxyProtocol) -> &'static ProtocolD
                 fixed_value: None,
             },
             protocol_internal_security: Some(ProtocolInternalSecurity::VmessAead),
+            components: ComponentDescriptorSet {
+                camouflage: EMPTY_COMPONENTS,
+                ingress: EMPTY_COMPONENTS,
+                performance: EMPTY_COMPONENTS,
+                network: EMPTY_COMPONENTS,
+            },
         },
         ProxyProtocol::WireGuard => &ProtocolDescriptor {
             id: ProxyProtocol::WireGuard,
@@ -132,6 +156,12 @@ pub(crate) fn protocol_descriptor(protocol: ProxyProtocol) -> &'static ProtocolD
                 fixed_value: None,
             },
             protocol_internal_security: Some(ProtocolInternalSecurity::WireGuardNoise),
+            components: ComponentDescriptorSet {
+                camouflage: EMPTY_COMPONENTS,
+                ingress: EMPTY_COMPONENTS,
+                performance: EMPTY_COMPONENTS,
+                network: EMPTY_COMPONENTS,
+            },
         },
     }
 }
@@ -226,6 +256,14 @@ mod tests {
             descriptor.protocol_internal_security,
             Some(ProtocolInternalSecurity::WireGuardNoise)
         );
+    }
+
+    #[test]
+    fn vless_descriptor_declares_component_categories() {
+        let descriptor = protocol_descriptor(ProxyProtocol::Vless);
+        assert_eq!(descriptor.components.camouflage, VLESS_CAMOUFLAGE_COMPONENTS);
+        assert_eq!(descriptor.components.performance, VLESS_PERFORMANCE_COMPONENTS);
+        assert!(descriptor.components.network.is_empty());
     }
 
     #[test]

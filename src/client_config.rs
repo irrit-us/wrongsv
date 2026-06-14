@@ -19,7 +19,6 @@ pub(crate) struct ClientConfigValues {
     pub short_id: String,
     pub x25519_pk: String,
     pub servername: String,
-    pub transport: Transport,
     pub has_tls: bool,
     pub ws_path: String,
     pub grpc_service_name: String,
@@ -227,7 +226,6 @@ pub(crate) fn resolve_client_values(
                 short_id: sid,
                 x25519_pk: pk,
                 servername,
-                transport,
                 has_tls,
                 ws_path,
                 grpc_service_name,
@@ -266,7 +264,6 @@ pub(crate) fn resolve_client_values(
             short_id: build_sid().to_string(),
             x25519_pk: build_pk().to_string(),
             servername: servername_override.to_string(),
-            transport,
             has_tls: matches!(
                 transport,
                 Transport::Reality
@@ -355,7 +352,7 @@ fn validate_client_format_support(
             {
                 return Err("WebTransport export is only implemented for xray-family configs".into());
             }
-            if vals.transport == Transport::AnyTls
+            if vals.has_component(Component::AnyTls)
                 && !matches!(format, ClientFormat::SingBox | ClientFormat::Hiddify)
             {
                 return Err("AnyTLS export is only implemented for sing-box-family configs".into());
@@ -1559,7 +1556,6 @@ mod tests {
             short_id: "abcd1234".into(),
             x25519_pk: "test-pubkey-base64".into(),
             servername: "example.com".into(),
-            transport,
             has_tls,
             ws_path: "/ws-path".into(),
             grpc_service_name: "TestService".into(),

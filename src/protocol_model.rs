@@ -57,6 +57,16 @@ pub(crate) struct EndpointComponents {
     pub camouflage: Vec<Component>,
     pub ingress: Vec<Component>,
     pub performance: Vec<Component>,
+    pub network: Vec<Component>,
+}
+
+impl EndpointComponents {
+    pub(crate) fn contains(&self, component: Component) -> bool {
+        self.camouflage.contains(&component)
+            || self.ingress.contains(&component)
+            || self.performance.contains(&component)
+            || self.network.contains(&component)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -230,9 +240,7 @@ impl EndpointModel {
     }
 
     pub(crate) fn has_component(&self, component: Component) -> bool {
-        self.components.camouflage.contains(&component)
-            || self.components.ingress.contains(&component)
-            || self.components.performance.contains(&component)
+        self.components.contains(component)
     }
 }
 
@@ -273,5 +281,12 @@ mod tests {
             EndpointModel::from_transport_profile(Transport::Reality, true, "xtls-rprx-vision");
         assert!(model.has_component(Component::Vision));
         assert_eq!(model.payload_networks, vec![PayloadNetwork::Tcp]);
+    }
+
+    #[test]
+    fn component_contains_checks_network_bucket() {
+        let mut components = EndpointComponents::default();
+        components.network.push(Component::ShadowTls);
+        assert!(components.contains(Component::ShadowTls));
     }
 }
