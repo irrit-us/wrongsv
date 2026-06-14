@@ -583,6 +583,16 @@ standard xray/v2fly AEAD path. `spawn_vmess_server` remains in
 - `docs/SETUP.md` was updated to reflect the broader profile override list and
   the new normalized endpoint-model-driven resolution behavior.
 
+### 2026-06-14 — Generator branches migrated further onto the normalized model
+
+- The Xray, sing-box, and Hiddify client-config generators now use normalized
+  `transport_method`, `outer_security`, `base_carrier`, and component metadata
+  instead of branching only on the raw legacy transport enum.
+- Native WireGuard export now exists for sing-box-family configs through the
+  same normalized endpoint model used by the Mihomo generator.
+- Workspace-wide compile verification still passes after the migration:
+  `cargo test --workspace --all-targets --no-run`.
+
 ### 2026-06-13 — ShadowTLS v3 interop fixed for sing-box / Hiddify
 
 - Replaced wrongsv's old exporter-HMAC ShadowTLS path with a ShadowTLS v3 server

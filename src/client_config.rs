@@ -1,7 +1,7 @@
 use serde::Serialize;
 
 use crate::endpoint_registry::{protocol_descriptor, resolve_endpoint, LayerMode};
-use crate::protocol_model::{Component, EndpointModel, OuterSecurity, ProxyProtocol, TransportMethod};
+use crate::protocol_model::{BaseCarrier, Component, EndpointModel, OuterSecurity, ProxyProtocol, TransportMethod};
 use crate::{ClientFormat, Transport};
 
 // ---------------------------------------------------------------------------
@@ -386,6 +386,10 @@ impl ClientConfigValues {
 
     fn has_component(&self, component: Component) -> bool {
         self.endpoint.has_component(component)
+    }
+
+    fn base_carrier(&self) -> BaseCarrier {
+        self.endpoint.base_carrier
     }
 }
 
@@ -827,8 +831,8 @@ fn singbox_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
     }
 
     let tls = if vals.has_tls {
-        match vals.transport {
-            Transport::Reality => Some(SingBoxTls {
+        match vals.outer_security() {
+            Some(OuterSecurity::Reality) => Some(SingBoxTls {
                 enabled: true,
                 server_name: &vals.servername,
                 insecure: None,
@@ -842,7 +846,7 @@ fn singbox_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
                     short_id: &vals.short_id,
                 }),
             }),
-            _ => Some(SingBoxTls {
+            Some(OuterSecurity::Tls) => Some(SingBoxTls {
                 enabled: true,
                 server_name: &vals.servername,
                 insecure: Some(true),
@@ -852,6 +856,7 @@ fn singbox_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
                 }),
                 reality: None,
             }),
+            None => None,
         }
     } else {
         None
@@ -1173,32 +1178,24 @@ fn xray_format(server_host: &str, client_name: &str, vals: &ClientConfigValues) 
     }
 
     // Network name mapping: wrongsv transport → Xray network string
-    let xray_network: &str = match vals.transport {
-        Transport::Raw
-        | Transport::Tls
-        | Transport::AnyTls
-        | Transport::Reality
-        | Transport::ShadowTls => "tcp",
-        Transport::WebSocket => "ws",
-        Transport::Grpc => "grpc",
-        Transport::HttpUpgrade => "httpupgrade",
-        Transport::Xhttp => "xhttp",
-        Transport::Quic | Transport::WebTransport => "quic",
-        Transport::Kcp => "mkcp",
-        Transport::Meek | Transport::GdocsViewer => "tcp",
-        Transport::WireGuard => "tcp",
-        Transport::Vmess => unreachable!("VMess handled above"),
+    let xray_network: &str = match vals.transport_method() {
+        Some(TransportMethod::WebSocket) => "ws",
+        Some(TransportMethod::Grpc) => "grpc",
+        Some(TransportMethod::HttpUpgrade) => "httpupgrade",
+        Some(TransportMethod::Xhttp) => "xhttp",
+        Some(TransportMethod::Quic) | Some(TransportMethod::WebTransport) => "quic",
+        Some(TransportMethod::Kcp) => "mkcp",
+        Some(TransportMethod::Meek) | Some(TransportMethod::GdocsViewer) | None => "tcp",
     };
 
-    let security: Option<&str> = match vals.transport {
-        Transport::Reality => Some("reality"),
-        Transport::Tls | Transport::AnyTls | Transport::ShadowTls => Some("tls"),
-        _ if vals.has_tls => Some("tls"),
+    let security: Option<&str> = match vals.outer_security() {
+        Some(OuterSecurity::Reality) => Some("reality"),
+        Some(OuterSecurity::Tls) => Some("tls"),
         _ => None,
     };
 
-    let reality_settings = match vals.transport {
-        Transport::Reality => Some(XrayRealitySettings {
+    let reality_settings = match vals.outer_security() {
+        Some(OuterSecurity::Reality) => Some(XrayRealitySettings {
             server_name: &vals.servername,
             fingerprint: "chrome",
             public_key: &vals.x25519_pk,
@@ -1207,13 +1204,8 @@ fn xray_format(server_host: &str, client_name: &str, vals: &ClientConfigValues) 
         _ => None,
     };
 
-    let tls_settings = match vals.transport {
-        Transport::Tls | Transport::AnyTls | Transport::ShadowTls => Some(XrayTlsSettings {
-            server_name: &vals.servername,
-            fingerprint: "chrome",
-            allow_insecure: true,
-        }),
-        _ if vals.has_tls && vals.transport != Transport::Reality => Some(XrayTlsSettings {
+    let tls_settings = match vals.outer_security() {
+        Some(OuterSecurity::Tls) => Some(XrayTlsSettings {
             server_name: &vals.servername,
             fingerprint: "chrome",
             allow_insecure: true,
@@ -1221,22 +1213,22 @@ fn xray_format(server_host: &str, client_name: &str, vals: &ClientConfigValues) 
         _ => None,
     };
 
-    let ws_settings = match vals.transport {
-        Transport::WebSocket => Some(XrayWsSettings {
+    let ws_settings = match vals.transport_method() {
+        Some(TransportMethod::WebSocket) => Some(XrayWsSettings {
             path: &vals.ws_path,
         }),
         _ => None,
     };
 
-    let grpc_settings = match vals.transport {
-        Transport::Grpc => Some(XrayGrpcSettings {
+    let grpc_settings = match vals.transport_method() {
+        Some(TransportMethod::Grpc) => Some(XrayGrpcSettings {
             service_name: &vals.grpc_service_name,
         }),
         _ => None,
     };
 
-    let kcp_settings = match vals.transport {
-        Transport::Kcp => Some(XrayKcpSettings {
+    let kcp_settings = match vals.transport_method() {
+        Some(TransportMethod::Kcp) => Some(XrayKcpSettings {
             mtu: vals.kcp_mtu,
             tti: vals.kcp_tti,
             uplink_capacity: 5,
@@ -1245,8 +1237,8 @@ fn xray_format(server_host: &str, client_name: &str, vals: &ClientConfigValues) 
         _ => None,
     };
 
-    let finalmask = match vals.transport {
-        Transport::Kcp => {
+    let finalmask = match vals.transport_method() {
+        Some(TransportMethod::Kcp) => {
             let udp = if vals.kcp_seed.is_empty() {
                 vec![XrayFinalMaskEntry {
                     mask_type: "mkcp-original",
@@ -1265,26 +1257,28 @@ fn xray_format(server_host: &str, client_name: &str, vals: &ClientConfigValues) 
         _ => None,
     };
 
-    let quic_settings = match vals.transport {
-        Transport::Quic | Transport::WebTransport => Some(XrayQuicSettings {
+    let quic_settings = match vals.transport_method() {
+        Some(TransportMethod::Quic) | Some(TransportMethod::WebTransport) => {
+            Some(XrayQuicSettings {
             security: "none",
             key: "",
             header: XrayQuicHeader {
                 header_type: "none",
             },
-        }),
+        })
+        }
         _ => None,
     };
 
-    let httpupgrade_settings = match vals.transport {
-        Transport::HttpUpgrade => Some(XrayHttpUpgradeSettings {
+    let httpupgrade_settings = match vals.transport_method() {
+        Some(TransportMethod::HttpUpgrade) => Some(XrayHttpUpgradeSettings {
             path: &vals.ws_path,
         }),
         _ => None,
     };
 
-    let xhttp_settings = match vals.transport {
-        Transport::Xhttp => Some(XrayXhttpSettings {
+    let xhttp_settings = match vals.transport_method() {
+        Some(TransportMethod::Xhttp) => Some(XrayXhttpSettings {
             path: &vals.xhttp_path,
             host: &vals.xhttp_host,
             mode: "stream-one",
@@ -1406,8 +1400,8 @@ fn hiddify_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
     }
 
     let tls = if vals.has_tls {
-        match vals.transport {
-            Transport::Reality => Some(SingBoxTls {
+        match vals.outer_security() {
+            Some(OuterSecurity::Reality) => Some(SingBoxTls {
                 enabled: true,
                 server_name: &vals.servername,
                 insecure: None,
@@ -1421,7 +1415,7 @@ fn hiddify_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
                     short_id: &vals.short_id,
                 }),
             }),
-            _ => Some(SingBoxTls {
+            Some(OuterSecurity::Tls) => Some(SingBoxTls {
                 enabled: true,
                 server_name: &vals.servername,
                 insecure: Some(true),
@@ -1431,41 +1425,42 @@ fn hiddify_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
                 }),
                 reality: None,
             }),
+            None => None,
         }
     } else {
         None
     };
 
-    let network: Option<&str> = match vals.transport {
-        Transport::Quic | Transport::Kcp => None,
-        _ => Some(match vals.transport {
-            Transport::Kcp => "udp",
+    let network: Option<&str> = match vals.transport_method() {
+        Some(TransportMethod::Quic) | Some(TransportMethod::Kcp) => None,
+        _ => Some(match vals.base_carrier() {
+            BaseCarrier::Udp => "udp",
             _ => "tcp",
         }),
     };
 
     let packet_encoding: Option<&str> = Some("packetaddr");
 
-    let transport: Option<serde_json::Value> = match vals.transport {
-        Transport::WebSocket => serde_json::to_value(SingBoxWsTransport {
+    let transport: Option<serde_json::Value> = match vals.transport_method() {
+        Some(TransportMethod::WebSocket) => serde_json::to_value(SingBoxWsTransport {
             transport_type: "ws",
             path: Some(&vals.ws_path),
         })
         .ok(),
-        Transport::HttpUpgrade => serde_json::to_value(SingBoxWsTransport {
+        Some(TransportMethod::HttpUpgrade) => serde_json::to_value(SingBoxWsTransport {
             transport_type: "httpupgrade",
             path: Some(&vals.ws_path),
         })
         .ok(),
-        Transport::Grpc => serde_json::to_value(SingBoxGrpcTransport {
+        Some(TransportMethod::Grpc) => serde_json::to_value(SingBoxGrpcTransport {
             transport_type: "grpc",
             service_name: &vals.grpc_service_name,
         })
         .ok(),
-        Transport::Quic | Transport::WebTransport => {
+        Some(TransportMethod::Quic) | Some(TransportMethod::WebTransport) => {
             serde_json::to_value(serde_json::json!({"type": "quic"})).ok()
         }
-        Transport::Xhttp => {
+        Some(TransportMethod::Xhttp) => {
             let host = if vals.xhttp_host.is_empty() {
                 vec![]
             } else {
