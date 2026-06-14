@@ -30,6 +30,7 @@ pub(crate) struct ClientConfigValues {
     pub shadowtls_password: String,
     pub wireguard_private_key: String,
     pub wireguard_public_key: String,
+    pub wireguard_preshared_key: Option<String>,
     pub wireguard_client_ip: String,
     pub wireguard_allowed_ips: Vec<String>,
     pub wireguard_mtu: u32,
@@ -163,6 +164,11 @@ pub(crate) fn resolve_client_values(
                 .and_then(|wg| wg.peers.first())
                 .map(|peer| peer.public_key.clone())
                 .unwrap_or_default();
+            let wireguard_preshared_key = cfg
+                .wireguard
+                .as_ref()
+                .and_then(|wg| wg.peers.first())
+                .and_then(|peer| peer.preshared_key.clone());
             let wireguard_client_ip = cfg
                 .wireguard
                 .as_ref()
@@ -232,6 +238,7 @@ pub(crate) fn resolve_client_values(
                 shadowtls_password,
                 wireguard_private_key,
                 wireguard_public_key,
+                wireguard_preshared_key,
                 wireguard_client_ip,
                 wireguard_allowed_ips,
                 wireguard_mtu,
@@ -279,6 +286,7 @@ pub(crate) fn resolve_client_values(
             shadowtls_password: String::new(),
             wireguard_private_key: String::new(),
             wireguard_public_key: String::new(),
+            wireguard_preshared_key: None,
             wireguard_client_ip: "10.66.66.2/32".to_string(),
             wireguard_allowed_ips: vec!["10.66.66.1/32".to_string()],
             wireguard_mtu: 1400,
@@ -299,13 +307,51 @@ pub(crate) fn generate_client_config(
     server_host: &str,
     client_name: &str,
     vals: &ClientConfigValues,
-) -> String {
-    match format {
+) -> Result<String, String> {
+    validate_client_format_support(format, vals)?;
+    Ok(match format {
         ClientFormat::Mihomo => mihomo_format(server_host, client_name, vals),
         ClientFormat::SingBox => singbox_format(server_host, client_name, vals),
         ClientFormat::Xray => xray_format(server_host, client_name, vals),
         ClientFormat::Hiddify => hiddify_format(server_host, client_name, vals),
+    })
+}
+
+fn validate_client_format_support(
+    format: ClientFormat,
+    vals: &ClientConfigValues,
+) -> Result<(), String> {
+    match vals.protocol() {
+        ProxyProtocol::Vless => {
+            if matches!(
+                vals.transport_method(),
+                Some(TransportMethod::Meek | TransportMethod::GdocsViewer)
+            ) && format != ClientFormat::Xray
+            {
+                return Err(format!(
+                    "{:?} transport is only available through the Xray/V2Ray family adapters",
+                    vals.transport_method().unwrap()
+                ));
+            }
+            if vals.transport_method() == Some(TransportMethod::WebTransport)
+                && !matches!(format, ClientFormat::Xray)
+            {
+                return Err("WebTransport export is only implemented for xray-family configs".into());
+            }
+            if vals.transport == Transport::AnyTls
+                && !matches!(format, ClientFormat::SingBox | ClientFormat::Hiddify)
+            {
+                return Err("AnyTLS export is only implemented for sing-box-family configs".into());
+            }
+        }
+        ProxyProtocol::WireGuard => {
+            if format == ClientFormat::Xray {
+                return Err("WireGuard export is not implemented for xray format".into());
+            }
+        }
+        ProxyProtocol::Vmess => {}
     }
+    Ok(())
 }
 
 impl ClientConfigValues {
@@ -438,6 +484,9 @@ struct WireGuardMihomoConfig<'a> {
     private_key: &'a str,
     #[serde(rename = "public-key")]
     public_key: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "pre-shared-key")]
+    pre_shared_key: Option<&'a str>,
     #[serde(rename = "allowed-ips")]
     allowed_ips: &'a [String],
     mtu: u32,
@@ -470,6 +519,7 @@ fn mihomo_format(server_host: &str, client_name: &str, vals: &ClientConfigValues
             ip: &vals.wireguard_client_ip,
             private_key: &vals.wireguard_private_key,
             public_key: &vals.wireguard_public_key,
+            pre_shared_key: vals.wireguard_preshared_key.as_deref(),
             allowed_ips: &vals.wireguard_allowed_ips,
             mtu: vals.wireguard_mtu,
             udp: true,
@@ -689,6 +739,23 @@ struct SingBoxHttpTransport<'a> {
     host: Vec<&'a str>,
 }
 
+#[derive(Serialize)]
+struct SingBoxWireGuardOutbound<'a> {
+    #[serde(rename = "type")]
+    outbound_type: &'a str,
+    tag: &'a str,
+    server: &'a str,
+    server_port: u16,
+    system_interface: bool,
+    gso: bool,
+    local_address: Vec<&'a str>,
+    private_key: &'a str,
+    peer_public_key: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pre_shared_key: Option<&'a str>,
+    mtu: u32,
+}
+
 fn singbox_format(server_host: &str, client_name: &str, vals: &ClientConfigValues) -> String {
     let port: u16 = vals.port.parse().unwrap_or(443);
 
@@ -711,6 +778,33 @@ fn singbox_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
                 listen_port: 10809,
             }],
             outbounds: vec![vmess_outbound, direct_outbound],
+        };
+        return serde_json::to_string_pretty(&config).expect("SingBoxConfig should serialize");
+    }
+    if vals.protocol() == ProxyProtocol::WireGuard {
+        let wireguard_outbound = serde_json::to_value(SingBoxWireGuardOutbound {
+            outbound_type: "wireguard",
+            tag: client_name,
+            server: server_host,
+            server_port: port,
+            system_interface: false,
+            gso: false,
+            local_address: vec![vals.wireguard_client_ip.as_str()],
+            private_key: &vals.wireguard_private_key,
+            peer_public_key: &vals.wireguard_public_key,
+            pre_shared_key: vals.wireguard_preshared_key.as_deref(),
+            mtu: vals.wireguard_mtu,
+        })
+        .expect("SingBoxWireGuardOutbound should serialize");
+        let direct_outbound = serde_json::json!({"type": "direct", "tag": "direct"});
+        let config = SingBoxConfig {
+            inbounds: vec![SingBoxInbound {
+                inbound_type: "mixed".into(),
+                tag: "mixed-in".into(),
+                listen: "127.0.0.1".into(),
+                listen_port: 10809,
+            }],
+            outbounds: vec![wireguard_outbound, direct_outbound],
         };
         return serde_json::to_string_pretty(&config).expect("SingBoxConfig should serialize");
     }
@@ -1250,6 +1344,29 @@ fn hiddify_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
         };
         return serde_json::to_string_pretty(&config).expect("HiddifyConfig should serialize");
     }
+    if vals.protocol() == ProxyProtocol::WireGuard {
+        let wireguard_outbound = serde_json::to_value(SingBoxWireGuardOutbound {
+            outbound_type: "wireguard",
+            tag: client_name,
+            server: server_host,
+            server_port: port,
+            system_interface: false,
+            gso: false,
+            local_address: vec![vals.wireguard_client_ip.as_str()],
+            private_key: &vals.wireguard_private_key,
+            peer_public_key: &vals.wireguard_public_key,
+            pre_shared_key: vals.wireguard_preshared_key.as_deref(),
+            mtu: vals.wireguard_mtu,
+        })
+        .expect("SingBoxWireGuardOutbound should serialize");
+        let direct_outbound = serde_json::json!({"type": "direct", "tag": "direct"});
+        let config = HiddifyConfig {
+            remarks: client_name.to_string(),
+            subscription: String::new(),
+            configs: vec![wireguard_outbound, direct_outbound],
+        };
+        return serde_json::to_string_pretty(&config).expect("HiddifyConfig should serialize");
+    }
 
     if vals.transport_method() == Some(TransportMethod::Xhttp) {
         let xray_config: serde_json::Value =
@@ -1442,6 +1559,7 @@ mod tests {
             shadowtls_password: "shadow-pass".into(),
             wireguard_private_key: "wireguard-private-key".into(),
             wireguard_public_key: "wireguard-public-key".into(),
+            wireguard_preshared_key: Some("wireguard-preshared-key".into()),
             wireguard_client_ip: "10.66.66.2/32".into(),
             wireguard_allowed_ips: vec!["10.66.66.1/32".into()],
             wireguard_mtu: 1400,
@@ -1579,6 +1697,25 @@ mod tests {
         assert!(json.contains(r#""private-key": "wireguard-private-key""#));
         assert!(json.contains(r#""public-key": "wireguard-public-key""#));
         assert!(json.contains(r#""allowed-ips""#));
+    }
+
+    #[test]
+    fn singbox_wireguard_uses_normalized_protocol_model() {
+        let mut vals = test_vals(Transport::WireGuard);
+        vals.endpoint = EndpointModel::from_transport_profile(Transport::WireGuard, true, "");
+        let json = singbox_format("1.2.3.4", "test", &vals);
+        assert!(json.contains(r#""type": "wireguard""#));
+        assert!(json.contains(r#""local_address""#));
+        assert!(json.contains(r#""peer_public_key": "wireguard-public-key""#));
+    }
+
+    #[test]
+    fn xray_wireguard_export_fails_cleanly() {
+        let mut vals = test_vals(Transport::WireGuard);
+        vals.endpoint = EndpointModel::from_transport_profile(Transport::WireGuard, true, "");
+        let err = generate_client_config(ClientFormat::Xray, "1.2.3.4", "test", &vals)
+            .expect_err("wireguard xray export should fail");
+        assert!(err.contains("WireGuard export is not implemented"));
     }
 
     #[test]

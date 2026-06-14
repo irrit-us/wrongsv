@@ -570,6 +570,19 @@ standard xray/v2fly AEAD path. `spawn_vmess_server` remains in
   `cargo test --bin wrongsv -- --nocapture` now includes protocol-model tests
   plus a WireGuard config-generation assertion.
 
+### 2026-06-14 — Capability registry and adapter validation added
+
+- Added `src/endpoint_registry.rs` with machine-readable protocol descriptors,
+  layer modes, and resolved stack summaries aligned to
+  `docs/design_constraint.md` section 8 and section 7.
+- `src/client_config.rs` now performs adapter validation before export so
+  unsupported combinations fail explicitly instead of silently emitting the
+  wrong shape; WireGuard is now exported natively for Mihomo and sing-box-family
+  configs, while unsupported Xray WireGuard export fails with an actionable
+  error.
+- `docs/SETUP.md` was updated to reflect the broader profile override list and
+  the new normalized endpoint-model-driven resolution behavior.
+
 ### 2026-06-13 — ShadowTLS v3 interop fixed for sing-box / Hiddify
 
 - Replaced wrongsv's old exporter-HMAC ShadowTLS path with a ShadowTLS v3 server

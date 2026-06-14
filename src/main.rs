@@ -5,6 +5,7 @@ use tracing::{error, info};
 use wrongsv_server::Config;
 
 mod client_config;
+mod endpoint_registry;
 mod protocol_model;
 
 #[derive(Debug, ValueEnum, Clone, Copy, PartialEq)]
@@ -57,7 +58,7 @@ enum Transport {
     WireGuard,
 }
 
-#[derive(ValueEnum, Clone, Copy, PartialEq)]
+#[derive(Debug, ValueEnum, Clone, Copy, PartialEq)]
 enum ClientFormat {
     /// mihomo / FlClash / v2rayN format (flat keys)
     Mihomo,
@@ -259,7 +260,11 @@ fn main() {
             &cli.server_host,
             &cli.client_name,
             &vals,
-        );
+        )
+        .unwrap_or_else(|e| {
+            error!("failed to generate client config: {e}");
+            process::exit(1);
+        });
         println!("{json}");
         return;
     }
@@ -274,7 +279,11 @@ fn main() {
             &cli.server_host,
             &cli.client_name,
             &vals,
-        );
+        )
+        .unwrap_or_else(|e| {
+            error!("failed to generate client config: {e}");
+            process::exit(1);
+        });
         std::fs::write(path, json).expect("failed to write client config");
         info!("client config written to {path}");
         return;
