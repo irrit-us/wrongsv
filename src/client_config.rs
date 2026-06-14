@@ -1,6 +1,9 @@
 use serde::Serialize;
 
-use crate::endpoint_registry::{protocol_descriptor, resolve_endpoint, ComponentDescriptorSet, LayerMode};
+use crate::endpoint_registry::{
+    protocol_descriptor, resolve_endpoint, ComponentDescriptorSet, LayerMode, ProtocolDescriptor,
+    ResolvedEndpoint,
+};
 use crate::protocol_model::{BaseCarrier, Component, EndpointComponents, EndpointModel, OuterSecurity, ProxyProtocol, TransportMethod};
 use crate::{ClientFormat, Transport};
 
@@ -34,6 +37,22 @@ pub(crate) struct ClientConfigValues {
     pub wireguard_client_ip: String,
     pub wireguard_allowed_ips: Vec<String>,
     pub wireguard_mtu: u32,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct EndpointDiagnostics<'a> {
+    pub descriptor: &'a ProtocolDescriptor,
+    pub resolved: ResolvedEndpoint,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub export: Option<ExportDiagnostics>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ExportDiagnostics {
+    pub format: &'static str,
+    pub supported: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// Resolve values for the generated client config from TOML config or defaults.
@@ -313,6 +332,41 @@ pub(crate) fn generate_client_config(
         ClientFormat::Xray => xray_format(server_host, client_name, vals),
         ClientFormat::Hiddify => hiddify_format(server_host, client_name, vals),
     })
+}
+
+pub(crate) fn build_endpoint_diagnostics(
+    vals: &ClientConfigValues,
+    format: Option<ClientFormat>,
+) -> EndpointDiagnostics<'_> {
+    let descriptor = protocol_descriptor(vals.protocol());
+    let resolved = resolve_endpoint(&vals.endpoint);
+    let export = format.map(|format| match validate_client_format_support(format, vals) {
+        Ok(()) => ExportDiagnostics {
+            format: client_format_name(format),
+            supported: true,
+            error: None,
+        },
+        Err(error) => ExportDiagnostics {
+            format: client_format_name(format),
+            supported: false,
+            error: Some(error),
+        },
+    });
+
+    EndpointDiagnostics {
+        descriptor,
+        resolved,
+        export,
+    }
+}
+
+fn client_format_name(format: ClientFormat) -> &'static str {
+    match format {
+        ClientFormat::Mihomo => "mihomo",
+        ClientFormat::SingBox => "sing-box",
+        ClientFormat::Xray => "xray",
+        ClientFormat::Hiddify => "hiddify",
+    }
 }
 
 fn validate_client_format_support(
@@ -1763,6 +1817,32 @@ mod tests {
         let err = generate_client_config(ClientFormat::Mihomo, "1.2.3.4", "test", &vals)
             .expect_err("unsupported component category should fail");
         assert!(err.contains("supported network component"));
+    }
+
+    #[test]
+    fn diagnostics_include_resolved_stack_and_export_support() {
+        let vals = test_vals(Transport::Reality);
+        let diagnostics = build_endpoint_diagnostics(&vals, Some(ClientFormat::Mihomo));
+        assert_eq!(diagnostics.descriptor.display_name, "VLESS");
+        assert!(diagnostics.resolved.stack_summary.contains("REALITY"));
+        assert_eq!(diagnostics.export.as_ref().map(|item| item.supported), Some(true));
+        let json = serde_json::to_value(&diagnostics).expect("diagnostics should serialize");
+        assert_eq!(json["descriptor"]["id"], "vless");
+        assert_eq!(json["resolved"]["outer_security"], "reality");
+    }
+
+    #[test]
+    fn diagnostics_report_export_failure() {
+        let mut vals = test_vals(Transport::WireGuard);
+        vals.endpoint = EndpointModel::from_transport_profile(Transport::WireGuard, true, "");
+        let diagnostics = build_endpoint_diagnostics(&vals, Some(ClientFormat::Xray));
+        let export = diagnostics.export.expect("export diagnostics should be present");
+        assert!(!export.supported);
+        assert!(export
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("WireGuard export is not implemented"));
     }
 
     #[test]

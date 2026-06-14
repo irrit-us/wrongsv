@@ -132,6 +132,10 @@ struct Cli {
     #[arg(long)]
     print_client_config: bool,
 
+    /// Print normalized endpoint diagnostics JSON to stdout
+    #[arg(long)]
+    print_endpoint_diagnostics: bool,
+
     /// Server hostname or IP for the generated client config
     #[arg(long, default_value = "YOUR_SERVER_IP")]
     server_host: String,
@@ -263,6 +267,20 @@ fn main() {
         )
         .unwrap_or_else(|e| {
             error!("failed to generate client config: {e}");
+            process::exit(1);
+        });
+        println!("{json}");
+        return;
+    }
+    if cli.print_endpoint_diagnostics {
+        let vals = client_config::resolve_client_values(
+            cli.config.as_deref(),
+            cli.transport,
+            &cli.servername,
+        );
+        let diagnostics = client_config::build_endpoint_diagnostics(&vals, Some(cli.format));
+        let json = serde_json::to_string_pretty(&diagnostics).unwrap_or_else(|e| {
+            error!("failed to serialize endpoint diagnostics: {e}");
             process::exit(1);
         });
         println!("{json}");

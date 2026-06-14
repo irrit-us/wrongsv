@@ -1,10 +1,13 @@
+use serde::Serialize;
+
 use crate::protocol_model::{
     BaseCarrier, Component, EndpointComponents, EndpointModel, OuterSecurity, PayloadNetwork,
     ProtocolInternalSecurity, ProxyProtocol, TransportMethod,
 };
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub(crate) enum LayerMode {
     Selectable,
     Fixed,
@@ -12,7 +15,7 @@ pub(crate) enum LayerMode {
     BackendDefined,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) struct LayerDescriptor<T: Copy + 'static> {
     pub mode: LayerMode,
     pub supported: &'static [T],
@@ -20,14 +23,14 @@ pub(crate) struct LayerDescriptor<T: Copy + 'static> {
     pub fixed_value: Option<T>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) struct PayloadDescriptor {
     pub supported: &'static [PayloadNetwork],
     pub default: &'static [PayloadNetwork],
     pub user_configurable: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) struct ComponentDescriptorSet {
     pub camouflage: &'static [Component],
     pub ingress: &'static [Component],
@@ -35,7 +38,7 @@ pub(crate) struct ComponentDescriptorSet {
     pub network: &'static [Component],
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) struct ProtocolDescriptor {
     pub id: ProxyProtocol,
     pub display_name: &'static str,
@@ -46,7 +49,7 @@ pub(crate) struct ProtocolDescriptor {
     pub components: ComponentDescriptorSet,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct ResolvedEndpoint {
     pub protocol: ProxyProtocol,
     pub payload_networks: Vec<PayloadNetwork>,

@@ -1,58 +1,84 @@
+use serde::Serialize;
+
 use crate::Transport;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum ProxyProtocol {
+    #[serde(rename = "vless")]
     Vless,
+    #[serde(rename = "vmess")]
     Vmess,
+    #[serde(rename = "wireguard")]
     WireGuard,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum PayloadNetwork {
+    #[serde(rename = "tcp")]
     Tcp,
+    #[serde(rename = "udp")]
     Udp,
+    #[serde(rename = "ip")]
     Ip,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum TransportMethod {
+    #[serde(rename = "websocket")]
     WebSocket,
+    #[serde(rename = "httpupgrade")]
     HttpUpgrade,
+    #[serde(rename = "grpc")]
     Grpc,
+    #[serde(rename = "xhttp")]
     Xhttp,
+    #[serde(rename = "meek")]
     Meek,
+    #[serde(rename = "gdocsviewer")]
     GdocsViewer,
+    #[serde(rename = "quic")]
     Quic,
+    #[serde(rename = "kcp")]
     Kcp,
+    #[serde(rename = "webtransport")]
     WebTransport,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum OuterSecurity {
+    #[serde(rename = "tls")]
     Tls,
+    #[serde(rename = "reality")]
     Reality,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum ProtocolInternalSecurity {
+    #[serde(rename = "vmess_aead")]
     VmessAead,
+    #[serde(rename = "wireguard_noise")]
     WireGuardNoise,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum BaseCarrier {
+    #[serde(rename = "tcp")]
     Tcp,
+    #[serde(rename = "udp")]
     Udp,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum Component {
+    #[serde(rename = "vision")]
     Vision,
+    #[serde(rename = "anytls")]
     AnyTls,
+    #[serde(rename = "shadowtls")]
     ShadowTls,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub(crate) struct EndpointComponents {
     pub camouflage: Vec<Component>,
     pub ingress: Vec<Component>,
