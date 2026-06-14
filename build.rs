@@ -1,12 +1,10 @@
 //! Compile-time random config generation.
 //!
 //! Generates a random UUID, listen port, X25519 keypair (for REALITY),
-//! short ID, and Kyber keypair. Values are embedded via `env!("BUILD_*")`
-//! so the server binary runs with zero arguments.
+//! and short ID. Values are embedded via `env!("BUILD_*")` so the server
+//! binary runs with zero arguments.
 
 use base64::Engine;
-use ml_kem::Kem;
-use ml_kem::kem::KeyExport;
 use rand::RngCore;
 
 fn main() {
@@ -63,23 +61,6 @@ fn main() {
         .collect();
     println!("cargo:rustc-env=BUILD_X25519_PK={x25519_pk_b64}");
     println!("cargo:rustc-env=BUILD_X25519_SK={x25519_sk_hex}");
-
-    // -- Kyber keypair (ML-KEM-512) --
-    let (dk, ek) = ml_kem::MlKem512::generate_keypair();
-    let kyber_sk_seed = dk.to_seed().expect("key generated from seed");
-    let kyber_sk_hex: String = kyber_sk_seed
-        .as_slice()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    let kyber_pk_hex: String = ek
-        .to_bytes()
-        .as_slice()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    println!("cargo:rustc-env=BUILD_KYBER_SK_HEX={kyber_sk_hex}");
-    println!("cargo:rustc-env=BUILD_KYBER_PK_HEX={kyber_pk_hex}");
 
     // Re-run only when build.rs itself changes
     println!("cargo:rerun-if-changed=build.rs");

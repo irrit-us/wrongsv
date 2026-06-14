@@ -139,12 +139,7 @@ pub fn connect_vmess(
     sock.write_all(&header_payload)?;
 
     // ── Read response ────────────────────────────────────────────────
-    match vmess::read_response(
-        &body_key,
-        &body_iv,
-        request.response_header,
-        &mut sock,
-    ) {
+    match vmess::read_response(&body_key, &body_iv, request.response_header, &mut sock) {
         Ok(()) => {}
         Err(e) => {
             return Err(io::Error::new(

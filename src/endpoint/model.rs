@@ -20,6 +20,8 @@ pub(crate) enum ProxyProtocol {
     Mixed,
     #[serde(rename = "wireguard")]
     WireGuard,
+    #[serde(rename = "naive")]
+    Naive,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -54,6 +56,8 @@ pub(crate) enum TransportMethod {
     Kcp,
     #[serde(rename = "webtransport")]
     WebTransport,
+    #[serde(rename = "h2-connect")]
+    H2Connect,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -96,6 +100,12 @@ pub(crate) enum Component {
     HysteriaSalamander,
     #[serde(rename = "hysteria-gecko")]
     HysteriaGecko,
+    #[serde(rename = "fallback-destination")]
+    FallbackDestination,
+    #[serde(rename = "routed-tunnel")]
+    RoutedTunnel,
+    #[serde(rename = "naive-padding")]
+    NaivePadding,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
@@ -194,6 +204,15 @@ impl EndpointModel {
                 payload_networks: vec![PayloadNetwork::Tcp],
                 transport: None,
                 outer_security: None,
+                protocol_internal_security: None,
+                base_carriers: vec![BaseCarrier::Tcp],
+                components: EndpointComponents::default(),
+            },
+            Transport::Naive => EndpointModel {
+                protocol: ProxyProtocol::Naive,
+                payload_networks: vec![PayloadNetwork::Tcp],
+                transport: Some(TransportMethod::H2Connect),
+                outer_security: Some(OuterSecurity::Tls),
                 protocol_internal_security: None,
                 base_carriers: vec![BaseCarrier::Tcp],
                 components: EndpointComponents::default(),
@@ -346,7 +365,10 @@ mod tests {
         assert_eq!(model.base_carriers, vec![BaseCarrier::Tcp]);
         assert_eq!(model.transport, Some(TransportMethod::Raw));
         assert_eq!(model.outer_security, None);
-        assert_eq!(model.payload_networks, vec![PayloadNetwork::Tcp, PayloadNetwork::Udp]);
+        assert_eq!(
+            model.payload_networks,
+            vec![PayloadNetwork::Tcp, PayloadNetwork::Udp]
+        );
     }
 
     #[test]
@@ -361,7 +383,10 @@ mod tests {
     fn wireguard_exposes_ip_payloads() {
         let model = EndpointModel::from_profile(Transport::WireGuard, None, "");
         assert_eq!(model.protocol, ProxyProtocol::WireGuard);
-        assert_eq!(model.protocol_internal_security, Some(ProtocolInternalSecurity::WireGuardNoise));
+        assert_eq!(
+            model.protocol_internal_security,
+            Some(ProtocolInternalSecurity::WireGuardNoise)
+        );
         assert_eq!(model.payload_networks, vec![PayloadNetwork::Ip]);
         assert_eq!(model.base_carriers, vec![BaseCarrier::Udp]);
     }

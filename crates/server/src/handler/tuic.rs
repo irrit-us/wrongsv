@@ -212,7 +212,7 @@ pub(crate) fn parse_tuic_config(cfg: &TuicServerConfig) -> Result<TuicConfig, St
             (cert, key)
         }
     };
-    let tls_config = build_tuic_tls_config(&cert_pem, &key_pem)?;
+    let tls_config = build_tuic_tls_config(&cert_pem, &key_pem, cfg.zero_rtt_handshake)?;
     let quic_config =
         build_tuic_quic_config(tls_config, cfg.congestion_control.as_str(), cfg.heartbeat)?;
     let users = cfg
@@ -243,10 +243,17 @@ pub(crate) fn parse_tuic_config(cfg: &TuicServerConfig) -> Result<TuicConfig, St
     })
 }
 
-fn build_tuic_tls_config(cert_pem: &str, key_pem: &str) -> Result<rustls::ServerConfig, String> {
+fn build_tuic_tls_config(
+    cert_pem: &str,
+    key_pem: &str,
+    enable_0rtt: bool,
+) -> Result<rustls::ServerConfig, String> {
     let mut config = wrongsv_anytls::build_tls_config(cert_pem, key_pem)
         .map_err(|e| format!("tuic tls config: {e}"))?;
     config.alpn_protocols = vec![b"h3".to_vec()];
+    // QUIC permits only 0 or u32::MAX for max_early_data_size; the former
+    // disables 0-RTT, the latter enables it.
+    config.max_early_data_size = if enable_0rtt { u32::MAX } else { 0 };
     Ok(config)
 }
 
@@ -361,11 +368,22 @@ async fn handle_tuic_connection(
 
     let tcp_task = tokio::spawn(async move { drive_tuic_tcp(tcp_conn, tcp_tap).await });
     let uni_task = tokio::spawn(async move {
-        drive_tuic_uni(uni_conn, udp_sessions_for_uni, packet_assemblies_for_uni, uni_tap).await
+        drive_tuic_uni(
+            uni_conn,
+            udp_sessions_for_uni,
+            packet_assemblies_for_uni,
+            uni_tap,
+        )
+        .await
     });
     let udp_task = tokio::spawn(async move {
-        drive_tuic_datagrams(udp_conn, udp_sessions_for_udp, packet_assemblies_for_udp, udp_tap)
-            .await
+        drive_tuic_datagrams(
+            udp_conn,
+            udp_sessions_for_udp,
+            packet_assemblies_for_udp,
+            udp_tap,
+        )
+        .await
     });
 
     let (tcp_result, uni_result, udp_result) = tokio::join!(tcp_task, uni_task, udp_task);
@@ -1062,7 +1080,7 @@ mod tests {
     fn test_config() -> TuicConfig {
         ensure_rustls_provider();
         let (cert, key) = wrongsv_anytls::generate_self_signed_cert().unwrap();
-        let tls = build_tuic_tls_config(&cert, &key).unwrap();
+        let tls = build_tuic_tls_config(&cert, &key, false).unwrap();
         TuicConfig {
             users: vec![TuicUser {
                 uuid: wrongsv_uuid::Uuid::parse_string("12345678-1234-1234-1234-123456789abc")
@@ -1139,5 +1157,15 @@ mod tests {
             }
             _ => panic!("unexpected command"),
         }
+    }
+
+    #[test]
+    fn tuic_tls_config_toggles_0rtt_via_zero_rtt_handshake() {
+        ensure_rustls_provider();
+        let (cert, key) = wrongsv_anytls::generate_self_signed_cert().unwrap();
+        let off = build_tuic_tls_config(&cert, &key, false).unwrap();
+        let on = build_tuic_tls_config(&cert, &key, true).unwrap();
+        assert_eq!(off.max_early_data_size, 0);
+        assert_eq!(on.max_early_data_size, u32::MAX);
     }
 }

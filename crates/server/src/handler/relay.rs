@@ -599,7 +599,6 @@ mod tests {
             }],
             decryption: None,
             flow: None,
-            kyber_secret_key: None,
             reality: None,
             anytls: None,
             tls: None,
@@ -620,6 +619,7 @@ mod tests {
             webtransport: None,
             shadowtls: None,
             vmess: None,
+            naive: None,
             metrics: None,
         }
     }
@@ -664,10 +664,7 @@ mod tests {
         let user = test_user(XRV);
         let validator = test_validator(user.clone());
         let request = test_request(user, RequestCommand::Tcp);
-        let addons = Addons {
-            flow: XRV.into(),
-            ..Default::default()
-        };
+        let addons = Addons { flow: XRV.into() };
         let body = b"pipelined-request-body";
         let peer: std::net::SocketAddr = "127.0.0.1:10000".parse().unwrap();
 

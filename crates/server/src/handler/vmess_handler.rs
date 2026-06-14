@@ -102,7 +102,8 @@ pub(crate) fn handle_vmess_connection(
     }
 
     // ── Send response auth ─────────────────────────────────────────────
-    let resp_payload = vmess::build_response(&instr.body_key, &instr.body_iv, instr.response_header)?;
+    let resp_payload =
+        vmess::build_response(&instr.body_key, &instr.body_iv, instr.response_header)?;
     sock.write_all(&resp_payload)?;
 
     // ── Relay ──────────────────────────────────────────────────────────

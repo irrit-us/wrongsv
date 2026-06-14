@@ -1,7 +1,9 @@
 use serde::Serialize;
 
-use crate::endpoint::{protocol_descriptor, resolve_endpoint, ProtocolDescriptor, ResolvedEndpoint};
 use crate::ClientFormat;
+use crate::endpoint::{
+    ProtocolDescriptor, ResolvedEndpoint, protocol_descriptor, resolve_endpoint,
+};
 
 use super::{ClientConfigValues, validate_client_format_support};
 
@@ -27,18 +29,20 @@ pub(crate) fn build_endpoint_diagnostics(
 ) -> EndpointDiagnostics<'_> {
     let descriptor = protocol_descriptor(vals.protocol());
     let resolved = resolve_endpoint(&vals.endpoint);
-    let export = format.map(|format| match validate_client_format_support(format, vals) {
-        Ok(()) => ExportDiagnostics {
-            format: client_format_name(format),
-            supported: true,
-            error: None,
+    let export = format.map(
+        |format| match validate_client_format_support(format, vals) {
+            Ok(()) => ExportDiagnostics {
+                format: client_format_name(format),
+                supported: true,
+                error: None,
+            },
+            Err(error) => ExportDiagnostics {
+                format: client_format_name(format),
+                supported: false,
+                error: Some(error),
+            },
         },
-        Err(error) => ExportDiagnostics {
-            format: client_format_name(format),
-            supported: false,
-            error: Some(error),
-        },
-    });
+    );
 
     EndpointDiagnostics {
         descriptor,

@@ -101,7 +101,6 @@ fn encode_vless_request(
         &request,
         &Addons {
             flow: String::new(),
-            ..Default::default()
         },
     )
     .unwrap();

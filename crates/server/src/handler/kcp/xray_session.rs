@@ -163,7 +163,9 @@ impl XrayKcpSession {
         let tti = config.tti.max(1);
         let mtu = config.mtu.max(DATA_SEGMENT_OVERHEAD + 1);
         let packet_overhead = config.packet_overhead;
-        let mss = mtu.saturating_sub(packet_overhead + DATA_SEGMENT_OVERHEAD).max(1);
+        let mss = mtu
+            .saturating_sub(packet_overhead + DATA_SEGMENT_OVERHEAD)
+            .max(1);
         let send_inflight_size =
             inflight_size(config.uplink_capacity.max(1), mtu as u32, tti).max(8);
         let recv_window_size =
@@ -206,7 +208,10 @@ impl XrayKcpSession {
     }
 
     pub(super) fn can_accept_application_data(&self) -> bool {
-        matches!(self.state, SessionState::Active | SessionState::ReadyToClose)
+        matches!(
+            self.state,
+            SessionState::Active | SessionState::ReadyToClose
+        )
     }
 
     pub(super) fn mark_application_write_closed(&mut self, current: u32) {
@@ -246,7 +251,8 @@ impl XrayKcpSession {
             return output;
         }
 
-        if self.state == SessionState::Active && current.wrapping_sub(self.last_incoming) >= 30_000 {
+        if self.state == SessionState::Active && current.wrapping_sub(self.last_incoming) >= 30_000
+        {
             self.mark_application_write_closed(current);
         }
         if self.app_write_closed
@@ -306,9 +312,7 @@ impl XrayKcpSession {
             timestamp: seg.timestamp,
         });
 
-        self.recv_packets
-            .entry(seg.number)
-            .or_insert(seg.payload);
+        self.recv_packets.entry(seg.number).or_insert(seg.payload);
         self.promote_received();
     }
 
@@ -332,7 +336,8 @@ impl XrayKcpSession {
         }
 
         if removed && current.wrapping_sub(seg.timestamp) < MAX_RTO {
-            self.round_trip.update(current.wrapping_sub(seg.timestamp), current);
+            self.round_trip
+                .update(current.wrapping_sub(seg.timestamp), current);
         }
         self.update_first_unacked();
     }
@@ -345,9 +350,7 @@ impl XrayKcpSession {
                 SessionState::Active | SessionState::PeerClosed => {
                     self.set_state(SessionState::PeerTerminating, current)
                 }
-                SessionState::ReadyToClose => {
-                    self.set_state(SessionState::Terminating, current)
-                }
+                SessionState::ReadyToClose => self.set_state(SessionState::Terminating, current),
                 SessionState::Terminating => self.set_state(SessionState::Terminated, current),
                 _ => {}
             }
@@ -413,7 +416,11 @@ impl XrayKcpSession {
 
             output.push(serialize_ack(
                 self.conv,
-                if self.state == SessionState::ReadyToClose { 1 } else { 0 },
+                if self.state == SessionState::ReadyToClose {
+                    1
+                } else {
+                    0
+                },
                 self.recv_next_number.wrapping_add(self.recv_window_size),
                 self.recv_next_number,
                 timestamp,
@@ -450,7 +457,11 @@ impl XrayKcpSession {
             seg.transmit = seg.transmit.saturating_add(1);
             output.push(serialize_data(
                 self.conv,
-                if self.state == SessionState::ReadyToClose { 1 } else { 0 },
+                if self.state == SessionState::ReadyToClose {
+                    1
+                } else {
+                    0
+                },
                 current,
                 seg.number,
                 sending_next,
@@ -492,7 +503,11 @@ impl XrayKcpSession {
         serialize_cmd(
             self.conv,
             cmd,
-            if self.state == SessionState::ReadyToClose { 1 } else { 0 },
+            if self.state == SessionState::ReadyToClose {
+                1
+            } else {
+                0
+            },
             self.first_unacked,
             self.recv_next_number,
             self.round_trip.timeout(),

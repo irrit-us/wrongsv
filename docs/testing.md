@@ -1,4 +1,4 @@
-# TESTING.md — wrongsv test procedures
+# testing.md — wrongsv test procedures
 
 ## Quick suite
 
@@ -14,7 +14,6 @@ cargo fmt --all -- --check                    # verify formatting
 cargo test -p wrongsv-reality
 cargo test -p wrongsv-anytls
 cargo test -p wrongsv-shadowsocks
-cargo test -p wrongsv-kyber
 cargo test -p wrongsv-vless
 cargo test -p wrongsv-vless-encoding
 cargo test -p wrongsv-encryption
@@ -66,7 +65,7 @@ cargo test --test anytls_tests
 
 # Covers: basic echo, Vision relay, 4KB/16KB payloads, UDP relay,
 # auth failure (with/without fallback), custom TLS certs, padding
-# schemes, multi-user, concurrent connections, Kyber + AnyTLS combo
+# schemes, multi-user, concurrent connections
 ```
 
 ## Lifecycle tests (external clients)

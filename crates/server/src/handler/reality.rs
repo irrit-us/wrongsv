@@ -33,7 +33,6 @@ pub(crate) fn parse_reality_config(
 pub(crate) fn handle_reality_connection(
     stream: TcpStream,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     reality_config: &wrongsv_reality::RealityConfig,
     metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -114,7 +113,6 @@ pub(crate) fn handle_reality_connection(
         "{peer} flow={} use_vision={use_vision}",
         decoded.addons.flow
     );
-    handle_kyber_addons(peer, &decoded, kyber_sk);
     validate_vless_command(request, use_vision)?;
 
     let resp_buf = response_header_buf(request)?;

@@ -23,3 +23,6 @@ TASK_LIST.md
 # Claude Code session artifacts (plans, worktrees)
 .claude/
 plans/
+
+# Go helper build artifacts
+helpers/wireguard-service-bridge/wireguard-service-bridge

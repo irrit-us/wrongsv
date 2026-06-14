@@ -13,7 +13,6 @@ members = [
     "crates/vless",
     "crates/encryption",
     "crates/server",
-    "crates/kyber",
     "crates/reality",
     "crates/anytls",
     "crates/shadowsocks",
@@ -37,7 +36,6 @@ wrongsv-vless-encoding = { path = "crates/vless-encoding" }
 wrongsv-vless = { path = "crates/vless" }
 wrongsv-encryption = { path = "crates/encryption" }
 wrongsv-server = { path = "crates/server" }
-wrongsv-kyber = { path = "crates/kyber" }
 wrongsv-reality = { path = "crates/reality" }
 wrongsv-anytls = { path = "crates/anytls" }
 wrongsv-shadowsocks = { path = "crates/shadowsocks" }
@@ -85,7 +83,6 @@ toml.workspace = true
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 rand = "0.8"
 base64.workspace = true
-ml-kem = { version = "0.3", features = ["getrandom"] }
 
 [dev-dependencies]
 serde_json = "1"
@@ -96,7 +93,6 @@ wrongsv-vless-encoding.workspace = true
 wrongsv-vless.workspace = true
 wrongsv-net-types.workspace = true
 wrongsv-server.workspace = true
-wrongsv-kyber.workspace = true
 wrongsv-reality.workspace = true
 wrongsv-anytls.workspace = true
 wrongsv-shadowsocks.workspace = true

@@ -48,10 +48,8 @@ udp = false
     let _handle = server.spawn();
     thread::sleep(Duration::from_millis(100));
 
-    let result = TcpStream::connect_timeout(
-        &metrics_addr.parse().unwrap(),
-        Duration::from_millis(200),
-    );
+    let result =
+        TcpStream::connect_timeout(&metrics_addr.parse().unwrap(), Duration::from_millis(200));
     assert!(
         result.is_err(),
         "expected no metrics listener; got connection on {metrics_addr}"
@@ -150,10 +148,7 @@ fn build_vless_request(
         port: wrongsv_net_types::Port(target_port),
         user,
     };
-    let addons = Addons {
-        flow: flow.into(),
-        ..Default::default()
-    };
+    let addons = Addons { flow: flow.into() };
 
     let mut buf = bytes::BytesMut::new();
     encoding::encode_request_header(&mut buf, &request, &addons).unwrap();
@@ -230,12 +225,12 @@ fn read_http1_chunk(reader: &mut std::io::BufReader<TcpStream>) -> Option<Vec<u8
 
     let mut len_line = String::new();
     reader.read_line(&mut len_line).unwrap();
-    assert!(!len_line.is_empty(), "unexpected EOF while reading HTTP/1.1 chunk");
-    let chunk_len = usize::from_str_radix(
-        len_line.trim().split(';').next().unwrap_or_default(),
-        16,
-    )
-    .unwrap();
+    assert!(
+        !len_line.is_empty(),
+        "unexpected EOF while reading HTTP/1.1 chunk"
+    );
+    let chunk_len =
+        usize::from_str_radix(len_line.trim().split(';').next().unwrap_or_default(), 16).unwrap();
     if chunk_len == 0 {
         loop {
             let mut trailer = String::new();
@@ -324,7 +319,10 @@ bind = "127.0.0.1"
 
     let response = http_get(&metrics_addr, "/metrics");
     assert!(response.contains("200 OK"), "got: {response}");
-    let want_in = format!("wrongsv_user_bytes_in{{email=\"{email}\"}} {}", payload.len());
+    let want_in = format!(
+        "wrongsv_user_bytes_in{{email=\"{email}\"}} {}",
+        payload.len()
+    );
     let want_out = format!(
         "wrongsv_user_bytes_out{{email=\"{email}\"}} {}",
         payload.len()
@@ -378,7 +376,9 @@ bind = "127.0.0.1"
     let (_request, encoded) = build_vless_request(user_uuid, email, echo_addr.port(), "");
 
     let mut writer = TcpStream::connect(&listen).unwrap();
-    writer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    writer
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
     let reader_stream = writer.try_clone().unwrap();
     let mut reader = BufReader::new(reader_stream);
 
@@ -395,7 +395,10 @@ Content-Type: application/grpc\r\n\
 
     assert_eq!(read_http1_response_headers(&mut reader), 200);
     let response_header = read_http1_chunk(&mut reader).expect("expected VLESS response");
-    assert!(!response_header.is_empty(), "expected non-empty VLESS response header");
+    assert!(
+        !response_header.is_empty(),
+        "expected non-empty VLESS response header"
+    );
 
     let payload = b"xhttp-metrics-roundtrip-payload";
     write_http1_chunk(&mut writer, payload);
@@ -408,7 +411,10 @@ Content-Type: application/grpc\r\n\
     thread::sleep(Duration::from_millis(200));
     let response = http_get(&metrics_addr, "/metrics");
     assert!(response.contains("200 OK"), "got: {response}");
-    let want_in = format!("wrongsv_user_bytes_in{{email=\"{email}\"}} {}", payload.len());
+    let want_in = format!(
+        "wrongsv_user_bytes_in{{email=\"{email}\"}} {}",
+        payload.len()
+    );
     let want_out = format!(
         "wrongsv_user_bytes_out{{email=\"{email}\"}} {}",
         payload.len()
@@ -495,7 +501,10 @@ bind = "127.0.0.1"
             .await
             .unwrap()
             .expect("expected VLESS response frame");
-        assert!(!response_header.is_empty(), "expected non-empty VLESS response frame");
+        assert!(
+            !response_header.is_empty(),
+            "expected non-empty VLESS response frame"
+        );
 
         let payload = b"grpc-metrics-roundtrip-payload";
         send_stream
@@ -619,7 +628,10 @@ bind = "127.0.0.1"
 
     let response = http_get(&metrics_addr, "/metrics");
     assert!(response.contains("200 OK"), "got: {response}");
-    let want_in = format!("wrongsv_user_bytes_in{{email=\"{email}\"}} {}", payload.len());
+    let want_in = format!(
+        "wrongsv_user_bytes_in{{email=\"{email}\"}} {}",
+        payload.len()
+    );
     let want_out = format!(
         "wrongsv_user_bytes_out{{email=\"{email}\"}} {}",
         payload.len()
@@ -734,7 +746,10 @@ bind = "127.0.0.1"
 
     let response = http_get(&metrics_addr, "/metrics");
     assert!(response.contains("200 OK"), "got: {response}");
-    let want_in = format!("wrongsv_user_bytes_in{{email=\"{email}\"}} {}", payload.len());
+    let want_in = format!(
+        "wrongsv_user_bytes_in{{email=\"{email}\"}} {}",
+        payload.len()
+    );
     let want_out = format!(
         "wrongsv_user_bytes_out{{email=\"{email}\"}} {}",
         payload.len()

@@ -16,12 +16,11 @@
   <img src="https://img.shields.io/badge/protocol-Shadowsocks%20AEAD%2F2022-2b8a3e?style=for-the-badge" alt="Protocol: Shadowsocks AEAD/2022">
   <img src="https://img.shields.io/badge/protocol-SOCKS4%2F4A%20%2B%20SOCKS5%20%2B%20HTTP%20PROXY-4f6f9f?style=for-the-badge" alt="Protocol: SOCKS4/4A, SOCKS5, and HTTP proxy">
   <img src="https://img.shields.io/badge/protocol-Trojan%20TLS%20TCP%2FUDP-8f4f8f?style=for-the-badge" alt="Protocol: Trojan TLS TCP/UDP">
-  <img src="https://img.shields.io/badge/KEM-ML--KEM--512-darkslateblue?style=for-the-badge" alt="KEM: ML-KEM-512">
 </p>
 
 ---
 
-A minimal, high-performance proxy server with VLESS, XTLS Vision flow, REALITY / AnyTLS / plain TLS / WebSocket / HTTPUpgrade transport layers, VLESS raw UDP / packetaddr UDP / WebSocket Mux.Cool/XUDP UDP relay, Shadowsocks AEAD/AEAD-2022 TCP/UDP inbound, mixed SOCKS4/4A/SOCKS5/HTTP proxy inbound, Trojan TLS TCP/UDP inbound, and NIST ML-KEM post-quantum key encapsulation.
+A minimal, high-performance proxy server with VLESS, XTLS Vision flow, REALITY / AnyTLS / plain TLS / WebSocket / HTTPUpgrade transport layers, VLESS raw UDP / packetaddr UDP / WebSocket Mux.Cool/XUDP UDP relay, Shadowsocks AEAD/AEAD-2022 TCP/UDP inbound, mixed SOCKS4/4A/SOCKS5/HTTP proxy inbound, and Trojan TLS TCP/UDP inbound.
 
 ## Architecture
 
@@ -36,7 +35,6 @@ wrongsv (binary)
 ├── vless           — user validator, XTLS Vision padding/unpadding
 ├── vless-encoding  — VLESS header codec, addons protobuf, body framing
 ├── encryption      — AEAD (AES-256-GCM / ChaCha20-Poly1305)
-├── kyber           — NIST ML-KEM-512 post-quantum key encapsulation
 ├── protocol        — shared types (RequestHeader, MemoryUser, ID, AddressParser)
 ├── net-types       — Address, Port, AddressFamily
 └── uuid            — UUID v4/v5, ProcessUUID masking
@@ -55,13 +53,12 @@ wrongsv (binary)
 - **AnyTLS** — TLS 1.3 + SHA-256 password auth with configurable padding
 - **Plain TLS** — Standard TLS 1.3, compatible with sing-box/mihomo/xray-core `tls` transport
 - **XTLS Vision** — traffic analysis resistance via padding/unpadding
-- **ML-KEM-512** — NIST FIPS 203 post-quantum key encapsulation
 - **Probe resistance** — unauthenticated connections forwarded to fallback destinations
 - **Client config generation** — auto-generate config JSON for sing-box and mihomo/FlClash
 
 ## Quick Start
 
-[docs/SETUP.md](docs/SETUP.md) has the full build and configuration guide.
+[docs/setup.md](docs/setup.md) has the full build and configuration guide.
 [docs/simple-deploy.md](docs/simple-deploy.md) has step-by-step TLS and REALITY deployment walkthroughs.
 
 ### Build
@@ -82,7 +79,6 @@ Pick an example from [`configs/`](configs/):
 | [`tls-tcp.toml`](configs/tls-tcp.toml) | Plain TLS | none | TLS encryption, no Vision |
 | [`basic-tcp.toml`](configs/basic-tcp.toml) | raw TCP | none | Simplest setup |
 | [`httpupgrade.toml`](configs/httpupgrade.toml) | HTTPUpgrade | none | HTTP/1.1 101 upgrade, raw VLESS stream |
-| [`kyber-vision.toml`](configs/kyber-vision.toml) | raw TCP | Vision | Post-quantum KEM |
 | [`ws-tcp.toml`](configs/ws-tcp.toml) | WebSocket | none | VLESS over WebSocket carrier |
 | [`ws-udp.toml`](configs/ws-udp.toml) | WebSocket | none | VLESS WS + UDP relay |
 | [`grpc.toml`](configs/grpc.toml) | gRPC | none | HTTP/2 gRPC Hunk framing |
@@ -128,8 +124,8 @@ flow = "xtls-rprx-vision"
   --server-host YOUR_IP --servername cloudfront.net
 ```
 
-See [docs/SETUP.md](docs/SETUP.md) for all transport options, REALITY keypair
-generation, AnyTLS padding configuration, and Kyber setup.
+See [docs/setup.md](docs/setup.md) for all transport options, REALITY keypair
+generation, and AnyTLS padding configuration.
 
 ## Testing
 
@@ -139,7 +135,7 @@ cargo clippy --workspace --all-targets
 cargo fmt --all -- --check
 ```
 
-See [docs/TESTING.md](docs/TESTING.md) for the complete test suite including
+See [docs/testing.md](docs/testing.md) for the complete test suite including
 lifecycle tests (sing-box, mihomo, xray-core), stress tests, benchmarks, and
 manual proxy testing procedures.
 

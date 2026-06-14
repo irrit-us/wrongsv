@@ -164,7 +164,6 @@ mod tests {
     fn empty_addons() -> Addons {
         Addons {
             flow: String::new(),
-            ..Default::default()
         }
     }
 

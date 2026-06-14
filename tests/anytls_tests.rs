@@ -310,30 +310,6 @@ dest = "{fallback_dest}"
     server.spawn()
 }
 
-fn spawn_anytls_server_kyber(
-    listen: &str,
-    user_id: &str,
-    password: &str,
-    kyber_secret_key: &str,
-) -> wrongsv_server::ServerHandle {
-    let config_toml = format!(
-        r#"
-listen = "{listen}"
-kyber_secret_key = "{kyber_secret_key}"
-
-[[users]]
-id = "{user_id}"
-email = "test@anytls.test"
-
-[anytls]
-password = "{password}"
-"#
-    );
-    let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
-    let server = wrongsv_server::InboundServer::new(config).unwrap();
-    server.spawn()
-}
-
 // ── AnyTLS client connect ─────────────────────────────────────────────────────
 
 fn anytls_connect(
@@ -408,7 +384,6 @@ fn anytls_connect(
     };
     let addons = Addons {
         flow: flow.to_string(),
-        ..Default::default()
     };
     let mut req_buf = bytes::BytesMut::new();
     encoding::encode_request_header(&mut req_buf, &request, &addons).unwrap();
@@ -582,7 +557,6 @@ fn anytls_connect_with_padding(
     };
     let addons = Addons {
         flow: flow.to_string(),
-        ..Default::default()
     };
     let mut req_buf = bytes::BytesMut::new();
     encoding::encode_request_header(&mut req_buf, &request, &addons).unwrap();
@@ -1242,42 +1216,6 @@ fn test_anytls_auth_failure_with_padding() {
     drop(fallback_handle);
 }
 
-#[test]
-fn test_anytls_kyber_combo() {
-    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
-
-    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
-    let listen_str = reserve.local_addr().unwrap().to_string();
-    drop(reserve);
-
-    let (echo_addr, _echo) = spawn_echo_target();
-    let user_uuid = Uuid::new_v4();
-    let password = "kyber-anytls-pw";
-
-    // Valid Kyber-512 seed: 64 bytes hex-encoded
-    let kyber_key: String = (0..64)
-        .map(|_| format!("{:02x}", rand::random::<u8>()))
-        .collect();
-
-    let _server =
-        spawn_anytls_server_kyber(&listen_str, &user_uuid.to_string(), password, &kyber_key);
-    thread::sleep(Duration::from_millis(100));
-
-    let mut tls = anytls_connect(
-        &listen_str,
-        &user_uuid,
-        "127.0.0.1",
-        echo_addr.port(),
-        "",
-        password,
-    );
-
-    tls.tls_write(b"kyber+anytls combo").unwrap();
-    let mut buf = [0u8; 256];
-    let n = tls.tls_read(&mut buf).unwrap();
-    assert_eq!(&buf[..n], b"kyber+anytls combo");
-}
-
 fn spawn_anytls_server_with_metrics(
     listen: &str,
     user_id: &str,
@@ -1372,7 +1310,10 @@ fn test_anytls_metrics_count_bytes_per_user() {
     let response = http_get(&metrics_addr, "/metrics");
     assert!(response.contains("200 OK"), "got: {response}");
     let email = "test@anytls.test";
-    let want_in = format!("wrongsv_user_bytes_in{{email=\"{email}\"}} {}", payload.len());
+    let want_in = format!(
+        "wrongsv_user_bytes_in{{email=\"{email}\"}} {}",
+        payload.len()
+    );
     let want_out = format!(
         "wrongsv_user_bytes_out{{email=\"{email}\"}} {}",
         payload.len()

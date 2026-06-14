@@ -137,7 +137,6 @@ flow = ""
     };
     let addons = Addons {
         flow: String::new(),
-        ..Default::default()
     };
     let mut req_buf = bytes::BytesMut::new();
     encoding::encode_request_header(&mut req_buf, &request, &addons).unwrap();

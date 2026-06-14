@@ -61,7 +61,6 @@ pub(crate) async fn run_quic_endpoint(
     listen: &str,
     config: QuicConfig,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     shutdown: super::ShutdownSignal,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = listen.parse()?;
@@ -77,14 +76,13 @@ pub(crate) async fn run_quic_endpoint(
         match tokio::time::timeout(Duration::from_millis(200), endpoint.accept()).await {
             Ok(Some(incoming)) => {
                 let v = Arc::clone(&validator);
-                let ks = kyber_sk;
                 let udp = config.udp_relay;
                 tokio::spawn(async move {
                     match incoming.await {
                         Ok(conn) => {
                             let peer = conn.remote_address();
                             trace!("{peer} QUIC connection");
-                            if let Err(e) = handle_quic_connection(conn, v, ks, peer, udp).await {
+                            if let Err(e) = handle_quic_connection(conn, v, peer, udp).await {
                                 warn!("{peer} QUIC connection error: {e}");
                             }
                         }
@@ -103,7 +101,6 @@ pub(crate) async fn run_quic_endpoint(
 async fn handle_quic_connection(
     conn: quinn::Connection,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     peer: SocketAddr,
     udp_relay: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -111,12 +108,11 @@ async fn handle_quic_connection(
         match conn.accept_bi().await {
             Ok((send, recv)) => {
                 let v = Arc::clone(&validator);
-                let ks = kyber_sk;
                 // Spawn a dedicated OS thread for each stream's VLESS processing.
                 // The async ↔ sync bridge uses the same pattern as gRPC/XHTTP.
                 std::thread::spawn(move || {
                     let mut stream = QuicStream::from_quic_streams(send, recv, peer);
-                    if let Err(e) = handle_vless_over_quic(&mut stream, v, ks, peer, udp_relay) {
+                    if let Err(e) = handle_vless_over_quic(&mut stream, v, peer, udp_relay) {
                         warn!("{peer} QUIC stream error: {e}");
                     }
                 });
@@ -272,7 +268,6 @@ async fn drive_quic_send(
 fn handle_vless_over_quic(
     stream: &mut QuicStream,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     peer: SocketAddr,
     udp_relay: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -298,7 +293,6 @@ fn handle_vless_over_quic(
         "{peer} QUIC flow={} use_vision={use_vision}",
         decoded.addons.flow
     );
-    handle_kyber_addons(peer, &decoded, kyber_sk);
     validate_vless_command(request, use_vision)?;
 
     let resp_buf = response_header_buf(request)?;

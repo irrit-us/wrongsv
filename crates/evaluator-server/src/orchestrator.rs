@@ -33,7 +33,7 @@ pub const DEFAULT_PROTOCOLS: &[&str] = &[
     "vmess",
 ];
 
-/// Recommended protocol stacks (from PROTOCOL-COVERAGE.md).
+/// Recommended protocol stacks (from protocol-coverage.md).
 /// Each stack is a named group of protocols that together form a
 /// deployment recommendation. A stack passes only if every constituent
 /// protocol passes.

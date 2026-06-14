@@ -14,7 +14,7 @@ cargo test
 - Zero formatting drift (`cargo fmt --all -- --check`).
 - All existing tests pass. Add tests for new behavior.
 
-See [docs/TESTING.md](docs/TESTING.md) for the full test suite and pre-commit
+See [docs/testing.md](docs/testing.md) for the full test suite and pre-commit
 checklist.
 
 ## Pull requests

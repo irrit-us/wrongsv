@@ -16,11 +16,6 @@ pub struct Config {
     /// Global default flow
     #[serde(default)]
     pub flow: Option<String>,
-    /// ML-KEM-512 secret key seed (64 bytes, hex-encoded).
-    /// When set, the server can decapsulate Kyber-encrypted session keys
-    /// carried in client addons.
-    #[serde(default)]
-    pub kyber_secret_key: Option<String>,
     /// REALITY configuration. When set, TLS REALITY is enabled.
     #[serde(default)]
     pub reality: Option<RealityServerConfig>,
@@ -108,6 +103,11 @@ pub struct Config {
     /// instead of VLESS. Users are authenticated via UUID.
     #[serde(default)]
     pub vmess: Option<VmessServerConfig>,
+    /// Naive inbound configuration. When set, this listener accepts the
+    /// padded HTTP/2 CONNECT proxy scheme over TLS (`naive` protocol),
+    /// instead of VLESS.
+    #[serde(default)]
+    pub naive: Option<NaiveServerConfig>,
     /// Optional metrics endpoint. When set, an HTTP listener exposes a
     /// Prometheus-format `/metrics` endpoint with per-user (by email) byte
     /// counters and system stats. Off by default.
@@ -459,6 +459,11 @@ pub struct WireGuardServerConfig {
     pub peers: Vec<WireGuardPeerConfig>,
     #[serde(default)]
     pub forwards: Vec<WireGuardForwardConfig>,
+    /// When true, install a TCP catch-all forwarder so peers can route arbitrary
+    /// TCP destinations out via the host (routed-tunnel mode). When false, only
+    /// the explicit `forwards` services are reachable inside the tunnel.
+    #[serde(default)]
+    pub outbound: bool,
 }
 
 fn default_wireguard_mtu() -> u32 {
@@ -721,6 +726,64 @@ pub struct VmessServerConfig {
     pub users: Vec<VmessUserConfig>,
 }
 
+/// Naive user (HTTP Basic credential).
+#[derive(Debug, Clone, Deserialize)]
+pub struct NaiveUserConfig {
+    pub username: String,
+    pub password: String,
+    #[serde(default)]
+    pub email: String,
+}
+
+/// Naive TLS configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct NaiveTlsConfig {
+    #[serde(default)]
+    pub certificate: Option<String>,
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub dest: Option<String>,
+}
+
+/// Naive server-side configuration.
+///
+/// Implements the padded HTTP/2 CONNECT scheme used by the `naive`
+/// client (`naiveproxy`). Authentication is HTTP Basic over the proxy
+/// `Proxy-Authorization` header. The first 8 application chunks in each
+/// direction are wrapped in a 3-byte length-and-padding header so a
+/// passive observer sees only TLS records of varying size.
+///
+/// RST_STREAM obfuscation and the HTTP/3 variant are out of v1 scope —
+/// see `docs/deferred-work.md`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct NaiveServerConfig {
+    /// At least one user is required.
+    #[serde(default)]
+    pub users: Vec<NaiveUserConfig>,
+    /// HTTP/2 header name used to carry the capability flag and the
+    /// random padding bytes. Defaults to `Padding`.
+    #[serde(default = "default_naive_padding_header")]
+    pub padding_header_name: String,
+    /// TLS configuration — required (Naive runs over TLS).
+    #[serde(default)]
+    pub tls: NaiveTlsConfig,
+}
+
+impl Default for NaiveTlsConfig {
+    fn default() -> Self {
+        NaiveTlsConfig {
+            certificate: None,
+            key: None,
+            dest: None,
+        }
+    }
+}
+
+fn default_naive_padding_header() -> String {
+    "Padding".to_string()
+}
+
 /// ShadowTLS server-side configuration.
 ///
 /// ShadowTLS v3 authenticates the client through the ClientHello session-id
@@ -948,6 +1011,18 @@ pub enum ConfigError {
     VmessInvalidUuid(String),
     #[error("VMess user UUIDs must be unique")]
     VmessDuplicateUuid,
+    #[error("Naive inbound cannot be combined with VLESS users")]
+    NaiveWithVlessUsers,
+    #[error("Naive inbound cannot be combined with VLESS transport layers")]
+    NaiveWithVlessTransport,
+    #[error("Naive inbound cannot be combined with other non-VLESS protocols")]
+    NaiveWithNonVless,
+    #[error("Naive inbound requires at least one `[[naive.users]]` entry")]
+    NaiveMissingUsers,
+    #[error("Naive usernames and passwords must be non-empty and must not contain ':'")]
+    NaiveInvalidCredential,
+    #[error("Naive padding header name must be a valid HTTP token")]
+    NaiveInvalidPaddingHeader,
 }
 
 impl Config {
@@ -987,6 +1062,7 @@ impl Config {
             || self.tuic.is_some()
             || self.vmess.is_some()
             || self.wireguard.is_some()
+            || self.naive.is_some()
     }
 
     /// True when any stream-based framing transport (WebSocket,
@@ -1038,6 +1114,7 @@ impl Config {
             self.xhttp.is_some(),
             self.vmess.is_some(),
             self.wireguard.is_some(),
+            self.naive.is_some(),
         ]
         .into_iter()
         .filter(|&e| e)
@@ -1179,7 +1256,7 @@ impl Config {
             if wireguard.peers.is_empty() {
                 return Err(ConfigError::WireGuardMissingPeers);
             }
-            if wireguard.forwards.is_empty() {
+            if !wireguard.outbound && wireguard.forwards.is_empty() {
                 return Err(ConfigError::WireGuardMissingForwards);
             }
             let decode_key = |value: &str| {
@@ -1206,7 +1283,11 @@ impl Config {
                     return Err(ConfigError::WireGuardInvalidCidr);
                 }
             }
-            for cidr in wireguard.peers.iter().flat_map(|peer| peer.allowed_ips.iter()) {
+            for cidr in wireguard
+                .peers
+                .iter()
+                .flat_map(|peer| peer.allowed_ips.iter())
+            {
                 if !is_valid_cidr_text(cidr) {
                     return Err(ConfigError::WireGuardInvalidCidr);
                 }
@@ -1218,6 +1299,33 @@ impl Config {
                 if forward.target.parse::<std::net::SocketAddr>().is_err() {
                     return Err(ConfigError::WireGuardInvalidTarget);
                 }
+            }
+        }
+
+        if let Some(naive) = &self.naive {
+            self.check_non_vless_no_users(ConfigError::NaiveWithVlessUsers)?;
+            self.check_non_vless_no_transports(ConfigError::NaiveWithVlessTransport)?;
+            if self.has_any_non_vless_inbound_except_naive() {
+                return Err(ConfigError::NaiveWithNonVless);
+            }
+            if naive.users.is_empty() {
+                return Err(ConfigError::NaiveMissingUsers);
+            }
+            for user in &naive.users {
+                if user.username.is_empty()
+                    || user.password.is_empty()
+                    || user.username.contains(':')
+                {
+                    return Err(ConfigError::NaiveInvalidCredential);
+                }
+            }
+            if naive.padding_header_name.is_empty()
+                || !naive
+                    .padding_header_name
+                    .bytes()
+                    .all(|b| b.is_ascii_graphic() && b != b':' && b != b' ' && b != b'\t')
+            {
+                return Err(ConfigError::NaiveInvalidPaddingHeader);
             }
         }
 
@@ -1489,6 +1597,7 @@ impl Config {
             || self.trojan.is_some()
             || self.vmess.is_some()
             || self.wireguard.is_some()
+            || self.naive.is_some()
     }
 
     fn has_any_non_vless_inbound_except_tuic(&self) -> bool {
@@ -1498,6 +1607,7 @@ impl Config {
             || self.hysteria2.is_some()
             || self.vmess.is_some()
             || self.wireguard.is_some()
+            || self.naive.is_some()
     }
 
     fn has_any_non_vless_inbound_except_wireguard(&self) -> bool {
@@ -1507,6 +1617,17 @@ impl Config {
             || self.hysteria2.is_some()
             || self.tuic.is_some()
             || self.vmess.is_some()
+            || self.naive.is_some()
+    }
+
+    fn has_any_non_vless_inbound_except_naive(&self) -> bool {
+        self.shadowsocks.is_some()
+            || self.mixed.is_some()
+            || self.trojan.is_some()
+            || self.hysteria2.is_some()
+            || self.tuic.is_some()
+            || self.vmess.is_some()
+            || self.wireguard.is_some()
     }
 }
 
@@ -1544,7 +1665,6 @@ flow = "xtls-rprx-vision"
             }],
             decryption: None,
             flow: None,
-            kyber_secret_key: None,
             reality: None,
             anytls: None,
             tls: None,
@@ -1565,6 +1685,7 @@ flow = "xtls-rprx-vision"
             webtransport: None,
             shadowtls: None,
             vmess: None,
+            naive: None,
             metrics: None,
         };
         assert!(config.validate().is_err());
@@ -1583,7 +1704,6 @@ flow = "xtls-rprx-vision"
             }],
             decryption: None,
             flow: None,
-            kyber_secret_key: None,
             reality: None,
             anytls: None,
             tls: None,
@@ -1604,6 +1724,7 @@ flow = "xtls-rprx-vision"
             webtransport: None,
             shadowtls: None,
             vmess: None,
+            naive: None,
             metrics: None,
         };
         assert!(config.validate().is_err());
@@ -2875,6 +2996,164 @@ id = "12345678-1234-1234-1234-123456789abc"
         assert!(matches!(
             config.validate(),
             Err(ConfigError::VmessDuplicateUuid)
+        ));
+    }
+
+    // ── Naive config validation ─────────────────────────────────────────
+
+    #[test]
+    fn test_parse_naive_config() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[naive]
+
+[naive.tls]
+certificate = '''-----BEGIN CERTIFICATE-----...'''
+key = '''-----BEGIN PRIVATE KEY-----...'''
+dest = "127.0.0.1:8080"
+
+[[naive.users]]
+username = "alice"
+password = "secret"
+email = "alice@example.com"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        let naive = config.naive.unwrap();
+        assert_eq!(naive.users.len(), 1);
+        assert_eq!(naive.users[0].username, "alice");
+        assert_eq!(naive.padding_header_name, "Padding");
+        assert_eq!(naive.tls.dest.as_deref(), Some("127.0.0.1:8080"));
+    }
+
+    #[test]
+    fn test_naive_rejects_missing_users() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[naive]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::NaiveMissingUsers)
+        ));
+    }
+
+    #[test]
+    fn test_naive_rejects_empty_password() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[naive]
+
+[[naive.users]]
+username = "alice"
+password = ""
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::NaiveInvalidCredential)
+        ));
+    }
+
+    #[test]
+    fn test_naive_rejects_colon_in_username() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[naive]
+
+[[naive.users]]
+username = "ali:ce"
+password = "secret"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::NaiveInvalidCredential)
+        ));
+    }
+
+    #[test]
+    fn test_naive_rejects_invalid_padding_header() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[naive]
+padding_header_name = "Bad Header"
+
+[[naive.users]]
+username = "alice"
+password = "secret"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::NaiveInvalidPaddingHeader)
+        ));
+    }
+
+    #[test]
+    fn test_naive_rejects_vless_users() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[naive]
+
+[[naive.users]]
+username = "alice"
+password = "secret"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::NaiveWithVlessUsers)
+        ));
+    }
+
+    #[test]
+    fn test_naive_rejects_vless_transport() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[naive]
+
+[[naive.users]]
+username = "alice"
+password = "secret"
+
+[tls]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::NaiveWithVlessTransport)
+        ));
+    }
+
+    #[test]
+    fn test_naive_rejects_other_non_vless_inbound() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[naive]
+
+[[naive.users]]
+username = "alice"
+password = "secret"
+
+[mixed]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::MultipleInboundProtocols)
         ));
     }
 }

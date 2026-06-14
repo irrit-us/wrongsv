@@ -18,7 +18,8 @@ use common::{
     init_logging, lifecycle_test_lock, local_http_url, pick_ports, socks5_get, socks5_tcp_echo,
     socks5_udp_echo, spawn_http_echo_target, spawn_httpupgrade_server, spawn_multi_user_server,
     spawn_server, spawn_shadowsocks_server, spawn_tcp_echo_target,
-    spawn_trojan_server_with_pinned_cert, spawn_udp_echo_target, spawn_vmess_server, spawn_ws_server,
+    spawn_trojan_server_with_pinned_cert, spawn_udp_echo_target, spawn_vmess_server,
+    spawn_ws_server,
 };
 
 fn xray_bin() -> Option<String> {

@@ -357,10 +357,7 @@ fn xor_slice(data: &mut [u8], key: &[u8]) {
     }
 }
 
-fn encode_shadowtls_application_data(
-    payload: &[u8],
-    state: &mut HmacSha1,
-) -> io::Result<Vec<u8>> {
+fn encode_shadowtls_application_data(payload: &[u8], state: &mut HmacSha1) -> io::Result<Vec<u8>> {
     let record_len = HMAC_SIZE + payload.len();
     if record_len > u16::MAX as usize {
         return Err(io::Error::new(
@@ -383,10 +380,7 @@ fn encode_shadowtls_application_data(
     Ok(frame)
 }
 
-fn decode_shadowtls_application_data(
-    frame: &[u8],
-    state: &mut HmacSha1,
-) -> io::Result<Vec<u8>> {
+fn decode_shadowtls_application_data(frame: &[u8], state: &mut HmacSha1) -> io::Result<Vec<u8>> {
     if frame.len() < TLS_HMAC_HEADER_SIZE {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -632,7 +626,6 @@ fn accept_shadowtls_stream(
 pub(crate) fn handle_shadowtls_connection(
     stream: TcpStream,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     shadowtls_config: &ShadowTlsConfig,
     metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -678,7 +671,6 @@ pub(crate) fn handle_shadowtls_connection(
     let _conn_guard = tap.track_connection();
 
     log_vless_request(peer, request);
-    handle_kyber_addons(peer, &decoded, kyber_sk);
     validate_vless_command(request, use_vision)?;
 
     let resp_buf = response_header_buf(request)?;
@@ -1010,8 +1002,7 @@ mod tests {
         frame[TLS_HEADER_SIZE + 3] = (handshake_len & 0xff) as u8;
         frame[TLS_HEADER_SIZE + 4] = 3;
         frame[TLS_HEADER_SIZE + 5] = 3;
-        for (idx, byte) in frame
-            [TLS_HEADER_SIZE + 6..TLS_HEADER_SIZE + 6 + TLS_RANDOM_SIZE]
+        for (idx, byte) in frame[TLS_HEADER_SIZE + 6..TLS_HEADER_SIZE + 6 + TLS_RANDOM_SIZE]
             .iter_mut()
             .enumerate()
         {

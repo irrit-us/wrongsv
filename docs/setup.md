@@ -1,4 +1,4 @@
-# SETUP.md — wrongsv build and configuration guide
+# setup.md — wrongsv build and configuration guide
 
 [README](README.md) has the project overview and feature list.
 
@@ -56,7 +56,6 @@ The server reads a TOML config file passed via `--config`. Pre-built examples ar
 | `anytls-tcp.toml` | AnyTLS | none | Password auth, raw relay |
 | `anytls-udp.toml` | AnyTLS | none | Password auth + UDP |
 | `anytls-fallback.toml` | AnyTLS | Vision | With fallback destination |
-| `kyber-vision.toml` | raw TCP | Vision | Post-quantum key exchange |
 | `anytls-custom.toml` | AnyTLS | Vision | Custom TLS cert + padding |
 | `shadowsocks-aead.toml` | Shadowsocks AEAD | n/a | TCP/UDP relay |
 | `shadowsocks-2022.toml` | Shadowsocks AEAD-2022 | n/a | TCP/UDP relay |
@@ -251,24 +250,6 @@ dest = "127.0.0.1:8080"                     # optional fallback for invalid post
 # email = "user@example.com"
 ```
 
-### Post-quantum key exchange (ML-KEM-512)
-
-Add a Kyber secret key to enable post-quantum session establishment:
-
-```toml
-kyber_secret_key = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
-```
-
-The 64-byte seed must be hex-encoded (128 hex chars). The server decapsulates Kyber ciphertexts from the VLESS addons field and derives session keys from the shared secret.
-
-**Generating a Kyber keypair:**
-
-```bash
-# The build.rs generates a Kyber keypair at compile time.
-# To generate your own, use the ml-kem crate or:
-openssl rand -hex 64  # 64-byte seed (128 hex chars)
-```
-
 ### Full config reference
 
 ```toml
@@ -285,7 +266,6 @@ udp = true                     # optional, enable UDP relay (default: true)
 
 # ── Optional globals ──────────────────────────────────────────────────────────
 flow = "xtls-rprx-vision"      # default flow for users who don't specify one
-kyber_secret_key = "..."       # ML-KEM-512 64-byte seed, hex-encoded (128 chars)
 
 # ── REALITY (mutually exclusive with other listener modes) ────────────────────
 [reality]
@@ -389,7 +369,7 @@ The generated JSON keys match Go struct tags in mihomo/sing-box (`client-fingerp
 
 ## Testing
 
-See [docs/TESTING.md](TESTING.md) for the complete test suite — unit tests,
+See [docs/testing.md](testing.md) for the complete test suite — unit tests,
 integration tests, lifecycle tests (sing-box, mihomo, xray-core), stress tests,
 benchmarks, and manual proxy testing.
 
@@ -398,21 +378,20 @@ benchmarks, and manual proxy testing.
 ```
 wrongsv/
 ├── Cargo.toml                  # workspace root
-├── build.rs                    # compile-time key generation (UUID, X25519, Kyber)
+├── build.rs                    # compile-time key generation (UUID, X25519)
 ├── README.md                   # project overview, features, interop
 ├── CHANGELOG.md
 ├── CONTRIBUTING.md
 ├── SECURITY.md
 ├── docs/
-│   ├── SETUP.md                # this file — build and config guide
-│   ├── TESTING.md              # complete test suite reference
+│   ├── setup.md                # this file — build and config guide
+│   ├── testing.md              # complete test suite reference
 │   └── simple-deploy.md        # TLS/REALITY deployment walkthrough
 ├── configs/                    # ready-to-use TOML config examples
 │   ├── basic-tcp.toml
 │   ├── vision.toml
 │   ├── tls-tcp.toml
 │   ├── tls-vision.toml
-│   ├── kyber-vision.toml
 │   ├── reality-vision.toml
 │   ├── reality-udp.toml
 │   ├── anytls-vision.toml
@@ -448,7 +427,6 @@ wrongsv/
     ├── vless-encoding/         # VLESS header codec, addons proto, body framing
     ├── vless/                  # Validator trait, MemoryValidator, XTLS Vision
     ├── encryption/             # AEAD ciphers (AES-256-GCM, ChaCha20-Poly1305)
-    ├── kyber/                  # NIST ML-KEM-512 KEM
     ├── reality/                # REALITY TLS auth, dynamic cert, spider fallback
     ├── anytls/                 # AnyTLS TLS disguise, password auth, fallback
     ├── shadowsocks/            # Shadowsocks AEAD/2022 codec and relay helpers
@@ -464,8 +442,6 @@ wrongsv/
 **"invalid UUID"** — UUID must be 36-char hex (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`) or a short name that can be SHA-1 hashed.
 
 **"unknown flow"** — Flow must be `""` or `"xtls-rprx-vision"`.
-
-**Kyber decapsulation fails** — The `kyber_secret_key` seed must be exactly 64 bytes (128 hex chars) and must match the public key the client used for encapsulation.
 
 **AnyTLS auth failure (client side)** — The password hash sent by the client must match the server's `anytls.password`. Check that the client is sending `SHA256(password)` as the first 32 bytes of application data.
 

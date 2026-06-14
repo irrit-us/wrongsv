@@ -76,6 +76,8 @@ pub(crate) mod tls_relay;
 pub(crate) use tls_relay::*;
 pub(crate) mod vmess_handler;
 pub(crate) use vmess_handler::*;
+pub(crate) mod naive;
+pub(crate) use naive::*;
 
 #[derive(Clone, Debug)]
 pub struct ShutdownSignal {
@@ -161,7 +163,6 @@ pub struct InboundServer {
     config: Config,
     validator: Arc<MemoryValidator>,
     metrics: Arc<wrongsv_metrics::Registry>,
-    kyber_sk: Option<[u8; 64]>,
     reality_config: Option<wrongsv_reality::RealityConfig>,
     anytls_config: Option<wrongsv_anytls::AnyTlsConfig>,
     tls_config: Option<TlsConfig>,
@@ -182,15 +183,12 @@ pub struct InboundServer {
     webtransport_config: Option<WebTransportConfig>,
     shadowtls_config: Option<ShadowTlsConfig>,
     vmess_config: Option<VmessHandlerConfig>,
+    naive_config: Option<NaiveConfig>,
 }
 
 impl InboundServer {
     pub fn new(config: Config) -> Result<Self, Box<dyn std::error::Error>> {
         config.validate()?;
-        let kyber_sk = match &config.kyber_secret_key {
-            Some(hex) => Some(decode_hex::<64>(hex).map_err(|e| format!("kyber_secret_key: {e}"))?),
-            None => None,
-        };
         let reality_config = parse_opt!(&config.reality, parse_reality_config);
         let anytls_config = parse_opt!(&config.anytls, parse_anytls_config);
         let tls_config = parse_opt!(&config.tls, parse_tls_config);
@@ -395,6 +393,18 @@ impl InboundServer {
             }
             None => None,
         };
+        let naive_config = match &config.naive {
+            Some(nc) => {
+                let cfg = parse_naive_config(nc)?;
+                info!(
+                    "Naive enabled ({} user(s), padding header '{}')",
+                    cfg.users.len(),
+                    cfg.padding_header_name.as_str()
+                );
+                Some(cfg)
+            }
+            None => None,
+        };
         if let Some(ref rc) = reality_config {
             let rpk_hex: String = rc
                 .cert_material
@@ -448,7 +458,6 @@ impl InboundServer {
             config,
             validator,
             metrics: Arc::new(wrongsv_metrics::Registry::new()),
-            kyber_sk,
             reality_config,
             anytls_config,
             tls_config,
@@ -469,6 +478,7 @@ impl InboundServer {
             webtransport_config,
             shadowtls_config,
             vmess_config,
+            naive_config,
         })
     }
 
@@ -550,7 +560,12 @@ impl InboundServer {
                 .build()?;
             let metrics = Arc::clone(&self.metrics);
             return runtime
-                .block_on(run_tuic_endpoint(&self.config.listen, config, metrics, shutdown))
+                .block_on(run_tuic_endpoint(
+                    &self.config.listen,
+                    config,
+                    metrics,
+                    shutdown,
+                ))
                 .map_err(|e| std::io::Error::other(e.to_string()).into());
         }
         if let Some(config) = self.quic_config.clone() {
@@ -558,13 +573,11 @@ impl InboundServer {
                 .enable_all()
                 .build()?;
             let validator = Arc::clone(&self.validator);
-            let kyber_sk = self.kyber_sk;
             return runtime
                 .block_on(run_quic_endpoint(
                     &self.config.listen,
                     config,
                     validator,
-                    kyber_sk,
                     shutdown,
                 ))
                 .map_err(|e| std::io::Error::other(e.to_string()).into());
@@ -574,13 +587,11 @@ impl InboundServer {
                 .enable_all()
                 .build()?;
             let validator = Arc::clone(&self.validator);
-            let kyber_sk = self.kyber_sk;
             return runtime
                 .block_on(run_kcp_endpoint(
                     &self.config.listen,
                     config,
                     validator,
-                    kyber_sk,
                     shutdown,
                 ))
                 .map_err(|e| std::io::Error::other(e.to_string()).into());
@@ -590,13 +601,11 @@ impl InboundServer {
                 .enable_all()
                 .build()?;
             let validator = Arc::clone(&self.validator);
-            let kyber_sk = self.kyber_sk;
             return runtime
                 .block_on(run_webtransport_endpoint(
                     &self.config.listen,
                     config,
                     validator,
-                    kyber_sk,
                     shutdown,
                 ))
                 .map_err(|e| std::io::Error::other(e.to_string()).into());
@@ -623,6 +632,8 @@ impl InboundServer {
             "Trojan"
         } else if self.vmess_config.is_some() {
             "VMess"
+        } else if self.naive_config.is_some() {
+            "Naive"
         } else if self.hysteria2_config.is_some() {
             "Hysteria2"
         } else if self.tuic_config.is_some() {
@@ -651,7 +662,6 @@ impl InboundServer {
 
         let validator = Arc::clone(&self.validator);
         let metrics = Arc::clone(&self.metrics);
-        let kyber_sk = self.kyber_sk;
         let reality_config = self.reality_config.clone();
         let anytls_config = self.anytls_config.clone();
         let tls_config = self.tls_config.clone();
@@ -666,6 +676,7 @@ impl InboundServer {
         let gdocsviewer_config = self.gdocsviewer_config.clone();
         let shadowtls_config = self.shadowtls_config.clone();
         let vmess_config = self.vmess_config.clone();
+        let naive_config = self.naive_config.clone();
         let hysteria2_enabled = self.hysteria2_config.is_some();
         let tuic_enabled = self.tuic_config.is_some();
         let webtransport_enabled = self.webtransport_config.is_some();
@@ -709,26 +720,27 @@ impl InboundServer {
                     let gdc = gdocsviewer_config.clone();
                     let stc = shadowtls_config.clone();
                     let vmc = vmess_config.clone();
+                    let nc = naive_config.clone();
                     thread::spawn(move || {
                         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                             if let Some(ref rc) = rc {
-                                handle_reality_connection(stream, v, kyber_sk, rc, m)
+                                handle_reality_connection(stream, v, rc, m)
                             } else if let Some(ref ac) = ac {
-                                handle_anytls_connection(stream, v, kyber_sk, ac, m)
+                                handle_anytls_connection(stream, v, ac, m)
                             } else if let Some(ref stc) = stc {
-                                handle_shadowtls_connection(stream, v, kyber_sk, stc, m)
+                                handle_shadowtls_connection(stream, v, stc, m)
                             } else if let Some(ref wc) = wsc {
-                                handle_ws_connection(stream, v, kyber_sk, wc)
+                                handle_ws_connection(stream, v, wc)
                             } else if let Some(ref hc) = huc {
-                                handle_httpupgrade_connection(stream, v, kyber_sk, hc, m)
+                                handle_httpupgrade_connection(stream, v, hc, m)
                             } else if let Some(ref gc) = gc {
-                                handle_grpc_connection(stream, v, kyber_sk, gc, m)
+                                handle_grpc_connection(stream, v, gc, m)
                             } else if let Some(ref xc) = xc {
-                                handle_xhttp_connection(stream, v, kyber_sk, xc, m)
+                                handle_xhttp_connection(stream, v, xc, m)
                             } else if let Some(ref mkc) = mkc {
-                                handle_meek_connection(stream, v, kyber_sk, mkc, m)
+                                handle_meek_connection(stream, v, mkc, m)
                             } else if let Some(ref gdc) = gdc {
-                                handle_gdocsviewer_connection(stream, v, kyber_sk, gdc, m)
+                                handle_gdocsviewer_connection(stream, v, gdc, m)
                             } else if hysteria2_enabled {
                                 Err(
                                     "Hysteria2 inbound uses QUIC and does not accept TCP sockets"
@@ -739,7 +751,7 @@ impl InboundServer {
                             } else if webtransport_enabled {
                                 Err("WebTransport inbound uses QUIC and does not accept TCP sockets".into())
                             } else if let Some(ref tc) = tc {
-                                handle_tls_connection(stream, v, kyber_sk, tc, m)
+                                handle_tls_connection(stream, v, tc, m)
                             } else if let Some(ref sc) = sc {
                                 handle_shadowsocks_connection(stream, sc)
                             } else if let Some(ref mc) = mc {
@@ -748,8 +760,10 @@ impl InboundServer {
                                 handle_trojan_connection(stream, trc, m)
                             } else if let Some(ref vmc) = vmc {
                                 handle_vmess_connection(stream, vmc, m)
+                            } else if let Some(ref nc) = nc {
+                                handle_naive_connection(stream, nc, m)
                             } else {
-                                handle_connection(stream, v, kyber_sk, m)
+                                handle_connection(stream, v, m)
                             }
                         }));
                         match result {

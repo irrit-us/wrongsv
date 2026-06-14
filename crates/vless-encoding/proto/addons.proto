@@ -4,5 +4,4 @@ package vless_encoding;
 
 message Addons {
   string Flow = 1;
-  bytes KyberCt = 2;
 }

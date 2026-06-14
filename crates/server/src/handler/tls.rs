@@ -121,7 +121,6 @@ pub(crate) fn stream_read_upgrade(stream: &TcpStream, buf: &mut Vec<u8>) -> std:
 pub(crate) fn handle_tls_connection(
     stream: TcpStream,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     tls_config: &TlsConfig,
     metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -183,7 +182,6 @@ pub(crate) fn handle_tls_connection(
     let _conn_guard = tap.track_connection();
 
     log_vless_request(peer, request);
-    handle_kyber_addons(peer, &decoded, kyber_sk);
     validate_vless_command(request, use_vision)?;
 
     let resp_buf = response_header_buf(request)?;

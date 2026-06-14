@@ -19,6 +19,7 @@ pub(crate) struct WireGuardConfig {
     pub routes: Vec<String>,
     pub peers: Vec<WireGuardPeer>,
     pub forwards: Vec<WireGuardForward>,
+    pub outbound: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -44,6 +45,7 @@ struct WireGuardRuntimeConfig<'a> {
     routes: &'a [String],
     peers: Vec<WireGuardRuntimePeer<'a>>,
     forwards: Vec<WireGuardRuntimeForward<'a>>,
+    outbound: bool,
 }
 
 #[derive(Serialize)]
@@ -70,8 +72,16 @@ pub(crate) fn parse_wireguard_config(
         listen: listen.to_string(),
         private_key: wc.private_key.trim().to_string(),
         mtu: wc.mtu.max(576),
-        server_cidrs: wc.server_cidrs.iter().map(|value| value.trim().to_string()).collect(),
-        routes: wc.routes.iter().map(|value| value.trim().to_string()).collect(),
+        server_cidrs: wc
+            .server_cidrs
+            .iter()
+            .map(|value| value.trim().to_string())
+            .collect(),
+        routes: wc
+            .routes
+            .iter()
+            .map(|value| value.trim().to_string())
+            .collect(),
         peers: wc
             .peers
             .iter()
@@ -82,15 +92,27 @@ pub(crate) fn parse_wireguard_config(
             .iter()
             .map(parse_wireguard_forward)
             .collect::<Result<Vec<_>, _>>()?,
+        outbound: wc.outbound,
     })
 }
 
 fn parse_wireguard_peer(peer: &WireGuardPeerConfig) -> Result<WireGuardPeer, String> {
     Ok(WireGuardPeer {
         public_key: peer.public_key.trim().to_string(),
-        preshared_key: peer.preshared_key.as_ref().map(|value| value.trim().to_string()),
-        email: peer.email.as_ref().map(|value| value.trim().to_string()).filter(|value| !value.is_empty()),
-        allowed_ips: peer.allowed_ips.iter().map(|value| value.trim().to_string()).collect(),
+        preshared_key: peer
+            .preshared_key
+            .as_ref()
+            .map(|value| value.trim().to_string()),
+        email: peer
+            .email
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        allowed_ips: peer
+            .allowed_ips
+            .iter()
+            .map(|value| value.trim().to_string())
+            .collect(),
     })
 }
 
@@ -226,6 +248,7 @@ fn write_runtime_config(config: &WireGuardConfig) -> Result<PathBuf, Box<dyn std
                 target: &forward.target,
             })
             .collect(),
+        outbound: config.outbound,
     };
 
     let path = runtime_config_path();
@@ -238,8 +261,7 @@ fn helper_directory() -> PathBuf {
 }
 
 fn helper_binary_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/wireguard-service-bridge")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/wireguard-service-bridge")
 }
 
 fn runtime_config_path() -> PathBuf {

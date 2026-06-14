@@ -55,9 +55,8 @@ pub const SECURITY_CHACHA20_POLY1305: u8 = 0x04;
 pub const SECURITY_NONE: u8 = 0x05;
 pub const SECURITY_ZERO: u8 = 0x06;
 
-pub const DEFAULT_REQUEST_OPTIONS: u8 = REQUEST_OPTION_CHUNK_STREAM
-    | REQUEST_OPTION_CHUNK_MASKING
-    | REQUEST_OPTION_GLOBAL_PADDING;
+pub const DEFAULT_REQUEST_OPTIONS: u8 =
+    REQUEST_OPTION_CHUNK_STREAM | REQUEST_OPTION_CHUNK_MASKING | REQUEST_OPTION_GLOBAL_PADDING;
 pub const DEFAULT_SECURITY: u8 = SECURITY_AES128_GCM;
 pub const DEFAULT_RESPONSE_HEADER: u8 = 0;
 
@@ -305,11 +304,19 @@ pub fn build_header(
     let mut encrypted_len = header_len.to_be_bytes().to_vec();
     let len_key = vmess_kdf16(
         cmd_key,
-        &[KDF_SALT_HEADER_LEN_KEY, auth_id.as_slice(), connection_nonce.as_slice()],
+        &[
+            KDF_SALT_HEADER_LEN_KEY,
+            auth_id.as_slice(),
+            connection_nonce.as_slice(),
+        ],
     );
     let len_nonce = vmess_kdf(
         cmd_key,
-        &[KDF_SALT_HEADER_LEN_NONCE, auth_id.as_slice(), connection_nonce.as_slice()],
+        &[
+            KDF_SALT_HEADER_LEN_NONCE,
+            auth_id.as_slice(),
+            connection_nonce.as_slice(),
+        ],
     );
     let len_cipher = aes_gcm::Aes128Gcm::new_from_slice(&len_key).expect("AES-GCM key length");
     let len_tag = len_cipher
@@ -324,11 +331,19 @@ pub fn build_header(
     let mut encrypted_header = plaintext;
     let header_key = vmess_kdf16(
         cmd_key,
-        &[KDF_SALT_HEADER_KEY, auth_id.as_slice(), connection_nonce.as_slice()],
+        &[
+            KDF_SALT_HEADER_KEY,
+            auth_id.as_slice(),
+            connection_nonce.as_slice(),
+        ],
     );
     let header_nonce = vmess_kdf(
         cmd_key,
-        &[KDF_SALT_HEADER_NONCE, auth_id.as_slice(), connection_nonce.as_slice()],
+        &[
+            KDF_SALT_HEADER_NONCE,
+            auth_id.as_slice(),
+            connection_nonce.as_slice(),
+        ],
     );
     let header_cipher =
         aes_gcm::Aes128Gcm::new_from_slice(&header_key).expect("AES-GCM key length");
@@ -362,11 +377,19 @@ pub fn read_header(
 
     let len_key = vmess_kdf16(
         cmd_key,
-        &[KDF_SALT_HEADER_LEN_KEY, auth_id.as_slice(), connection_nonce.as_slice()],
+        &[
+            KDF_SALT_HEADER_LEN_KEY,
+            auth_id.as_slice(),
+            connection_nonce.as_slice(),
+        ],
     );
     let len_nonce = vmess_kdf(
         cmd_key,
-        &[KDF_SALT_HEADER_LEN_NONCE, auth_id.as_slice(), connection_nonce.as_slice()],
+        &[
+            KDF_SALT_HEADER_LEN_NONCE,
+            auth_id.as_slice(),
+            connection_nonce.as_slice(),
+        ],
     );
     let len_cipher = aes_gcm::Aes128Gcm::new_from_slice(&len_key).expect("AES-GCM key length");
     let mut decrypted_len = encrypted_len[..2].to_vec();
@@ -390,11 +413,19 @@ pub fn read_header(
 
     let header_key = vmess_kdf16(
         cmd_key,
-        &[KDF_SALT_HEADER_KEY, auth_id.as_slice(), connection_nonce.as_slice()],
+        &[
+            KDF_SALT_HEADER_KEY,
+            auth_id.as_slice(),
+            connection_nonce.as_slice(),
+        ],
     );
     let header_nonce = vmess_kdf(
         cmd_key,
-        &[KDF_SALT_HEADER_NONCE, auth_id.as_slice(), connection_nonce.as_slice()],
+        &[
+            KDF_SALT_HEADER_NONCE,
+            auth_id.as_slice(),
+            connection_nonce.as_slice(),
+        ],
     );
     let header_cipher =
         aes_gcm::Aes128Gcm::new_from_slice(&header_key).expect("AES-GCM key length");
@@ -447,7 +478,9 @@ fn parse_instruction(data: &[u8]) -> Result<VmessHeaderInstruction, VmessError> 
 
     let mut offset = HEADER_FIXED_LEN;
     if data.len() < offset + 3 + 4 {
-        return Err(VmessError::Protocol("instruction truncated before address".into()));
+        return Err(VmessError::Protocol(
+            "instruction truncated before address".into(),
+        ));
     }
     let port = u16::from_be_bytes(data[offset..offset + 2].try_into().unwrap());
     offset += 2;
@@ -455,7 +488,9 @@ fn parse_instruction(data: &[u8]) -> Result<VmessHeaderInstruction, VmessError> 
     let (address, consumed) = decode_address(&data[offset..])?;
     offset += consumed;
     if data.len() < offset + padding_len + 4 {
-        return Err(VmessError::Protocol("instruction truncated after address".into()));
+        return Err(VmessError::Protocol(
+            "instruction truncated after address".into(),
+        ));
     }
 
     let checksum_offset = data.len() - 4;
@@ -740,8 +775,7 @@ impl PayloadCipher {
         match self {
             Self::None => Ok(plaintext.to_vec()),
             Self::Aes128Gcm { key, iv, counter } => {
-                let cipher =
-                    aes_gcm::Aes128Gcm::new_from_slice(key).expect("AES-GCM key length");
+                let cipher = aes_gcm::Aes128Gcm::new_from_slice(key).expect("AES-GCM key length");
                 let nonce = chunk_nonce(iv, *counter, 12);
                 *counter = counter.wrapping_add(1);
                 let mut out = plaintext.to_vec();
@@ -777,8 +811,7 @@ impl PayloadCipher {
                 if ciphertext.len() < AEAD_TAG_LEN {
                     return Err(VmessError::Protocol("body ciphertext too short".into()));
                 }
-                let cipher =
-                    aes_gcm::Aes128Gcm::new_from_slice(key).expect("AES-GCM key length");
+                let cipher = aes_gcm::Aes128Gcm::new_from_slice(key).expect("AES-GCM key length");
                 let nonce = chunk_nonce(iv, *counter, 12);
                 *counter = counter.wrapping_add(1);
                 let split = ciphertext.len() - AEAD_TAG_LEN;
@@ -837,15 +870,20 @@ impl AuthenticatedLengthCipher {
 
     fn encode_size(&mut self, total_size: u16) -> Result<Vec<u8>, VmessError> {
         if total_size < AEAD_TAG_LEN as u16 {
-            return Err(VmessError::Protocol("authenticated length underflow".into()));
+            return Err(VmessError::Protocol(
+                "authenticated length underflow".into(),
+            ));
         }
-        self.inner.encrypt(&(total_size - AEAD_TAG_LEN as u16).to_be_bytes())
+        self.inner
+            .encrypt(&(total_size - AEAD_TAG_LEN as u16).to_be_bytes())
     }
 
     fn decode_size(&mut self, ciphertext: &[u8]) -> Result<u16, VmessError> {
         let plaintext = self.inner.decrypt(ciphertext)?;
         if plaintext.len() != 2 {
-            return Err(VmessError::Protocol("invalid authenticated length size".into()));
+            return Err(VmessError::Protocol(
+                "invalid authenticated length size".into(),
+            ));
         }
         Ok(u16::from_be_bytes(plaintext[..2].try_into().unwrap()) + AEAD_TAG_LEN as u16)
     }
@@ -912,7 +950,9 @@ impl VmessBodyReader {
         self.shake
             .as_mut()
             .map(ShakeState::next_padding_len)
-            .ok_or_else(|| VmessError::Protocol("global padding requested without shake state".into()))
+            .ok_or_else(|| {
+                VmessError::Protocol("global padding requested without shake state".into())
+            })
     }
 
     fn decode_size(&mut self, reader: &mut impl Read) -> Result<(usize, usize), VmessError> {
@@ -1040,7 +1080,9 @@ impl VmessBodyWriter {
         self.shake
             .as_mut()
             .map(ShakeState::next_padding_len)
-            .ok_or_else(|| VmessError::Protocol("global padding requested without shake state".into()))
+            .ok_or_else(|| {
+                VmessError::Protocol("global padding requested without shake state".into())
+            })
     }
 
     fn encode_size(&mut self, total_size: u16) -> Result<Vec<u8>, VmessError> {
@@ -1097,7 +1139,8 @@ mod tests {
     use super::*;
 
     fn test_uuid() -> [u8; 16] {
-        let uuid = wrongsv_uuid::Uuid::parse_string("41309a00-3cbe-43a2-80e7-76c8a4fe65be").unwrap();
+        let uuid =
+            wrongsv_uuid::Uuid::parse_string("41309a00-3cbe-43a2-80e7-76c8a4fe65be").unwrap();
         *uuid.as_bytes()
     }
 
@@ -1132,7 +1175,8 @@ mod tests {
         rand::rngs::OsRng.fill_bytes(&mut body_iv);
         let request = VmessRequest::standard_tcp("example.com", 443);
 
-        let (_len, payload) = build_header(&cmd_key, &auth_id, &body_key, &body_iv, &request).unwrap();
+        let (_len, payload) =
+            build_header(&cmd_key, &auth_id, &body_key, &body_iv, &request).unwrap();
         let header = decrypt_header(&cmd_key, &auth_id, &payload).unwrap();
         assert_eq!(header.command, VmessCommand::Tcp);
         assert_eq!(header.address, "example.com");
@@ -1179,6 +1223,12 @@ mod tests {
         rand::rngs::OsRng.fill_bytes(&mut body_iv);
 
         let payload = build_response(&body_key, &body_iv, 0x5a).unwrap();
-        read_response(&body_key, &body_iv, 0x5a, &mut std::io::Cursor::new(&payload)).unwrap();
+        read_response(
+            &body_key,
+            &body_iv,
+            0x5a,
+            &mut std::io::Cursor::new(&payload),
+        )
+        .unwrap();
     }
 }

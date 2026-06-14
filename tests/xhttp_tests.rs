@@ -59,10 +59,7 @@ fn encode_vless_request(
     wrongsv_vless_encoding::encode_request_header(
         &mut buf,
         &request,
-        &Addons {
-            flow: flow.into(),
-            ..Default::default()
-        },
+        &Addons { flow: flow.into() },
     )
     .unwrap();
     buf.to_vec()
@@ -104,10 +101,7 @@ fn read_http1_response_status(
     let mut parts = status_line.split_whitespace();
     let version = parts.next().ok_or("missing HTTP version")?;
     assert_eq!(version, "HTTP/1.1");
-    let status = parts
-        .next()
-        .ok_or("missing HTTP status")?
-        .parse::<u16>()?;
+    let status = parts.next().ok_or("missing HTTP status")?.parse::<u16>()?;
 
     loop {
         let mut header = String::new();

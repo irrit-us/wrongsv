@@ -66,7 +66,6 @@ pub(crate) async fn run_webtransport_endpoint(
     listen: &str,
     config: WebTransportConfig,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     shutdown: super::ShutdownSignal,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = listen.parse()?;
@@ -90,12 +89,11 @@ pub(crate) async fn run_webtransport_endpoint(
         match tokio::time::timeout(Duration::from_millis(200), endpoint.accept()).await {
             Ok(incoming_session) => {
                 let v = Arc::clone(&validator);
-                let ks = kyber_sk;
                 let cfg = config.clone();
                 tokio::spawn(async move {
                     let peer = incoming_session.remote_address();
                     if let Err(e) =
-                        handle_webtransport_session(incoming_session, v, ks, peer, cfg).await
+                        handle_webtransport_session(incoming_session, v, peer, cfg).await
                     {
                         warn!("{peer} WebTransport session error: {e}");
                     }
@@ -111,7 +109,6 @@ pub(crate) async fn run_webtransport_endpoint(
 async fn handle_webtransport_session(
     incoming_session: wtransport::endpoint::IncomingSession,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     peer: SocketAddr,
     config: WebTransportConfig,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -147,11 +144,10 @@ async fn handle_webtransport_session(
         match connection.accept_bi().await {
             Ok((send, recv)) => {
                 let v = Arc::clone(&validator);
-                let ks = kyber_sk;
                 let udp = config.udp_relay;
                 std::thread::spawn(move || {
                     let mut stream = WebTransportStream::from_streams(send, recv, peer);
-                    if let Err(e) = handle_vless_over_webtransport(&mut stream, v, ks, peer, udp) {
+                    if let Err(e) = handle_vless_over_webtransport(&mut stream, v, peer, udp) {
                         warn!("{peer} WebTransport stream error: {e}");
                     }
                 });
@@ -306,7 +302,6 @@ async fn drive_wt_send(
 fn handle_vless_over_webtransport(
     stream: &mut WebTransportStream,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     peer: SocketAddr,
     udp_relay: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -335,7 +330,6 @@ fn handle_vless_over_webtransport(
         "{peer} WebTransport flow={} use_vision={use_vision}",
         decoded.addons.flow
     );
-    handle_kyber_addons(peer, &decoded, kyber_sk);
     validate_vless_command(request, use_vision)?;
 
     let resp_buf = response_header_buf(request)?;

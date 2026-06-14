@@ -1,7 +1,9 @@
 use clap::ValueEnum;
 use serde::Serialize;
 
-use crate::endpoint::{Component, EndpointModel, OuterSecurity, PayloadNetwork, ProtocolInternalSecurity};
+use crate::endpoint::{
+    Component, EndpointModel, OuterSecurity, PayloadNetwork, ProtocolInternalSecurity,
+};
 
 #[derive(Debug, ValueEnum, Clone, Copy, PartialEq, Eq, Serialize)]
 #[allow(clippy::enum_variant_names)]
@@ -66,6 +68,9 @@ pub(crate) enum EndpointProfile {
     /// WireGuard tunnel service
     #[clap(name = "wireguard")]
     WireGuard,
+    /// Naive (padded HTTP/2 CONNECT over TLS) inbound
+    #[clap(name = "naive")]
+    Naive,
 }
 
 pub(crate) fn detect_profile(
@@ -92,6 +97,7 @@ pub(crate) fn detect_profile(
         Some(config) if config.tuic.is_some() => EndpointProfile::Tuic,
         Some(config) if config.mixed.is_some() => EndpointProfile::Mixed,
         Some(config) if config.wireguard.is_some() => EndpointProfile::WireGuard,
+        Some(config) if config.naive.is_some() => EndpointProfile::Naive,
         Some(config) if config.tls.is_some() => EndpointProfile::Tls,
         _ => EndpointProfile::Raw,
     })
@@ -110,7 +116,8 @@ pub(crate) fn resolve_outer_security(
         | EndpointProfile::ShadowTls
         | EndpointProfile::Trojan
         | EndpointProfile::Hysteria2
-        | EndpointProfile::Tuic => Some(OuterSecurity::Tls),
+        | EndpointProfile::Tuic
+        | EndpointProfile::Naive => Some(OuterSecurity::Tls),
         EndpointProfile::WebSocket => cfg
             .and_then(|c| c.websocket.as_ref())
             .and_then(|ws| ws.tls.as_ref())
@@ -149,15 +156,17 @@ pub(crate) fn build_endpoint_model(
     profile: EndpointProfile,
     flow: &str,
 ) -> EndpointModel {
-    let mut model = EndpointModel::from_profile(profile, resolve_outer_security(cfg, profile), flow);
+    let mut model =
+        EndpointModel::from_profile(profile, resolve_outer_security(cfg, profile), flow);
     match (cfg, profile) {
         (Some(config), EndpointProfile::Shadowsocks) => {
             if let Some(shadowsocks) = &config.shadowsocks {
-                model.protocol_internal_security = Some(if shadowsocks.method.starts_with("2022-") {
-                    ProtocolInternalSecurity::Shadowsocks2022Aead
-                } else {
-                    ProtocolInternalSecurity::ShadowsocksAead
-                });
+                model.protocol_internal_security =
+                    Some(if shadowsocks.method.starts_with("2022-") {
+                        ProtocolInternalSecurity::Shadowsocks2022Aead
+                    } else {
+                        ProtocolInternalSecurity::ShadowsocksAead
+                    });
                 if !shadowsocks.udp {
                     model.payload_networks = vec![PayloadNetwork::Tcp];
                     model.base_carriers = vec![crate::endpoint::BaseCarrier::Tcp];
@@ -177,17 +186,102 @@ pub(crate) fn build_endpoint_model(
                             .push(Component::HysteriaSalamander);
                     }
                     if obfs.obfs_type == "gecko" {
-                        model
-                            .components
-                            .camouflage
-                            .push(Component::HysteriaGecko);
+                        model.components.camouflage.push(Component::HysteriaGecko);
                     }
                 }
             }
         }
+        (Some(config), EndpointProfile::WireGuard) => {
+            if let Some(wireguard) = &config.wireguard {
+                if wireguard.outbound {
+                    model.components.network.push(Component::RoutedTunnel);
+                }
+            }
+        }
+        (Some(_), EndpointProfile::Naive) => {
+            model.components.camouflage.push(Component::NaivePadding);
+        }
         _ => {}
     }
+    if has_configured_fallback_destination(cfg, profile) {
+        model
+            .components
+            .ingress
+            .push(Component::FallbackDestination);
+    }
     model
+}
+
+fn has_configured_fallback_destination(
+    cfg: Option<&wrongsv_server::Config>,
+    profile: EndpointProfile,
+) -> bool {
+    let Some(cfg) = cfg else { return false };
+    let dest = match profile {
+        EndpointProfile::Reality => cfg.reality.as_ref().and_then(|c| c.dest.as_deref()),
+        EndpointProfile::AnyTls => cfg.anytls.as_ref().and_then(|c| c.dest.as_deref()),
+        EndpointProfile::Tls => cfg.tls.as_ref().and_then(|c| c.dest.as_deref()),
+        EndpointProfile::Trojan => cfg.trojan.as_ref().and_then(|c| c.dest.as_deref()),
+        EndpointProfile::ShadowTls => cfg.shadowtls.as_ref().and_then(|c| c.dest.as_deref()),
+        EndpointProfile::WebSocket => cfg
+            .websocket
+            .as_ref()
+            .and_then(|c| c.tls.as_ref())
+            .and_then(|tls| tls.dest.as_deref()),
+        EndpointProfile::HttpUpgrade => cfg
+            .httpupgrade
+            .as_ref()
+            .and_then(|c| c.tls.as_ref())
+            .and_then(|tls| tls.dest.as_deref()),
+        EndpointProfile::Grpc => cfg
+            .grpc
+            .as_ref()
+            .and_then(|c| c.tls.as_ref())
+            .and_then(|tls| tls.dest.as_deref()),
+        EndpointProfile::Xhttp => cfg
+            .xhttp
+            .as_ref()
+            .and_then(|c| c.tls.as_ref())
+            .and_then(|tls| tls.dest.as_deref()),
+        EndpointProfile::Meek => cfg
+            .meek
+            .as_ref()
+            .and_then(|c| c.tls.as_ref())
+            .and_then(|tls| tls.dest.as_deref()),
+        EndpointProfile::GdocsViewer => cfg
+            .gdocsviewer
+            .as_ref()
+            .and_then(|c| c.tls.as_ref())
+            .and_then(|tls| tls.dest.as_deref()),
+        EndpointProfile::Quic => cfg
+            .quic
+            .as_ref()
+            .and_then(|c| c.tls.as_ref())
+            .and_then(|tls| tls.dest.as_deref()),
+        EndpointProfile::WebTransport => cfg
+            .webtransport
+            .as_ref()
+            .and_then(|c| c.tls.as_ref())
+            .and_then(|tls| tls.dest.as_deref()),
+        EndpointProfile::Hysteria2 => cfg
+            .hysteria2
+            .as_ref()
+            .and_then(|c| c.tls.as_ref())
+            .and_then(|tls| tls.dest.as_deref()),
+        EndpointProfile::Tuic => cfg
+            .tuic
+            .as_ref()
+            .and_then(|c| c.tls.as_ref())
+            .and_then(|tls| tls.dest.as_deref()),
+        EndpointProfile::Naive => cfg.naive.as_ref().and_then(|c| c.tls.dest.as_deref()),
+        EndpointProfile::Raw
+        | EndpointProfile::Kcp
+        | EndpointProfile::Vmess
+        | EndpointProfile::Shadowsocks
+        | EndpointProfile::Mixed
+        | EndpointProfile::WireGuard => None,
+    };
+    dest.is_some_and(|value| !value.trim().is_empty())
 }
 
 #[cfg(test)]
@@ -263,13 +357,18 @@ password = "obfs-secret"
         assert_eq!(profile, EndpointProfile::Hysteria2);
         let model = build_endpoint_model(Some(&config), profile, "");
         assert_eq!(model.protocol, ProxyProtocol::Hysteria2);
-        assert_eq!(model.transport, Some(crate::endpoint::TransportMethod::Quic));
+        assert_eq!(
+            model.transport,
+            Some(crate::endpoint::TransportMethod::Quic)
+        );
         assert_eq!(model.outer_security, Some(OuterSecurity::Tls));
         assert_eq!(model.payload_networks, vec![PayloadNetwork::Tcp]);
-        assert!(model
-            .components
-            .camouflage
-            .contains(&Component::HysteriaSalamander));
+        assert!(
+            model
+                .components
+                .camouflage
+                .contains(&Component::HysteriaSalamander)
+        );
     }
 
     #[test]
@@ -290,9 +389,215 @@ password = "obfs-secret"
         let profile = detect_profile(Some(&config), None);
         assert_eq!(profile, EndpointProfile::Hysteria2);
         let model = build_endpoint_model(Some(&config), profile, "");
-        assert!(model
-            .components
-            .camouflage
-            .contains(&Component::HysteriaGecko));
+        assert!(
+            model
+                .components
+                .camouflage
+                .contains(&Component::HysteriaGecko)
+        );
+    }
+
+    #[test]
+    fn reality_dest_surfaces_as_fallback_ingress_component() {
+        let config: wrongsv_server::Config = toml::from_str(
+            r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+email = "user@example.com"
+
+[reality]
+private_key = "0000000000000000000000000000000000000000000000000000000000000000"
+dest = "www.microsoft.com:443"
+"#,
+        )
+        .expect("config should parse");
+        let profile = detect_profile(Some(&config), None);
+        assert_eq!(profile, EndpointProfile::Reality);
+        let model = build_endpoint_model(Some(&config), profile, "");
+        assert!(
+            model
+                .components
+                .ingress
+                .contains(&Component::FallbackDestination)
+        );
+    }
+
+    #[test]
+    fn websocket_tls_dest_surfaces_as_fallback_ingress_component() {
+        let config: wrongsv_server::Config = toml::from_str(
+            r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+email = "user@example.com"
+
+[websocket]
+path = "/ws"
+
+[websocket.tls]
+certificate = "cert"
+key = "key"
+dest = "127.0.0.1:8080"
+"#,
+        )
+        .expect("config should parse");
+        let profile = detect_profile(Some(&config), None);
+        assert_eq!(profile, EndpointProfile::WebSocket);
+        let model = build_endpoint_model(Some(&config), profile, "");
+        assert!(
+            model
+                .components
+                .ingress
+                .contains(&Component::FallbackDestination)
+        );
+    }
+
+    #[test]
+    fn missing_dest_does_not_surface_fallback_ingress_component() {
+        let config: wrongsv_server::Config = toml::from_str(
+            r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+email = "user@example.com"
+
+[websocket]
+path = "/ws"
+"#,
+        )
+        .expect("config should parse");
+        let profile = detect_profile(Some(&config), None);
+        let model = build_endpoint_model(Some(&config), profile, "");
+        assert!(
+            !model
+                .components
+                .ingress
+                .contains(&Component::FallbackDestination)
+        );
+    }
+
+    #[test]
+    fn wireguard_outbound_surfaces_routed_tunnel_network_component() {
+        let config: wrongsv_server::Config = toml::from_str(
+            r#"
+listen = "0.0.0.0:51820"
+
+[wireguard]
+private_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+server_cidrs = ["10.0.0.1/24"]
+outbound = true
+
+[[wireguard.peers]]
+public_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+allowed_ips = ["10.0.0.2/32"]
+"#,
+        )
+        .expect("config should parse");
+        let profile = detect_profile(Some(&config), None);
+        assert_eq!(profile, EndpointProfile::WireGuard);
+        let model = build_endpoint_model(Some(&config), profile, "");
+        assert!(model.components.network.contains(&Component::RoutedTunnel));
+    }
+
+    #[test]
+    fn wireguard_forwards_mode_omits_routed_tunnel_network_component() {
+        let config: wrongsv_server::Config = toml::from_str(
+            r#"
+listen = "0.0.0.0:51820"
+
+[wireguard]
+private_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+server_cidrs = ["10.0.0.1/24"]
+
+[[wireguard.peers]]
+public_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+allowed_ips = ["10.0.0.2/32"]
+
+[[wireguard.forwards]]
+service = "10.0.0.1:80"
+target = "127.0.0.1:8080"
+"#,
+        )
+        .expect("config should parse");
+        let profile = detect_profile(Some(&config), None);
+        assert_eq!(profile, EndpointProfile::WireGuard);
+        let model = build_endpoint_model(Some(&config), profile, "");
+        assert!(!model.components.network.contains(&Component::RoutedTunnel));
+    }
+
+    #[test]
+    fn detect_profile_and_build_model_for_naive() {
+        let config: wrongsv_server::Config = toml::from_str(
+            r#"
+listen = "0.0.0.0:443"
+
+[naive]
+
+[naive.tls]
+certificate = "cert"
+key = "key"
+
+[[naive.users]]
+username = "user"
+password = "secret"
+email = "user@example.com"
+"#,
+        )
+        .expect("config should parse");
+        let profile = detect_profile(Some(&config), None);
+        assert_eq!(profile, EndpointProfile::Naive);
+        assert_eq!(
+            resolve_outer_security(Some(&config), profile),
+            Some(OuterSecurity::Tls)
+        );
+        let model = build_endpoint_model(Some(&config), profile, "");
+        assert_eq!(model.protocol, ProxyProtocol::Naive);
+        assert_eq!(
+            model.transport,
+            Some(crate::endpoint::TransportMethod::H2Connect)
+        );
+        assert_eq!(model.outer_security, Some(OuterSecurity::Tls));
+        assert_eq!(model.payload_networks, vec![PayloadNetwork::Tcp]);
+        assert!(
+            model
+                .components
+                .camouflage
+                .contains(&Component::NaivePadding)
+        );
+    }
+
+    #[test]
+    fn naive_dest_surfaces_as_fallback_ingress_component() {
+        let config: wrongsv_server::Config = toml::from_str(
+            r#"
+listen = "0.0.0.0:443"
+
+[naive]
+
+[naive.tls]
+certificate = "cert"
+key = "key"
+dest = "127.0.0.1:8080"
+
+[[naive.users]]
+username = "user"
+password = "secret"
+email = "user@example.com"
+"#,
+        )
+        .expect("config should parse");
+        let profile = detect_profile(Some(&config), None);
+        assert_eq!(profile, EndpointProfile::Naive);
+        let model = build_endpoint_model(Some(&config), profile, "");
+        assert!(
+            model
+                .components
+                .ingress
+                .contains(&Component::FallbackDestination)
+        );
     }
 }

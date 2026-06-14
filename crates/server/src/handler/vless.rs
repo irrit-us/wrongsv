@@ -1,9 +1,9 @@
+use std::fmt::Display;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
-use std::{fmt::Display};
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, trace};
 use wrongsv_protocol::{RequestCommand, RequestHeader};
 use wrongsv_vless::{MemoryValidator, Validator, XRV};
 use wrongsv_vless_encoding::{self as encoding, Addons, encoding::EncodeError};
@@ -62,28 +62,6 @@ pub(crate) fn log_vless_request(peer: impl Display, request: &RequestHeader) {
     );
 }
 
-pub(crate) fn handle_kyber_addons(
-    peer: impl Display,
-    decoded: &encoding::DecodedRequest,
-    kyber_sk: Option<[u8; 64]>,
-) {
-    if decoded.addons.kyber_ct.is_empty() {
-        return;
-    }
-
-    if let Some(sk) = kyber_sk {
-        match wrongsv_kyber::decapsulate(&sk, &decoded.addons.kyber_ct) {
-            Ok(_) => info!(
-                "{peer} Kyber session established (ML-KEM-512, ss={} bytes)",
-                wrongsv_kyber::SS_SIZE
-            ),
-            Err(e) => warn!("{peer} Kyber decapsulation failed: {e}"),
-        }
-    } else {
-        debug!("{peer} client sent kyber_ct but server has no kyber_secret_key configured");
-    }
-}
-
 pub(crate) fn validate_vless_command(
     request: &RequestHeader,
     use_vision: bool,
@@ -97,7 +75,6 @@ pub(crate) fn validate_vless_command(
 pub(crate) fn response_header_buf(request: &RequestHeader) -> Result<bytes::BytesMut, EncodeError> {
     let response_addons = Addons {
         flow: String::new(),
-        ..Default::default()
     };
     let mut resp_buf = bytes::BytesMut::new();
     encoding::encode_response_header(&mut resp_buf, request, &response_addons)?;
@@ -107,7 +84,6 @@ pub(crate) fn response_header_buf(request: &RequestHeader) -> Result<bytes::Byte
 pub(crate) fn handle_connection(
     mut stream: TcpStream,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let peer = stream.peer_addr()?;
@@ -136,7 +112,6 @@ pub(crate) fn handle_connection(
         "{peer} flow={} use_vision={use_vision}",
         decoded.addons.flow
     );
-    handle_kyber_addons(peer, &decoded, kyber_sk);
     validate_vless_command(request, use_vision)?;
 
     let resp_buf = response_header_buf(request)?;
@@ -169,7 +144,13 @@ pub(crate) fn handle_connection(
 
     if use_vision {
         trace!("{peer} starting vision relay");
-        relay_vision(stream, target, &decoded.user_sent_id, &account.testseed, tap)?;
+        relay_vision(
+            stream,
+            target,
+            &decoded.user_sent_id,
+            &account.testseed,
+            tap,
+        )?;
     } else {
         trace!("{peer} starting raw relay");
         relay_raw_with_initial(stream, target, remaining_body, tap)?;

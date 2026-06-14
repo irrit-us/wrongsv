@@ -91,12 +91,7 @@ impl<R: Read> Http1BodyReader<R> {
         }
         let line = std::str::from_utf8(&line)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid chunk-size line"))?;
-        let chunk_len = line
-            .trim()
-            .split(';')
-            .next()
-            .unwrap_or("")
-            .trim();
+        let chunk_len = line.trim().split(';').next().unwrap_or("").trim();
         if chunk_len.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -231,7 +226,9 @@ pub(crate) fn parse_meek_config(mc: &MeekServerConfig) -> Result<MeekConfig, Str
     };
     let max_request_bytes = mc.max_request_bytes.max(1);
     let max_response_bytes = mc.max_response_bytes.max(1);
-    let max_buffered_response_bytes = max_response_bytes.saturating_mul(16).max(max_response_bytes);
+    let max_buffered_response_bytes = max_response_bytes
+        .saturating_mul(16)
+        .max(max_response_bytes);
     let idle_timeout = if mc.idle_timeout == 0 {
         Duration::ZERO
     } else {
@@ -394,7 +391,9 @@ fn parse_meek_http1_request(
     if let Some(expected_host) = host {
         let got = request_host.as_deref().unwrap_or("");
         if !host_matches(expected_host, got) {
-            return Err(format!("host mismatch: expected {expected_host}, got {got}"));
+            return Err(format!(
+                "host mismatch: expected {expected_host}, got {got}"
+            ));
         }
     }
 
@@ -420,7 +419,11 @@ fn parse_meek_http1_request(
     ))
 }
 
-fn read_meek_request_body<R: Read>(reader: R, kind: Http1BodyKind, limit: usize) -> Result<Vec<u8>, String> {
+fn read_meek_request_body<R: Read>(
+    reader: R,
+    kind: Http1BodyKind,
+    limit: usize,
+) -> Result<Vec<u8>, String> {
     let mut body_reader = Http1BodyReader::new(reader, kind);
     let mut body = Vec::new();
     let mut buf = [0u8; 8192];
@@ -478,7 +481,6 @@ fn reject_meek_http1(stream: &mut TcpStream, status_line: &str) {
 pub(crate) fn handle_meek_connection(
     stream: TcpStream,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     meek_config: &MeekConfig,
     metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -491,7 +493,6 @@ pub(crate) fn handle_meek_connection(
             handle_meek_connection(
                 plain,
                 validator,
-                kyber_sk,
                 &MeekConfig {
                     tls_config: None,
                     ..meek_config.clone()
@@ -520,7 +521,10 @@ pub(crate) fn handle_meek_connection(
                 }
             };
 
-            trace!("{peer} Meek request accepted session={}", request.session_id);
+            trace!(
+                "{peer} Meek request accepted session={}",
+                request.session_id
+            );
             let reader_stream = stream.try_clone()?;
             let body = match read_meek_request_body(
                 PrefixedReader::new(initial_body, reader_stream),
@@ -543,7 +547,6 @@ pub(crate) fn handle_meek_connection(
                     Arc::clone(&meek_config.sessions),
                     session_stream,
                     validator,
-                    kyber_sk,
                     metrics.clone(),
                 );
             }
@@ -702,7 +705,6 @@ test\r\n";
                         handle_meek_connection(
                             stream,
                             Arc::clone(&validator_clone),
-                            None,
                             &meek_clone,
                             Arc::clone(&metrics_clone),
                         )
@@ -719,8 +721,7 @@ test\r\n";
 
         let request = build_request(echo_addr);
         let mut body = bytes::BytesMut::new();
-        encoding::encode_request_header(&mut body, &request, &encoding::Addons::default())
-            .unwrap();
+        encoding::encode_request_header(&mut body, &request, &encoding::Addons::default()).unwrap();
         body.extend_from_slice(b"hello meek");
 
         let mut first_stream = TcpStream::connect(server_addr).unwrap();

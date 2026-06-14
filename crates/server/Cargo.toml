@@ -8,7 +8,6 @@ wrongsv-protocol.workspace = true
 wrongsv-vless.workspace = true
 wrongsv-vless-encoding.workspace = true
 wrongsv-encryption.workspace = true
-wrongsv-kyber.workspace = true
 wrongsv-reality.workspace = true
 wrongsv-anytls.workspace = true
 wrongsv-shadowsocks.workspace = true

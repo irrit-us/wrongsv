@@ -178,7 +178,11 @@ impl RequestSession {
 
     fn read_outgoing(&self, wait_for_response: bool, poll_wait: Duration) -> io::Result<Vec<u8>> {
         let mut outgoing = self.outgoing.lock().unwrap();
-        if outgoing.buffer.is_empty() && wait_for_response && poll_wait > Duration::ZERO && !self.is_closed() {
+        if outgoing.buffer.is_empty()
+            && wait_for_response
+            && poll_wait > Duration::ZERO
+            && !self.is_closed()
+        {
             let (next, _timeout) = self
                 .outgoing_cv
                 .wait_timeout_while(outgoing, poll_wait, |state| {
@@ -349,7 +353,6 @@ impl Write for RequestSessionStream {
 pub(crate) fn handle_vless_over_request_stream(
     mut stream: RequestSessionStream,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     peer_label: &str,
     metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -359,7 +362,10 @@ pub(crate) fn handle_vless_over_request_stream(
         return Err("request transport closed before VLESS header".into());
     }
     first.truncate(n);
-    trace!("{peer_label} request transport read {} bytes VLESS header", first.len());
+    trace!(
+        "{peer_label} request transport read {} bytes VLESS header",
+        first.len()
+    );
 
     let VlessRequest {
         decoded,
@@ -375,7 +381,6 @@ pub(crate) fn handle_vless_over_request_stream(
         "{peer_label} request transport flow={} use_vision={use_vision}",
         decoded.addons.flow
     );
-    handle_kyber_addons(peer_label, &decoded, kyber_sk);
     validate_vless_command(request, use_vision)?;
     let tap = wrongsv_metrics::MetricsTap::new(metrics, request.user.email.clone());
     let _conn_guard = tap.track_connection();
@@ -418,13 +423,11 @@ pub(crate) fn spawn_vless_request_session(
     registry: Arc<RequestSessionRegistry>,
     stream: RequestSessionStream,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     metrics: Arc<wrongsv_metrics::Registry>,
 ) {
     std::thread::spawn(move || {
         let peer_label = format!("{transport_label} session={session_id}");
-        let result =
-            handle_vless_over_request_stream(stream, validator, kyber_sk, &peer_label, metrics);
+        let result = handle_vless_over_request_stream(stream, validator, &peer_label, metrics);
         if let Err(e) = result {
             tracing::warn!("{peer_label} error: {e}");
         }
@@ -674,8 +677,7 @@ fn relay_request_stream_udp(
                 }
                 client.write_all(&out)?;
             }
-            Err(ref e)
-                if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {}
+            Err(ref e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {}
             Err(e) => return Err(e.into()),
         }
     }

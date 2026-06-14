@@ -36,10 +36,13 @@ mod tests {
 
     #[test]
     fn custom_bind_address() {
-        let cfg: MetricsConfig = toml::from_str(r#"
+        let cfg: MetricsConfig = toml::from_str(
+            r#"
 port = 9100
 bind = "0.0.0.0"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         assert_eq!(cfg.bind, "0.0.0.0");
         assert_eq!(cfg.socket_addr(), "0.0.0.0:9100");
     }

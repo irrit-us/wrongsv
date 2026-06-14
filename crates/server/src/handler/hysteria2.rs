@@ -62,7 +62,7 @@ pub(crate) fn parse_hysteria2_config(
         }
     };
     let tls_config = build_hysteria2_tls_config(&cert_pem, &key_pem)?;
-    let quic_config = build_hysteria2_quic_config(tls_config)?;
+    let quic_config = build_hysteria2_quic_config(tls_config, cfg.up_mbps)?;
     let mut password_auths = Vec::new();
     if let Some(password) = cfg.password.as_ref() {
         password_auths.push(Hysteria2AuthEntry {
@@ -111,6 +111,7 @@ fn build_hysteria2_tls_config(
 
 fn build_hysteria2_quic_config(
     tls_config: rustls::ServerConfig,
+    up_mbps: Option<u64>,
 ) -> Result<quinn::ServerConfig, String> {
     let quic_tls = quinn::crypto::rustls::QuicServerConfig::try_from(Arc::new(tls_config))
         .map_err(|e| format!("quic tls: {e}"))?;
@@ -120,6 +121,15 @@ fn build_hysteria2_quic_config(
     transport_config.datagram_receive_buffer_size(Some(64 * 1024));
     transport_config.datagram_send_buffer_size(64 * 1024);
     transport_config.keep_alive_interval(Some(Duration::from_secs(10)));
+    if let Some(mbps) = up_mbps {
+        // Hysteria2 only applies `up_mbps` to its Brutal CC, which quinn
+        // does not implement. As an honest approximation, cap the
+        // connection-wide send window to a 200 ms bandwidth-delay product:
+        // `bytes_in_flight ≤ up_mbps * 125_000 * 0.2`. This bounds server-
+        // side TX in high-RTT scenarios without depending on Brutal.
+        let window = mbps.saturating_mul(25_000).max(64 * 1024);
+        transport_config.send_window(window);
+    }
     Ok(server_config)
 }
 
@@ -164,8 +174,8 @@ pub(crate) async fn run_hysteria2_endpoint(
 fn create_hysteria2_endpoint(listen: &str, config: &Hysteria2Config) -> Result<Endpoint, H2Error> {
     let addr = listen.parse::<SocketAddr>()?;
     if let Some(obfs) = &config.obfs {
-        let runtime = quinn::default_runtime()
-            .ok_or_else(|| io::Error::other("no async runtime found"))?;
+        let runtime =
+            quinn::default_runtime().ok_or_else(|| io::Error::other("no async runtime found"))?;
         let socket = std::net::UdpSocket::bind(addr)?;
         let socket = runtime.wrap_udp_socket(socket)?;
         let socket = match obfs {
@@ -454,8 +464,9 @@ async fn drive_hysteria2_udp(
             if let Some(session) = guard.get(&session_id) {
                 Arc::clone(session)
             } else {
-                let session =
-                    Arc::new(Hysteria2UdpSession::new(conn.clone(), session_id, tap.clone()).await?);
+                let session = Arc::new(
+                    Hysteria2UdpSession::new(conn.clone(), session_id, tap.clone()).await?,
+                );
                 guard.insert(session_id, Arc::clone(&session));
                 session
             }
@@ -504,7 +515,11 @@ impl Hysteria2UdpSession {
                 metrics.clone(),
             );
         }
-        Ok(Self { ipv4, ipv6, metrics })
+        Ok(Self {
+            ipv4,
+            ipv6,
+            metrics,
+        })
     }
 
     async fn send_payload(&self, address: &str, payload: Vec<u8>) -> Result<(), H2Error> {
@@ -709,9 +724,7 @@ mod tests {
 
     fn ensure_rustls_provider() {
         RUSTLS_PROVIDER.call_once(|| {
-            rustls::crypto::aws_lc_rs::default_provider()
-                .install_default()
-                .expect("install rustls crypto provider");
+            let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         });
     }
 
@@ -730,7 +743,7 @@ mod tests {
                     metrics_key: "alice@example.com".into(),
                 },
             ],
-            quic_config: build_hysteria2_quic_config(tls).unwrap(),
+            quic_config: build_hysteria2_quic_config(tls, None).unwrap(),
             disable_udp: false,
             down_mbps: Some(100),
             ignore_client_bandwidth: false,
@@ -784,6 +797,20 @@ mod tests {
         assert_eq!(
             matches_hysteria2_auth(&request, &config).unwrap(),
             Some("alice@example.com".into())
+        );
+    }
+
+    #[test]
+    fn build_hysteria2_quic_config_sets_send_window_from_up_mbps() {
+        ensure_rustls_provider();
+        let (cert, key) = wrongsv_anytls::generate_self_signed_cert().unwrap();
+        let tls = build_hysteria2_tls_config(&cert, &key).unwrap();
+        // 100 Mbps × 125_000 B/s × 0.2 s = 2_500_000 B
+        let cfg = build_hysteria2_quic_config(tls, Some(100)).unwrap();
+        let dbg = format!("{:?}", cfg.transport);
+        assert!(
+            dbg.contains("send_window: 2500000"),
+            "expected send_window: 2500000 in transport debug: {dbg}"
         );
     }
 
@@ -998,7 +1025,7 @@ mod tests {
                 auth: "secret".into(),
                 metrics_key: String::new(),
             }],
-            quic_config: build_hysteria2_quic_config(tls).unwrap(),
+            quic_config: build_hysteria2_quic_config(tls, None).unwrap(),
             disable_udp: false,
             down_mbps: Some(100),
             ignore_client_bandwidth: false,
@@ -1043,7 +1070,7 @@ mod tests {
                 auth: "secret".into(),
                 metrics_key: String::new(),
             }],
-            quic_config: build_hysteria2_quic_config(tls).unwrap(),
+            quic_config: build_hysteria2_quic_config(tls, None).unwrap(),
             disable_udp: false,
             down_mbps: Some(100),
             ignore_client_bandwidth: false,
@@ -1080,7 +1107,7 @@ mod tests {
                 auth: "secret".into(),
                 metrics_key: String::new(),
             }],
-            quic_config: build_hysteria2_quic_config(tls).unwrap(),
+            quic_config: build_hysteria2_quic_config(tls, None).unwrap(),
             disable_udp: false,
             down_mbps: Some(100),
             ignore_client_bandwidth: false,
@@ -1124,7 +1151,7 @@ mod tests {
                 auth: "secret".into(),
                 metrics_key: String::new(),
             }],
-            quic_config: build_hysteria2_quic_config(tls).unwrap(),
+            quic_config: build_hysteria2_quic_config(tls, None).unwrap(),
             disable_udp: false,
             down_mbps: Some(100),
             ignore_client_bandwidth: false,

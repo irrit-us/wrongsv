@@ -68,10 +68,7 @@ fn encode_vless_request(
     wrongsv_vless_encoding::encode_request_header(
         &mut buf,
         &request,
-        &Addons {
-            flow: flow.into(),
-            ..Default::default()
-        },
+        &Addons { flow: flow.into() },
     )
     .unwrap();
     buf.to_vec()

@@ -380,7 +380,6 @@ pub(crate) fn parse_ws_config(wc: &WebSocketServerConfig) -> Result<WebSocketCon
 pub(crate) fn handle_ws_connection(
     stream: TcpStream,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     ws_config: &WebSocketConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let peer = stream.peer_addr()?;
@@ -427,7 +426,7 @@ pub(crate) fn handle_ws_connection(
             let mut ws_stream = WebSocketStream::new(tls_stream, remaining);
 
             info!("{peer} TLS+WS upgraded on path '{}'", ws_config.path);
-            handle_vless_over_ws(&mut ws_stream, validator, kyber_sk, peer, ws_config, true)?;
+            handle_vless_over_ws(&mut ws_stream, validator, peer, ws_config, true)?;
             Ok(())
         }
         None => {
@@ -449,7 +448,7 @@ pub(crate) fn handle_ws_connection(
             let mut ws_stream = WebSocketStream::new(raw_stream, remaining);
 
             info!("{peer} WS upgraded on path '{}'", ws_config.path);
-            handle_vless_over_ws(&mut ws_stream, validator, kyber_sk, peer, ws_config, false)?;
+            handle_vless_over_ws(&mut ws_stream, validator, peer, ws_config, false)?;
             Ok(())
         }
     }
@@ -458,7 +457,6 @@ pub(crate) fn handle_ws_connection(
 pub(crate) fn handle_vless_over_ws<S: Read + Write>(
     ws_stream: &mut WebSocketStream<S>,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     peer: SocketAddr,
     _ws_config: &WebSocketConfig,
     _tls: bool,
@@ -481,7 +479,6 @@ pub(crate) fn handle_vless_over_ws<S: Read + Write>(
     let account = &request.user.account;
 
     log_vless_request(peer, request);
-    handle_kyber_addons(peer, &decoded, kyber_sk);
     validate_vless_command(request, use_vision)?;
 
     let resp_buf = response_header_buf(request)?;

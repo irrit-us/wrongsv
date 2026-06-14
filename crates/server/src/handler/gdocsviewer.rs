@@ -67,7 +67,9 @@ pub(crate) fn parse_gdocsviewer_config(
         None => None,
     };
     let max_response_bytes = gc.max_response_bytes.max(1);
-    let max_buffered_response_bytes = max_response_bytes.saturating_mul(16).max(max_response_bytes);
+    let max_buffered_response_bytes = max_response_bytes
+        .saturating_mul(16)
+        .max(max_response_bytes);
     let idle_timeout = if gc.idle_timeout == 0 {
         Duration::ZERO
     } else {
@@ -129,8 +131,8 @@ fn parse_http_get_path(buf: &[u8]) -> Result<String, String> {
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
         .ok_or_else(|| "incomplete HTTP headers".to_string())?;
-    let headers = std::str::from_utf8(&buf[..header_end])
-        .map_err(|_| "invalid HTTP headers".to_string())?;
+    let headers =
+        std::str::from_utf8(&buf[..header_end]).map_err(|_| "invalid HTTP headers".to_string())?;
     let mut lines = headers.lines();
     let request_line = lines
         .next()
@@ -176,10 +178,7 @@ fn decrypt_aead(key: &[u8; 32], combined: &[u8]) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("aes-gcm decrypt: {e}"))
 }
 
-fn decrypt_client_request(
-    key: &[u8; 32],
-    combined: &[u8],
-) -> Result<(Vec<u8>, Vec<u8>), String> {
+fn decrypt_client_request(key: &[u8; 32], combined: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
     let frame = decrypt_aead(key, combined)?;
     if frame.len() < 3 {
         return Err("encrypted request frame is too short".to_string());
@@ -209,7 +208,6 @@ fn roundtrip_plain(
     session_segment: &str,
     payload_segment: &str,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<Vec<u8>, String> {
     let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -226,7 +224,6 @@ fn roundtrip_plain(
             Arc::clone(&config.sessions),
             stream,
             validator,
-            kyber_sk,
             metrics.clone(),
         );
     }
@@ -245,7 +242,6 @@ fn roundtrip_encrypted(
     config: &GdocsViewerConfig,
     combined_segment: &str,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<Vec<u8>, String> {
     let Some(shared_key) = config.shared_key.as_ref() else {
@@ -267,7 +263,6 @@ fn roundtrip_encrypted(
             Arc::clone(&config.sessions),
             stream,
             validator,
-            kyber_sk,
             metrics.clone(),
         );
     }
@@ -276,31 +271,26 @@ fn roundtrip_encrypted(
     } else {
         Duration::from_millis(250)
     };
-    match lease
-        .session
-        .submit_roundtrip(&payload, true, poll_wait)
-    {
+    match lease.session.submit_roundtrip(&payload, true, poll_wait) {
         Ok(response) => {
             let mut frame = Vec::with_capacity(1 + response.len());
             frame.push(RESPONSE_FRAME_SUCCESS);
             frame.extend_from_slice(&response);
-            encrypt_response_frame(shared_key, &frame)
-                .map(|ciphertext| {
-                    base64::engine::general_purpose::STANDARD
-                        .encode(ciphertext)
-                        .into_bytes()
-                })
+            encrypt_response_frame(shared_key, &frame).map(|ciphertext| {
+                base64::engine::general_purpose::STANDARD
+                    .encode(ciphertext)
+                    .into_bytes()
+            })
         }
         Err(e) => {
             let mut frame = Vec::with_capacity(1 + e.to_string().len());
             frame.push(RESPONSE_FRAME_ERROR);
             frame.extend_from_slice(e.to_string().as_bytes());
-            encrypt_response_frame(shared_key, &frame)
-                .map(|ciphertext| {
-                    base64::engine::general_purpose::STANDARD
-                        .encode(ciphertext)
-                        .into_bytes()
-                })
+            encrypt_response_frame(shared_key, &frame).map(|ciphertext| {
+                base64::engine::general_purpose::STANDARD
+                    .encode(ciphertext)
+                    .into_bytes()
+            })
         }
     }
 }
@@ -308,7 +298,6 @@ fn roundtrip_encrypted(
 pub(crate) fn handle_gdocsviewer_connection(
     stream: TcpStream,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     gdocs_config: &GdocsViewerConfig,
     metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -320,7 +309,6 @@ pub(crate) fn handle_gdocsviewer_connection(
             handle_gdocsviewer_connection(
                 plain,
                 validator,
-                kyber_sk,
                 &GdocsViewerConfig {
                     tls_config: None,
                     ..gdocs_config.clone()
@@ -359,14 +347,7 @@ pub(crate) fn handle_gdocsviewer_connection(
                     not_found(&mut stream);
                     return Ok(());
                 }
-                match roundtrip_plain(
-                    gdocs_config,
-                    parts[0],
-                    parts[1],
-                    validator,
-                    kyber_sk,
-                    metrics,
-                ) {
+                match roundtrip_plain(gdocs_config, parts[0], parts[1], validator, metrics) {
                     Ok(response) => base64::engine::general_purpose::STANDARD
                         .encode(response)
                         .into_bytes(),
@@ -385,7 +366,7 @@ pub(crate) fn handle_gdocsviewer_connection(
                     not_found(&mut stream);
                     return Ok(());
                 };
-                match roundtrip_encrypted(gdocs_config, combined, validator, kyber_sk, metrics) {
+                match roundtrip_encrypted(gdocs_config, combined, validator, metrics) {
                     Ok(response) => response,
                     Err(e) => {
                         debug!("{peer} gdocsviewer encrypted roundtrip failed: {e}");
@@ -407,7 +388,8 @@ mod tests {
 
     #[test]
     fn parse_http_get_path_extracts_path_without_query() {
-        let request = b"GET /gdocsviewer/r/abc/def/nonce.txt?x=1 HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        let request =
+            b"GET /gdocsviewer/r/abc/def/nonce.txt?x=1 HTTP/1.1\r\nHost: example.com\r\n\r\n";
         assert_eq!(
             parse_http_get_path(request).unwrap(),
             "/gdocsviewer/r/abc/def/nonce.txt"

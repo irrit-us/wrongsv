@@ -301,7 +301,6 @@ fn build_default_config() -> Config {
     use wrongsv_server::config::UserConfig;
     let uuid = option_env!("BUILD_UUID").unwrap_or("00000000-0000-4000-8000-000000000000");
     let port = option_env!("BUILD_PORT").unwrap_or("443");
-    let kyber = option_env!("BUILD_KYBER_SK_HEX").map(String::from);
     Config {
         listen: format!("0.0.0.0:{port}"),
         users: vec![UserConfig {
@@ -313,7 +312,6 @@ fn build_default_config() -> Config {
         }],
         decryption: None,
         flow: Some("xtls-rprx-vision".into()),
-        kyber_secret_key: kyber,
         reality: None,
         anytls: None,
         tls: None,
@@ -334,6 +332,7 @@ fn build_default_config() -> Config {
         webtransport: None,
         shadowtls: None,
         vmess: None,
+        naive: None,
         metrics: None,
     }
 }

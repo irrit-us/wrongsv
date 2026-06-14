@@ -6,11 +6,11 @@ pub(crate) use profile::*;
 
 use serde::Serialize;
 
-use crate::endpoint::{
-    protocol_descriptor, resolve_endpoint, Component, ComponentDescriptorSet, EndpointComponents,
-    LayerMode, OuterSecurity, ProxyProtocol, TransportMethod,
-};
 use crate::ClientFormat;
+use crate::endpoint::{
+    Component, ComponentDescriptorSet, EndpointComponents, LayerMode, OuterSecurity, ProxyProtocol,
+    TransportMethod, protocol_descriptor, resolve_endpoint,
+};
 
 // ---------------------------------------------------------------------------
 // Client config generation — outputs sing-box or mihomo JSON for connecting
@@ -52,7 +52,11 @@ fn validate_client_format_support(
             descriptor.display_name
         ));
     }
-    validate_component_support(descriptor.display_name, &resolved.active_components, descriptor.components)?;
+    validate_component_support(
+        descriptor.display_name,
+        &resolved.active_components,
+        descriptor.components,
+    )?;
 
     match resolved.protocol {
         ProxyProtocol::Vless => {
@@ -69,7 +73,9 @@ fn validate_client_format_support(
             if resolved.transport == Some(TransportMethod::WebTransport)
                 && !matches!(format, ClientFormat::Xray)
             {
-                return Err("WebTransport export is only implemented for xray-family configs".into());
+                return Err(
+                    "WebTransport export is only implemented for xray-family configs".into(),
+                );
             }
             if vals.has_component(Component::AnyTls)
                 && !matches!(format, ClientFormat::SingBox | ClientFormat::Hiddify)
@@ -83,11 +89,21 @@ fn validate_client_format_support(
             }
         }
         ProxyProtocol::Vmess => {}
-        ProxyProtocol::Shadowsocks
-        | ProxyProtocol::Trojan
-        | ProxyProtocol::Hysteria2
-        | ProxyProtocol::Tuic
-        | ProxyProtocol::Mixed => {
+        ProxyProtocol::Shadowsocks | ProxyProtocol::Trojan => {}
+        ProxyProtocol::Hysteria2 | ProxyProtocol::Tuic => {
+            if matches!(format, ClientFormat::Xray) {
+                return Err(format!(
+                    "{} export is not implemented for xray format (xray does not natively support {})",
+                    descriptor.display_name,
+                    match resolved.protocol {
+                        ProxyProtocol::Hysteria2 => "hysteria2",
+                        ProxyProtocol::Tuic => "tuic",
+                        _ => "this protocol",
+                    }
+                ));
+            }
+        }
+        ProxyProtocol::Mixed | ProxyProtocol::Naive => {
             return Err(format!(
                 "{} export is not implemented for {} format",
                 descriptor.display_name,
@@ -108,9 +124,19 @@ fn validate_component_support(
     active: &EndpointComponents,
     declared: ComponentDescriptorSet,
 ) -> Result<(), String> {
-    validate_component_bucket(display_name, "camouflage", &active.camouflage, declared.camouflage)?;
+    validate_component_bucket(
+        display_name,
+        "camouflage",
+        &active.camouflage,
+        declared.camouflage,
+    )?;
     validate_component_bucket(display_name, "ingress", &active.ingress, declared.ingress)?;
-    validate_component_bucket(display_name, "performance", &active.performance, declared.performance)?;
+    validate_component_bucket(
+        display_name,
+        "performance",
+        &active.performance,
+        declared.performance,
+    )?;
     validate_component_bucket(display_name, "network", &active.network, declared.network)?;
     Ok(())
 }
@@ -319,29 +345,88 @@ fn mihomo_format(server_host: &str, client_name: &str, vals: &ClientConfigValues
         return serde_json::to_string_pretty(&config)
             .expect("WireGuardMihomoConfig should serialize");
     }
+    if vals.protocol() == ProxyProtocol::Shadowsocks {
+        let config = serde_json::json!({
+            "name": client_name,
+            "type": "ss",
+            "server": server_host,
+            "port": port,
+            "cipher": vals.shadowsocks_method,
+            "password": vals.shadowsocks_password,
+            "udp": true,
+        });
+        return serde_json::to_string_pretty(&config).expect("ss mihomo config should serialize");
+    }
+    if vals.protocol() == ProxyProtocol::Trojan {
+        let config = serde_json::json!({
+            "name": client_name,
+            "type": "trojan",
+            "server": server_host,
+            "port": port,
+            "password": vals.trojan_password,
+            "sni": vals.servername,
+            "skip-cert-verify": true,
+            "udp": true,
+        });
+        return serde_json::to_string_pretty(&config)
+            .expect("trojan mihomo config should serialize");
+    }
+    if vals.protocol() == ProxyProtocol::Hysteria2 {
+        let mut config = serde_json::json!({
+            "name": client_name,
+            "type": "hysteria2",
+            "server": server_host,
+            "port": port,
+            "password": vals.hysteria2_password,
+            "sni": vals.servername,
+            "skip-cert-verify": true,
+        });
+        if let Some(up) = vals.hysteria2_up_mbps {
+            config["up"] = serde_json::Value::from(up);
+        }
+        if let Some(down) = vals.hysteria2_down_mbps {
+            config["down"] = serde_json::Value::from(down);
+        }
+        return serde_json::to_string_pretty(&config)
+            .expect("hysteria2 mihomo config should serialize");
+    }
+    if vals.protocol() == ProxyProtocol::Tuic {
+        let config = serde_json::json!({
+            "name": client_name,
+            "type": "tuic",
+            "server": server_host,
+            "port": port,
+            "uuid": vals.tuic_uuid,
+            "password": vals.tuic_password,
+            "sni": vals.servername,
+            "congestion-controller": vals.tuic_congestion,
+            "udp-relay-mode": "native",
+            "skip-cert-verify": true,
+        });
+        return serde_json::to_string_pretty(&config).expect("tuic mihomo config should serialize");
+    }
 
-    let (tls, client_fingerprint, servername, skip_cert_verify, reality_opts) = match vals
-        .outer_security()
-    {
-        Some(OuterSecurity::Reality) => (
-            Some(true),
-            Some("chrome"),
-            Some(vals.servername.as_str()),
-            None,
-            Some(RealityOpts {
-                public_key: &vals.x25519_pk,
-                short_id: &vals.short_id,
-            }),
-        ),
-        Some(OuterSecurity::Tls) => (
-            Some(true),
-            Some("chrome"),
-            Some(vals.servername.as_str()),
-            Some(true),
-            None,
-        ),
-        _ => (None, None, None, None, None),
-    };
+    let (tls, client_fingerprint, servername, skip_cert_verify, reality_opts) =
+        match vals.outer_security() {
+            Some(OuterSecurity::Reality) => (
+                Some(true),
+                Some("chrome"),
+                Some(vals.servername.as_str()),
+                None,
+                Some(RealityOpts {
+                    public_key: &vals.x25519_pk,
+                    short_id: &vals.short_id,
+                }),
+            ),
+            Some(OuterSecurity::Tls) => (
+                Some(true),
+                Some("chrome"),
+                Some(vals.servername.as_str()),
+                Some(true),
+                None,
+            ),
+            _ => (None, None, None, None, None),
+        };
 
     // If a stream transport is used, TLS comes from the transport, not separately
     let (network, ws_opts, grpc_opts, mkcp_opts, quic_opts, xhttp_opts) = match vals
@@ -541,6 +626,75 @@ struct SingBoxWireGuardOutbound<'a> {
     mtu: u32,
 }
 
+fn singbox_simple_outbound(
+    server_host: &str,
+    client_name: &str,
+    port: u16,
+    vals: &ClientConfigValues,
+) -> serde_json::Value {
+    match vals.protocol() {
+        ProxyProtocol::Shadowsocks => serde_json::json!({
+            "type": "shadowsocks",
+            "tag": client_name,
+            "server": server_host,
+            "server_port": port,
+            "method": vals.shadowsocks_method,
+            "password": vals.shadowsocks_password,
+        }),
+        ProxyProtocol::Trojan => serde_json::json!({
+            "type": "trojan",
+            "tag": client_name,
+            "server": server_host,
+            "server_port": port,
+            "password": vals.trojan_password,
+            "tls": {
+                "enabled": true,
+                "server_name": vals.servername,
+                "insecure": true,
+            },
+        }),
+        ProxyProtocol::Hysteria2 => {
+            let mut value = serde_json::json!({
+                "type": "hysteria2",
+                "tag": client_name,
+                "server": server_host,
+                "server_port": port,
+                "password": vals.hysteria2_password,
+                "tls": {
+                    "enabled": true,
+                    "server_name": vals.servername,
+                    "insecure": true,
+                    "alpn": ["h3"],
+                },
+            });
+            if let Some(up) = vals.hysteria2_up_mbps {
+                value["up_mbps"] = serde_json::Value::from(up);
+            }
+            if let Some(down) = vals.hysteria2_down_mbps {
+                value["down_mbps"] = serde_json::Value::from(down);
+            }
+            value
+        }
+        ProxyProtocol::Tuic => serde_json::json!({
+            "type": "tuic",
+            "tag": client_name,
+            "server": server_host,
+            "server_port": port,
+            "uuid": vals.tuic_uuid,
+            "password": vals.tuic_password,
+            "congestion_control": vals.tuic_congestion,
+            "udp_relay_mode": "native",
+            "tls": {
+                "enabled": true,
+                "server_name": vals.servername,
+                "insecure": true,
+                "alpn": ["h3"],
+            },
+        }),
+        _ => unreachable!("singbox_simple_outbound only handles SS/Trojan/Hysteria2/TUIC"),
+    }
+}
+
 fn singbox_format(server_host: &str, client_name: &str, vals: &ClientConfigValues) -> String {
     let port: u16 = vals.port.parse().unwrap_or(443);
 
@@ -590,6 +744,26 @@ fn singbox_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
                 listen_port: 10809,
             }],
             outbounds: vec![wireguard_outbound, direct_outbound],
+        };
+        return serde_json::to_string_pretty(&config).expect("SingBoxConfig should serialize");
+    }
+    if matches!(
+        vals.protocol(),
+        ProxyProtocol::Shadowsocks
+            | ProxyProtocol::Trojan
+            | ProxyProtocol::Hysteria2
+            | ProxyProtocol::Tuic
+    ) {
+        let outbound = singbox_simple_outbound(server_host, client_name, port, vals);
+        let direct_outbound = serde_json::json!({"type": "direct", "tag": "direct"});
+        let config = SingBoxConfig {
+            inbounds: vec![SingBoxInbound {
+                inbound_type: "mixed".into(),
+                tag: "mixed-in".into(),
+                listen: "127.0.0.1".into(),
+                listen_port: 10809,
+            }],
+            outbounds: vec![outbound, direct_outbound],
         };
         return serde_json::to_string_pretty(&config).expect("SingBoxConfig should serialize");
     }
@@ -904,6 +1078,48 @@ fn xray_format(server_host: &str, client_name: &str, vals: &ClientConfigValues) 
         };
         return serde_json::to_string_pretty(&config).expect("XrayVmessConfig should serialize");
     }
+    if vals.protocol() == ProxyProtocol::Shadowsocks {
+        let config = serde_json::json!({
+            "outbounds": [{
+                "protocol": "shadowsocks",
+                "tag": client_name,
+                "settings": {
+                    "servers": [{
+                        "address": server_host,
+                        "port": port,
+                        "method": vals.shadowsocks_method,
+                        "password": vals.shadowsocks_password,
+                    }],
+                },
+            }],
+        });
+        return serde_json::to_string_pretty(&config).expect("ss xray config should serialize");
+    }
+    if vals.protocol() == ProxyProtocol::Trojan {
+        let config = serde_json::json!({
+            "outbounds": [{
+                "protocol": "trojan",
+                "tag": client_name,
+                "settings": {
+                    "servers": [{
+                        "address": server_host,
+                        "port": port,
+                        "password": vals.trojan_password,
+                    }],
+                },
+                "streamSettings": {
+                    "network": "tcp",
+                    "security": "tls",
+                    "tlsSettings": {
+                        "serverName": vals.servername,
+                        "fingerprint": "chrome",
+                        "allowInsecure": true,
+                    },
+                },
+            }],
+        });
+        return serde_json::to_string_pretty(&config).expect("trojan xray config should serialize");
+    }
 
     // Network name mapping: wrongsv transport → Xray network string
     let xray_network: &str = match vals.transport_method() {
@@ -916,6 +1132,7 @@ fn xray_format(server_host: &str, client_name: &str, vals: &ClientConfigValues) 
         Some(TransportMethod::Meek)
         | Some(TransportMethod::GdocsViewer)
         | Some(TransportMethod::Raw)
+        | Some(TransportMethod::H2Connect)
         | None => "tcp",
     };
 
@@ -991,12 +1208,12 @@ fn xray_format(server_host: &str, client_name: &str, vals: &ClientConfigValues) 
     let quic_settings = match vals.transport_method() {
         Some(TransportMethod::Quic) | Some(TransportMethod::WebTransport) => {
             Some(XrayQuicSettings {
-            security: "none",
-            key: "",
-            header: XrayQuicHeader {
-                header_type: "none",
-            },
-        })
+                security: "none",
+                key: "",
+                header: XrayQuicHeader {
+                    header_type: "none",
+                },
+            })
         }
         _ => None,
     };
@@ -1106,6 +1323,22 @@ fn hiddify_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
             remarks: client_name.to_string(),
             subscription: String::new(),
             configs: vec![wireguard_outbound, direct_outbound],
+        };
+        return serde_json::to_string_pretty(&config).expect("HiddifyConfig should serialize");
+    }
+    if matches!(
+        vals.protocol(),
+        ProxyProtocol::Shadowsocks
+            | ProxyProtocol::Trojan
+            | ProxyProtocol::Hysteria2
+            | ProxyProtocol::Tuic
+    ) {
+        let outbound = singbox_simple_outbound(server_host, client_name, port, vals);
+        let direct_outbound = serde_json::json!({"type": "direct", "tag": "direct"});
+        let config = HiddifyConfig {
+            remarks: client_name.to_string(),
+            subscription: String::new(),
+            configs: vec![outbound, direct_outbound],
         };
         return serde_json::to_string_pretty(&config).expect("HiddifyConfig should serialize");
     }
@@ -1230,8 +1463,8 @@ fn hiddify_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::endpoint::EndpointModel;
     use crate::Transport;
+    use crate::endpoint::EndpointModel;
 
     fn test_vals(transport: Transport) -> ClientConfigValues {
         let outer_security = match transport {
@@ -1253,16 +1486,12 @@ mod tests {
             | Transport::Shadowsocks
             | Transport::Mixed
             | Transport::WireGuard => None,
-            Transport::Trojan | Transport::Hysteria2 | Transport::Tuic => {
+            Transport::Trojan | Transport::Hysteria2 | Transport::Tuic | Transport::Naive => {
                 Some(OuterSecurity::Tls)
             }
         };
         ClientConfigValues {
-            endpoint: EndpointModel::from_profile(
-                transport,
-                outer_security,
-                "xtls-rprx-vision",
-            ),
+            endpoint: EndpointModel::from_profile(transport, outer_security, "xtls-rprx-vision"),
             uuid: "test-uuid-1234".into(),
             flow: "xtls-rprx-vision".into(),
             port: "443".into(),
@@ -1283,6 +1512,15 @@ mod tests {
             wireguard_client_ip: "10.66.66.2/32".into(),
             wireguard_allowed_ips: vec!["10.66.66.1/32".into()],
             wireguard_mtu: 1400,
+            shadowsocks_method: "2022-blake3-aes-128-gcm".into(),
+            shadowsocks_password: "ss-test-password".into(),
+            trojan_password: "trojan-test-password".into(),
+            hysteria2_password: "hy2-test-password".into(),
+            hysteria2_up_mbps: Some(50),
+            hysteria2_down_mbps: Some(100),
+            tuic_uuid: "12345678-1234-1234-1234-123456789abc".into(),
+            tuic_password: "tuic-test-password".into(),
+            tuic_congestion: "bbr".into(),
         }
     }
 
@@ -1448,6 +1686,183 @@ mod tests {
     }
 
     #[test]
+    fn mihomo_shadowsocks_renders_ss_proxy_entry() {
+        let mut vals = test_vals(Transport::Shadowsocks);
+        vals.endpoint = EndpointModel::from_profile(Transport::Shadowsocks, None, "");
+        let json = mihomo_format("1.2.3.4", "test", &vals);
+        assert!(json.contains(r#""type": "ss""#));
+        assert!(json.contains(r#""cipher": "2022-blake3-aes-128-gcm""#));
+        assert!(json.contains(r#""password": "ss-test-password""#));
+    }
+
+    #[test]
+    fn singbox_shadowsocks_renders_outbound() {
+        let mut vals = test_vals(Transport::Shadowsocks);
+        vals.endpoint = EndpointModel::from_profile(Transport::Shadowsocks, None, "");
+        let json = singbox_format("1.2.3.4", "test", &vals);
+        assert!(json.contains(r#""type": "shadowsocks""#));
+        assert!(json.contains(r#""method": "2022-blake3-aes-128-gcm""#));
+        assert!(json.contains(r#""password": "ss-test-password""#));
+    }
+
+    #[test]
+    fn xray_shadowsocks_renders_outbound() {
+        let mut vals = test_vals(Transport::Shadowsocks);
+        vals.endpoint = EndpointModel::from_profile(Transport::Shadowsocks, None, "");
+        let json = xray_format("1.2.3.4", "test", &vals);
+        assert!(json.contains(r#""protocol": "shadowsocks""#));
+        assert!(json.contains(r#""method": "2022-blake3-aes-128-gcm""#));
+        assert!(json.contains(r#""password": "ss-test-password""#));
+    }
+
+    #[test]
+    fn hiddify_shadowsocks_wraps_singbox_outbound() {
+        let mut vals = test_vals(Transport::Shadowsocks);
+        vals.endpoint = EndpointModel::from_profile(Transport::Shadowsocks, None, "");
+        let json = hiddify_format("1.2.3.4", "test", &vals);
+        assert!(json.contains(r#""type": "shadowsocks""#));
+        assert!(json.contains(r#""method": "2022-blake3-aes-128-gcm""#));
+    }
+
+    #[test]
+    fn mihomo_trojan_renders_trojan_proxy_entry() {
+        let mut vals = test_vals(Transport::Trojan);
+        vals.endpoint =
+            EndpointModel::from_profile(Transport::Trojan, Some(OuterSecurity::Tls), "");
+        let json = mihomo_format("1.2.3.4", "test", &vals);
+        assert!(json.contains(r#""type": "trojan""#));
+        assert!(json.contains(r#""password": "trojan-test-password""#));
+        assert!(json.contains(r#""sni": "example.com""#));
+    }
+
+    #[test]
+    fn singbox_trojan_includes_tls_block() {
+        let mut vals = test_vals(Transport::Trojan);
+        vals.endpoint =
+            EndpointModel::from_profile(Transport::Trojan, Some(OuterSecurity::Tls), "");
+        let json = singbox_format("1.2.3.4", "test", &vals);
+        assert!(json.contains(r#""type": "trojan""#));
+        assert!(json.contains(r#""password": "trojan-test-password""#));
+        assert!(json.contains(r#""server_name": "example.com""#));
+    }
+
+    #[test]
+    fn xray_trojan_includes_tls_stream_settings() {
+        let mut vals = test_vals(Transport::Trojan);
+        vals.endpoint =
+            EndpointModel::from_profile(Transport::Trojan, Some(OuterSecurity::Tls), "");
+        let json = xray_format("1.2.3.4", "test", &vals);
+        assert!(json.contains(r#""protocol": "trojan""#));
+        assert!(json.contains(r#""password": "trojan-test-password""#));
+        assert!(json.contains(r#""security": "tls""#));
+    }
+
+    #[test]
+    fn hiddify_trojan_wraps_singbox_outbound() {
+        let mut vals = test_vals(Transport::Trojan);
+        vals.endpoint =
+            EndpointModel::from_profile(Transport::Trojan, Some(OuterSecurity::Tls), "");
+        let json = hiddify_format("1.2.3.4", "test", &vals);
+        assert!(json.contains(r#""type": "trojan""#));
+        assert!(json.contains(r#""password": "trojan-test-password""#));
+    }
+
+    #[test]
+    fn mihomo_hysteria2_emits_bandwidth_when_set() {
+        let mut vals = test_vals(Transport::Hysteria2);
+        vals.endpoint =
+            EndpointModel::from_profile(Transport::Hysteria2, Some(OuterSecurity::Tls), "");
+        let json = mihomo_format("1.2.3.4", "test", &vals);
+        assert!(json.contains(r#""type": "hysteria2""#));
+        assert!(json.contains(r#""password": "hy2-test-password""#));
+        assert!(json.contains(r#""up": 50"#));
+        assert!(json.contains(r#""down": 100"#));
+    }
+
+    #[test]
+    fn mihomo_hysteria2_omits_bandwidth_when_unset() {
+        let mut vals = test_vals(Transport::Hysteria2);
+        vals.endpoint =
+            EndpointModel::from_profile(Transport::Hysteria2, Some(OuterSecurity::Tls), "");
+        vals.hysteria2_up_mbps = None;
+        vals.hysteria2_down_mbps = None;
+        let json = mihomo_format("1.2.3.4", "test", &vals);
+        assert!(!json.contains(r#""up""#));
+        assert!(!json.contains(r#""down""#));
+    }
+
+    #[test]
+    fn singbox_hysteria2_includes_h3_alpn() {
+        let mut vals = test_vals(Transport::Hysteria2);
+        vals.endpoint =
+            EndpointModel::from_profile(Transport::Hysteria2, Some(OuterSecurity::Tls), "");
+        let json = singbox_format("1.2.3.4", "test", &vals);
+        assert!(json.contains(r#""type": "hysteria2""#));
+        assert!(json.contains(r#""up_mbps": 50"#));
+        assert!(json.contains(r#""down_mbps": 100"#));
+        assert!(json.contains(r#""h3""#));
+    }
+
+    #[test]
+    fn xray_hysteria2_export_fails_cleanly() {
+        let mut vals = test_vals(Transport::Hysteria2);
+        vals.endpoint =
+            EndpointModel::from_profile(Transport::Hysteria2, Some(OuterSecurity::Tls), "");
+        let err = generate_client_config(ClientFormat::Xray, "1.2.3.4", "test", &vals)
+            .expect_err("hysteria2 xray export should fail");
+        assert!(err.contains("hysteria2"));
+    }
+
+    #[test]
+    fn hiddify_hysteria2_wraps_singbox_outbound() {
+        let mut vals = test_vals(Transport::Hysteria2);
+        vals.endpoint =
+            EndpointModel::from_profile(Transport::Hysteria2, Some(OuterSecurity::Tls), "");
+        let json = hiddify_format("1.2.3.4", "test", &vals);
+        assert!(json.contains(r#""type": "hysteria2""#));
+        assert!(json.contains(r#""password": "hy2-test-password""#));
+    }
+
+    #[test]
+    fn mihomo_tuic_renders_tuic_proxy_entry() {
+        let mut vals = test_vals(Transport::Tuic);
+        vals.endpoint = EndpointModel::from_profile(Transport::Tuic, Some(OuterSecurity::Tls), "");
+        let json = mihomo_format("1.2.3.4", "test", &vals);
+        assert!(json.contains(r#""type": "tuic""#));
+        assert!(json.contains(r#""uuid": "12345678-1234-1234-1234-123456789abc""#));
+        assert!(json.contains(r#""password": "tuic-test-password""#));
+        assert!(json.contains(r#""congestion-controller": "bbr""#));
+    }
+
+    #[test]
+    fn singbox_tuic_renders_outbound() {
+        let mut vals = test_vals(Transport::Tuic);
+        vals.endpoint = EndpointModel::from_profile(Transport::Tuic, Some(OuterSecurity::Tls), "");
+        let json = singbox_format("1.2.3.4", "test", &vals);
+        assert!(json.contains(r#""type": "tuic""#));
+        assert!(json.contains(r#""uuid": "12345678-1234-1234-1234-123456789abc""#));
+        assert!(json.contains(r#""congestion_control": "bbr""#));
+    }
+
+    #[test]
+    fn xray_tuic_export_fails_cleanly() {
+        let mut vals = test_vals(Transport::Tuic);
+        vals.endpoint = EndpointModel::from_profile(Transport::Tuic, Some(OuterSecurity::Tls), "");
+        let err = generate_client_config(ClientFormat::Xray, "1.2.3.4", "test", &vals)
+            .expect_err("tuic xray export should fail");
+        assert!(err.contains("tuic"));
+    }
+
+    #[test]
+    fn hiddify_tuic_wraps_singbox_outbound() {
+        let mut vals = test_vals(Transport::Tuic);
+        vals.endpoint = EndpointModel::from_profile(Transport::Tuic, Some(OuterSecurity::Tls), "");
+        let json = hiddify_format("1.2.3.4", "test", &vals);
+        assert!(json.contains(r#""type": "tuic""#));
+        assert!(json.contains(r#""uuid": "12345678-1234-1234-1234-123456789abc""#));
+    }
+
+    #[test]
     fn unsupported_component_bucket_fails_validation() {
         let mut vals = test_vals(Transport::Raw);
         vals.endpoint.components.network.push(Component::Vision);
@@ -1471,7 +1886,10 @@ mod tests {
         let diagnostics = build_endpoint_diagnostics(&vals, Some(ClientFormat::Mihomo));
         assert_eq!(diagnostics.descriptor.display_name, "VLESS");
         assert!(diagnostics.resolved.stack_summary.contains("REALITY"));
-        assert_eq!(diagnostics.export.as_ref().map(|item| item.supported), Some(true));
+        assert_eq!(
+            diagnostics.export.as_ref().map(|item| item.supported),
+            Some(true)
+        );
         let json = serde_json::to_value(&diagnostics).expect("diagnostics should serialize");
         assert_eq!(json["descriptor"]["id"], "vless");
         assert_eq!(json["resolved"]["outer_security"], "reality");
@@ -1482,19 +1900,23 @@ mod tests {
         let mut vals = test_vals(Transport::WireGuard);
         vals.endpoint = EndpointModel::from_profile(Transport::WireGuard, None, "");
         let diagnostics = build_endpoint_diagnostics(&vals, Some(ClientFormat::Xray));
-        let export = diagnostics.export.expect("export diagnostics should be present");
+        let export = diagnostics
+            .export
+            .expect("export diagnostics should be present");
         assert!(!export.supported);
-        assert!(export
-            .error
-            .as_deref()
-            .unwrap_or_default()
-            .contains("WireGuard export is not implemented"));
+        assert!(
+            export
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("WireGuard export is not implemented")
+        );
     }
 
     #[test]
-    fn diagnostics_detect_hysteria2_salamander_and_unsupported_export() {
+    fn diagnostics_detect_hysteria2_salamander_with_supported_export() {
         let unique = format!(
-            "wrongsv-hysteria2-{}.toml",
+            "wrongsv-hysteria2-salamander-{}.toml",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -1519,17 +1941,21 @@ password = "obfs-secret"
         std::fs::remove_file(&path).ok();
         let diagnostics = build_endpoint_diagnostics(&vals, Some(ClientFormat::Mihomo));
         assert_eq!(diagnostics.descriptor.display_name, "Hysteria2");
-        assert!(diagnostics
-            .resolved
-            .active_components
-            .camouflage
-            .contains(&Component::HysteriaSalamander));
-        let export = diagnostics.export.expect("export diagnostics should be present");
-        assert!(!export.supported);
+        assert!(
+            diagnostics
+                .resolved
+                .active_components
+                .camouflage
+                .contains(&Component::HysteriaSalamander)
+        );
+        let export = diagnostics
+            .export
+            .expect("export diagnostics should be present");
+        assert!(export.supported);
     }
 
     #[test]
-    fn diagnostics_detect_hysteria2_gecko_and_unsupported_export() {
+    fn diagnostics_detect_hysteria2_gecko_with_supported_export() {
         let unique = format!(
             "wrongsv-hysteria2-gecko-{}.toml",
             std::time::SystemTime::now()
@@ -1555,12 +1981,19 @@ password = "obfs-secret"
         let vals = resolve_client_values(path.to_str(), None, "example.com");
         std::fs::remove_file(&path).ok();
         let diagnostics = build_endpoint_diagnostics(&vals, Some(ClientFormat::Mihomo));
-        assert!(diagnostics
-            .resolved
-            .active_components
-            .camouflage
-            .contains(&Component::HysteriaGecko));
-        assert!(!diagnostics.export.expect("export diagnostics should exist").supported);
+        assert!(
+            diagnostics
+                .resolved
+                .active_components
+                .camouflage
+                .contains(&Component::HysteriaGecko)
+        );
+        assert!(
+            diagnostics
+                .export
+                .expect("export diagnostics should exist")
+                .supported
+        );
     }
 
     #[test]

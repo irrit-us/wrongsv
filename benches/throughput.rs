@@ -37,7 +37,6 @@ fn bench_encode_request(c: &mut Criterion) {
 
     let addons = Addons {
         flow: String::new(),
-        ..Default::default()
     };
 
     c.bench_function("encode_request_header", |b| {
@@ -77,7 +76,6 @@ fn bench_decode_request(c: &mut Criterion) {
 
     let addons = Addons {
         flow: String::new(),
-        ..Default::default()
     };
 
     let mut buf = bytes::BytesMut::new();

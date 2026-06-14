@@ -9,7 +9,10 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use blake2::digest::{Update, VariableOutput};
-use quinn::{AsyncUdpSocket, UdpPoller, udp::{RecvMeta, Transmit}};
+use quinn::{
+    AsyncUdpSocket, UdpPoller,
+    udp::{RecvMeta, Transmit},
+};
 use rand::RngCore;
 
 const SALAMANDER_SALT_LEN: usize = 8;
@@ -99,7 +102,10 @@ impl AsyncUdpSocket for SalamanderAsyncUdpSocket {
     }
 
     fn try_send(&self, transmit: &Transmit) -> io::Result<()> {
-        let mut send_buf = self.send_buf.lock().expect("salamander send mutex poisoned");
+        let mut send_buf = self
+            .send_buf
+            .lock()
+            .expect("salamander send mutex poisoned");
         let required_len = if let Some(segment_size) = transmit.segment_size {
             let segment_count = transmit.contents.len().div_ceil(segment_size);
             transmit.contents.len() + segment_count * SALAMANDER_SALT_LEN
@@ -147,7 +153,10 @@ impl AsyncUdpSocket for SalamanderAsyncUdpSocket {
         }
 
         loop {
-            let mut recv_buf = self.recv_buf.lock().expect("salamander recv mutex poisoned");
+            let mut recv_buf = self
+                .recv_buf
+                .lock()
+                .expect("salamander recv mutex poisoned");
             let mut recv_meta = [RecvMeta::default()];
             let mut recv_slices = [IoSliceMut::new(recv_buf.as_mut_slice())];
             match self.inner.poll_recv(cx, &mut recv_slices, &mut recv_meta) {
@@ -248,11 +257,7 @@ struct GeckoAsyncUdpSocket {
 }
 
 impl GeckoAsyncUdpSocket {
-    fn new(
-        inner: Arc<dyn AsyncUdpSocket>,
-        min_packet_size: usize,
-        max_packet_size: usize,
-    ) -> Self {
+    fn new(inner: Arc<dyn AsyncUdpSocket>, min_packet_size: usize, max_packet_size: usize) -> Self {
         Self {
             inner,
             min_packet_size,
@@ -423,7 +428,9 @@ impl AsyncUdpSocket for GeckoAsyncUdpSocket {
                         msg_id: header.msg_id,
                     };
                     if !reassembly.contains_key(&key) {
-                        if per_source.get(&source).copied().unwrap_or_default() >= GECKO_MAX_PER_SOURCE {
+                        if per_source.get(&source).copied().unwrap_or_default()
+                            >= GECKO_MAX_PER_SOURCE
+                        {
                             continue;
                         }
                         per_source
@@ -525,10 +532,7 @@ fn salamander_obfuscate_transmit(
         }
         (write_offset, Some(segment_size + SALAMANDER_SALT_LEN))
     } else {
-        (
-            salamander_obfuscate(password, transmit.contents, out),
-            None,
-        )
+        (salamander_obfuscate(password, transmit.contents, out), None)
     }
 }
 
@@ -549,8 +553,8 @@ fn salamander_deobfuscate(password: &[u8], input: &[u8], out: &mut [u8]) -> Opti
 }
 
 fn salamander_key(password: &[u8], salt: &[u8]) -> [u8; SALAMANDER_KEY_LEN] {
-    let mut hasher = blake2::Blake2bVar::new(SALAMANDER_KEY_LEN)
-        .expect("salamander key length should be valid");
+    let mut hasher =
+        blake2::Blake2bVar::new(SALAMANDER_KEY_LEN).expect("salamander key length should be valid");
     hasher.update(password);
     hasher.update(salt);
     let mut key = [0u8; SALAMANDER_KEY_LEN];
@@ -579,7 +583,8 @@ fn encode_gecko_frame(
     out[1] = header.msg_id;
     out[2] = (header.chunk_idx << 4) | (header.total_chunks & 0x0f);
     out[3..5].copy_from_slice(&header.pad_len.to_be_bytes());
-    rand::thread_rng().fill_bytes(&mut out[GECKO_HEADER_SIZE..GECKO_HEADER_SIZE + header.pad_len as usize]);
+    rand::thread_rng()
+        .fill_bytes(&mut out[GECKO_HEADER_SIZE..GECKO_HEADER_SIZE + header.pad_len as usize]);
     out[GECKO_HEADER_SIZE + header.pad_len as usize..needed].copy_from_slice(payload);
     Ok(needed)
 }

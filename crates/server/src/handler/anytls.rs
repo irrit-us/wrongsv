@@ -5,8 +5,8 @@ use std::thread;
 use std::time::Duration;
 use tracing::{debug, info, trace, warn};
 use wrongsv_protocol::{RequestCommand, RequestHeader};
-use wrongsv_vless::{MemoryValidator, Validator};
 use wrongsv_vless::vision::{TrafficState, VisionWriter};
+use wrongsv_vless::{MemoryValidator, Validator};
 
 use crate::config::AnyTlsServerConfig;
 
@@ -46,7 +46,6 @@ pub(crate) fn parse_anytls_config(
 pub(crate) fn handle_anytls_connection(
     stream: TcpStream,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     anytls_config: &wrongsv_anytls::AnyTlsConfig,
     metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -87,7 +86,6 @@ pub(crate) fn handle_anytls_connection(
             stream_sock,
             peer,
             validator,
-            kyber_sk,
             metrics,
             fallback_email,
         );
@@ -142,7 +140,6 @@ pub(crate) fn handle_anytls_connection(
     let _conn_guard = tap.track_connection();
 
     log_vless_request(peer, request);
-    handle_kyber_addons(peer, &decoded, kyber_sk);
     validate_vless_command(request, use_vision)?;
 
     let resp_buf = response_header_buf(request)?;
@@ -193,7 +190,6 @@ pub(crate) fn handle_sing_anytls_session(
     mut stream_sock: TcpStream,
     peer: std::net::SocketAddr,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     metrics: Arc<wrongsv_metrics::Registry>,
     fallback_email: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -219,7 +215,6 @@ pub(crate) fn handle_sing_anytls_session(
                 w,
                 peer,
                 validator.clone(),
-                kyber_sk,
                 Arc::clone(&metrics),
                 fallback_email.clone(),
             );
@@ -235,7 +230,6 @@ pub(crate) fn handle_sing_stream(
     writer: wrongsv_anytls::session::SessionWriter,
     peer: std::net::SocketAddr,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     metrics: Arc<wrongsv_metrics::Registry>,
     fallback_email: String,
 ) {
@@ -258,7 +252,7 @@ pub(crate) fn handle_sing_stream(
     // 0x00 = VLESS header (anytls-as-transport mode)
     // 0x01/0x03/0x04 = SOCKS5 address (standalone anytls protocol)
     let result = if first_data[0] == 0x00 {
-        handle_sing_stream_vless(stream, writer, first_data, peer, validator, kyber_sk, metrics)
+        handle_sing_stream_vless(stream, writer, first_data, peer, validator, metrics)
     } else {
         handle_sing_stream_socks(stream, writer, first_data, peer, metrics, fallback_email)
     };
@@ -300,13 +294,7 @@ pub(crate) fn handle_sing_stream_socks(
     let tap = wrongsv_metrics::MetricsTap::new(metrics, fallback_email);
     let _conn_guard = tap.track_connection();
 
-    relay_sing_raw(
-        stream,
-        writer,
-        target,
-        remaining,
-        tap,
-    )?;
+    relay_sing_raw(stream, writer, target, remaining, tap)?;
     Ok(())
 }
 
@@ -316,7 +304,6 @@ pub(crate) fn handle_sing_stream_vless(
     first_data: Vec<u8>,
     peer: std::net::SocketAddr,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let sid = stream.id;
@@ -342,8 +329,6 @@ pub(crate) fn handle_sing_stream_vless(
         request.address,
         request.port,
     );
-
-    handle_kyber_addons(peer, &decoded, kyber_sk);
 
     if request.command == RequestCommand::Udp && use_vision {
         writer.send_synack_error(sid, "Vision does not support UDP")?;

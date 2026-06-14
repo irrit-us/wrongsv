@@ -207,7 +207,6 @@ async fn drive_grpc_connection(
     peer: std::net::SocketAddr,
     service_path: &str,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tcp.set_nonblocking(true)?;
@@ -247,7 +246,6 @@ async fn drive_grpc_connection(
             peer,
             service_path,
             Arc::clone(&validator),
-            kyber_sk,
             Arc::clone(&metrics),
         )
         .await?;
@@ -271,7 +269,6 @@ async fn handle_grpc_request_stream(
     peer: std::net::SocketAddr,
     service_path: &str,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (parts, body) = request.into_parts();
@@ -305,8 +302,7 @@ async fn handle_grpc_request_stream(
 
     let relay_handle = tokio::task::spawn_blocking(move || {
         let grpc_stream = GrpcStream::from_channels(incoming_rx, outgoing_tx);
-        handle_vless_over_grpc(grpc_stream, validator, kyber_sk, peer, metrics)
-            .map_err(|e| e.to_string())
+        handle_vless_over_grpc(grpc_stream, validator, peer, metrics).map_err(|e| e.to_string())
     });
     let outgoing_handle =
         tokio::spawn(async move { drive_outgoing(&mut send, outgoing_rx, peer).await });
@@ -386,7 +382,6 @@ async fn drive_outgoing(
 pub(crate) fn handle_grpc_connection(
     stream: TcpStream,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     grpc_config: &GrpcConfig,
     metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -401,7 +396,6 @@ pub(crate) fn handle_grpc_connection(
             handle_grpc_connection(
                 plain,
                 validator,
-                kyber_sk,
                 &GrpcConfig {
                     tls_config: None,
                     ..grpc_config.clone()
@@ -421,7 +415,6 @@ pub(crate) fn handle_grpc_connection(
                 peer,
                 &format!("/{}/Tun", grpc_config.service_name),
                 validator,
-                kyber_sk,
                 metrics,
             ))
             .map_err(|e| format!("gRPC: {e}").into())
@@ -432,7 +425,6 @@ pub(crate) fn handle_grpc_connection(
 fn handle_vless_over_grpc(
     mut stream: GrpcStream,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     peer: std::net::SocketAddr,
     metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -458,7 +450,6 @@ fn handle_vless_over_grpc(
         "{peer} gRPC flow={} use_vision={use_vision}",
         decoded.addons.flow
     );
-    handle_kyber_addons(peer, &decoded, kyber_sk);
     validate_vless_command(request, use_vision)?;
     let tap = wrongsv_metrics::MetricsTap::new(metrics, request.user.email.clone());
     let _conn_guard = tap.track_connection();

@@ -472,7 +472,10 @@ bind = "127.0.0.1"
 
     let scrape = http_get(&metrics_addr, "/metrics");
     assert!(scrape.contains("200 OK"), "got: {scrape}");
-    let want_in = format!("wrongsv_user_bytes_in{{email=\"{email}\"}} {}", payload.len());
+    let want_in = format!(
+        "wrongsv_user_bytes_in{{email=\"{email}\"}} {}",
+        payload.len()
+    );
     let want_out = format!(
         "wrongsv_user_bytes_out{{email=\"{email}\"}} {}",
         payload.len()

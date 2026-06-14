@@ -146,12 +146,7 @@ impl<R: Read> Http1BodyReader<R> {
         }
         let line = std::str::from_utf8(&line)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid chunk-size line"))?;
-        let chunk_len = line
-            .trim()
-            .split(';')
-            .next()
-            .unwrap_or("")
-            .trim();
+        let chunk_len = line.trim().split(';').next().unwrap_or("").trim();
         if chunk_len.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -492,7 +487,9 @@ fn parse_xhttp_http1_request(
     if let Some(expected_host) = host {
         let got = request_host.as_deref().unwrap_or("");
         if !xhttp_host_matches(expected_host, got) {
-            return Err(format!("host mismatch: expected {expected_host}, got {got}"));
+            return Err(format!(
+                "host mismatch: expected {expected_host}, got {got}"
+            ));
         }
     }
 
@@ -527,10 +524,7 @@ fn reject_xhttp_http1(stream: &mut TcpStream) {
     );
 }
 
-fn write_xhttp_http1_response(
-    stream: &mut TcpStream,
-    mode: Http1ResponseMode,
-) -> io::Result<()> {
+fn write_xhttp_http1_response(stream: &mut TcpStream, mode: Http1ResponseMode) -> io::Result<()> {
     match mode {
         Http1ResponseMode::Chunked => stream.write_all(
             b"HTTP/1.1 200 OK\r\n\
@@ -703,7 +697,6 @@ async fn drive_xhttp_connection(
     path: &str,
     host: Option<&str>,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tcp.set_nonblocking(true)?;
@@ -744,7 +737,6 @@ async fn drive_xhttp_connection(
             path,
             host,
             Arc::clone(&validator),
-            kyber_sk,
             Arc::clone(&metrics),
         )
         .await?;
@@ -769,7 +761,6 @@ async fn handle_xhttp_request_stream(
     path: &str,
     host: Option<&str>,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (parts, body) = request.into_parts();
@@ -817,8 +808,7 @@ async fn handle_xhttp_request_stream(
 
     let relay_handle = tokio::task::spawn_blocking(move || {
         let xhttp_stream = XhttpStream::from_channels(incoming_rx, outgoing_tx);
-        handle_vless_over_xhttp(xhttp_stream, validator, kyber_sk, peer, metrics)
-            .map_err(|e| e.to_string())
+        handle_vless_over_xhttp(xhttp_stream, validator, peer, metrics).map_err(|e| e.to_string())
     });
 
     let outgoing_handle =
@@ -863,13 +853,11 @@ async fn drive_outgoing(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     loop {
         match outgoing_rx.recv().await {
-            Some(data) => {
-                match send.send_data(data.into(), false) {
-                    Ok(()) => {}
-                    Err(e) if is_graceful_h2_stream_end(&e) => return Ok(()),
-                    Err(e) => return Err(format!("h2 send data: {e}").into()),
-                }
-            }
+            Some(data) => match send.send_data(data.into(), false) {
+                Ok(()) => {}
+                Err(e) if is_graceful_h2_stream_end(&e) => return Ok(()),
+                Err(e) => return Err(format!("h2 send data: {e}").into()),
+            },
             None => {
                 // Channel closed — relay finished
                 let _ = send.send_data(bytes::Bytes::new(), true);
@@ -928,7 +916,6 @@ fn drive_xhttp_http1_connection(
     path: &str,
     host: Option<&str>,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut header_buf = Vec::new();
@@ -948,7 +935,10 @@ fn drive_xhttp_http1_connection(
     let reader_stream = stream.try_clone()?;
     write_xhttp_http1_response(&mut stream, request.response_mode)?;
 
-    let body_reader = Http1BodyReader::new(PrefixedReader::new(initial_body, reader_stream), request.body_kind);
+    let body_reader = Http1BodyReader::new(
+        PrefixedReader::new(initial_body, reader_stream),
+        request.body_kind,
+    );
     let (incoming_tx, incoming_rx) = mpsc::sync_channel::<Vec<u8>>(64);
     let (outgoing_tx, outgoing_rx) = tokio_mpsc::channel::<Vec<u8>>(256);
 
@@ -960,15 +950,13 @@ fn drive_xhttp_http1_connection(
         drive_outgoing_http1(stream, response_mode, outgoing_rx, peer).map_err(|e| e.to_string())
     });
 
-    let relay_result =
-        handle_vless_over_xhttp(
-            XhttpStream::from_channels(incoming_rx, outgoing_tx),
-            validator,
-            kyber_sk,
-            peer,
-            metrics,
-        )
-        .map_err(|e| e.to_string());
+    let relay_result = handle_vless_over_xhttp(
+        XhttpStream::from_channels(incoming_rx, outgoing_tx),
+        validator,
+        peer,
+        metrics,
+    )
+    .map_err(|e| e.to_string());
     let incoming_result = incoming_handle
         .join()
         .map_err(|_| "XHTTP/1.1 incoming thread panicked".to_string())?;
@@ -987,7 +975,6 @@ fn drive_xhttp_http1_connection(
 pub(crate) fn handle_xhttp_connection(
     stream: TcpStream,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     xhttp_config: &XhttpConfig,
     metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1002,7 +989,6 @@ pub(crate) fn handle_xhttp_connection(
             handle_xhttp_connection(
                 plain,
                 validator,
-                kyber_sk,
                 &XhttpConfig {
                     tls_config: None,
                     ..xhttp_config.clone()
@@ -1025,7 +1011,6 @@ pub(crate) fn handle_xhttp_connection(
                         &xhttp_config.path,
                         xhttp_config.host.as_deref(),
                         validator,
-                        kyber_sk,
                         metrics,
                     ))
                     .map_err(|e| format!("XHTTP: {e}").into())
@@ -1036,7 +1021,6 @@ pub(crate) fn handle_xhttp_connection(
                     &xhttp_config.path,
                     xhttp_config.host.as_deref(),
                     validator,
-                    kyber_sk,
                     metrics,
                 )
                 .map_err(|e| format!("XHTTP: {e}").into()),
@@ -1048,7 +1032,6 @@ pub(crate) fn handle_xhttp_connection(
 fn handle_vless_over_xhttp(
     mut stream: XhttpStream,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     peer: std::net::SocketAddr,
     metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1074,7 +1057,6 @@ fn handle_vless_over_xhttp(
         "{peer} XHTTP flow={} use_vision={use_vision}",
         decoded.addons.flow
     );
-    handle_kyber_addons(peer, &decoded, kyber_sk);
     validate_vless_command(request, use_vision)?;
     let tap = wrongsv_metrics::MetricsTap::new(metrics, request.user.email.clone());
     let _conn_guard = tap.track_connection();

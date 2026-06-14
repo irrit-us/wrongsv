@@ -136,7 +136,6 @@ mimicry.
 | Maximum stealth | VLESS + REALITY + Vision | Hysteria2 + Hysteria Salamander/Gecko | `reality-vision.toml` + `hysteria2.toml` |
 | CDN fronting | VLESS + WS + TLS | — | Custom TLS cert + `[websocket]` |
 | No key distribution | ShadowTLS v3 | AnyTLS | `shadowtls.toml` + `anytls-vision.toml` |
-| Post-quantum | VLESS + REALITY + Vision + ML-KEM-512 | — | `kyber-vision.toml` |
 | Legacy client compat | VMess AEAD | Shadowsocks AEAD-2022 | `vmess.toml` + `shadowsocks-2022.toml` |
 
 ### Critical Deployment Rules

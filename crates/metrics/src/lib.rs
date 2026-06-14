@@ -10,8 +10,8 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::Instant;
 
 pub mod config;
@@ -363,7 +363,10 @@ mod tests {
         let r = Registry::new();
         r.record_bytes_in("weird\"name\\here@test", 1);
         let out = r.render_prometheus();
-        assert!(out.contains("email=\"weird\\\"name\\\\here@test\""), "got: {out}");
+        assert!(
+            out.contains("email=\"weird\\\"name\\\\here@test\""),
+            "got: {out}"
+        );
     }
 
     #[test]

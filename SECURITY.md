@@ -23,6 +23,5 @@ Security-sensitive areas include:
 - TLS handshake handling (REALITY, AnyTLS)
 - Authentication bypass (UUID validation, password auth, ECDH)
 - Traffic analysis resistance (XTLS Vision padding)
-- Post-quantum key exchange (ML-KEM-512)
 - Memory safety (unsafe code, buffer handling)
 - Denial of service (connection exhaustion, resource leaks)

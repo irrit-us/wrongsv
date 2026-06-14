@@ -540,11 +540,10 @@ pub fn connect_reality(
                                     msg[entry_start],
                                     msg[entry_start + 1],
                                     msg[entry_start + 2],
-                                ])
-                                    as usize;
+                                ]) as usize;
                                 if msg.len() >= entry_start + 3 + cert_len {
-                                    cert_der = msg[entry_start + 3..entry_start + 3 + cert_len]
-                                        .to_vec();
+                                    cert_der =
+                                        msg[entry_start + 3..entry_start + 3 + cert_len].to_vec();
                                 }
                             }
                         }

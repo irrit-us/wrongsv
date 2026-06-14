@@ -71,12 +71,18 @@ const HYSTERIA2_PAYLOADS: &[PayloadNetwork] = &[PayloadNetwork::Tcp, PayloadNetw
 const TUIC_PAYLOADS: &[PayloadNetwork] = &[PayloadNetwork::Tcp, PayloadNetwork::Udp];
 const MIXED_PAYLOADS: &[PayloadNetwork] = &[PayloadNetwork::Tcp];
 const WIREGUARD_PAYLOADS: &[PayloadNetwork] = &[PayloadNetwork::Ip];
+const NAIVE_PAYLOADS: &[PayloadNetwork] = &[PayloadNetwork::Tcp];
 const VLESS_CAMOUFLAGE_COMPONENTS: &[Component] = &[Component::AnyTls, Component::ShadowTls];
 const VLESS_PERFORMANCE_COMPONENTS: &[Component] = &[Component::Vision];
-const HYSTERIA2_CAMOUFLAGE_COMPONENTS: &[Component] = &[
-    Component::HysteriaSalamander,
-    Component::HysteriaGecko,
-];
+const VLESS_INGRESS_COMPONENTS: &[Component] = &[Component::FallbackDestination];
+const TROJAN_INGRESS_COMPONENTS: &[Component] = &[Component::FallbackDestination];
+const HYSTERIA2_CAMOUFLAGE_COMPONENTS: &[Component] =
+    &[Component::HysteriaSalamander, Component::HysteriaGecko];
+const HYSTERIA2_INGRESS_COMPONENTS: &[Component] = &[Component::FallbackDestination];
+const TUIC_INGRESS_COMPONENTS: &[Component] = &[Component::FallbackDestination];
+const WIREGUARD_NETWORK_COMPONENTS: &[Component] = &[Component::RoutedTunnel];
+const NAIVE_CAMOUFLAGE_COMPONENTS: &[Component] = &[Component::NaivePadding];
+const NAIVE_INGRESS_COMPONENTS: &[Component] = &[Component::FallbackDestination];
 const EMPTY_COMPONENTS: &[Component] = &[];
 const VLESS_TRANSPORTS: &[TransportMethod] = &[
     TransportMethod::Raw,
@@ -117,7 +123,7 @@ pub(crate) fn protocol_descriptor(protocol: ProxyProtocol) -> &'static ProtocolD
             protocol_internal_security: None,
             components: ComponentDescriptorSet {
                 camouflage: VLESS_CAMOUFLAGE_COMPONENTS,
-                ingress: EMPTY_COMPONENTS,
+                ingress: VLESS_INGRESS_COMPONENTS,
                 performance: VLESS_PERFORMANCE_COMPONENTS,
                 network: EMPTY_COMPONENTS,
             },
@@ -201,7 +207,7 @@ pub(crate) fn protocol_descriptor(protocol: ProxyProtocol) -> &'static ProtocolD
             protocol_internal_security: None,
             components: ComponentDescriptorSet {
                 camouflage: EMPTY_COMPONENTS,
-                ingress: EMPTY_COMPONENTS,
+                ingress: TROJAN_INGRESS_COMPONENTS,
                 performance: EMPTY_COMPONENTS,
                 network: EMPTY_COMPONENTS,
             },
@@ -229,7 +235,7 @@ pub(crate) fn protocol_descriptor(protocol: ProxyProtocol) -> &'static ProtocolD
             protocol_internal_security: None,
             components: ComponentDescriptorSet {
                 camouflage: HYSTERIA2_CAMOUFLAGE_COMPONENTS,
-                ingress: EMPTY_COMPONENTS,
+                ingress: HYSTERIA2_INGRESS_COMPONENTS,
                 performance: EMPTY_COMPONENTS,
                 network: EMPTY_COMPONENTS,
             },
@@ -257,7 +263,7 @@ pub(crate) fn protocol_descriptor(protocol: ProxyProtocol) -> &'static ProtocolD
             protocol_internal_security: None,
             components: ComponentDescriptorSet {
                 camouflage: EMPTY_COMPONENTS,
-                ingress: EMPTY_COMPONENTS,
+                ingress: TUIC_INGRESS_COMPONENTS,
                 performance: EMPTY_COMPONENTS,
                 network: EMPTY_COMPONENTS,
             },
@@ -314,6 +320,34 @@ pub(crate) fn protocol_descriptor(protocol: ProxyProtocol) -> &'static ProtocolD
             components: ComponentDescriptorSet {
                 camouflage: EMPTY_COMPONENTS,
                 ingress: EMPTY_COMPONENTS,
+                performance: EMPTY_COMPONENTS,
+                network: WIREGUARD_NETWORK_COMPONENTS,
+            },
+        },
+        ProxyProtocol::Naive => &ProtocolDescriptor {
+            id: ProxyProtocol::Naive,
+            display_name: "Naive",
+            payload_networks: PayloadDescriptor {
+                supported: NAIVE_PAYLOADS,
+                default: NAIVE_PAYLOADS,
+                user_configurable: false,
+            },
+            transport: LayerDescriptor {
+                mode: LayerMode::Fixed,
+                supported: &[TransportMethod::H2Connect],
+                default: Some(TransportMethod::H2Connect),
+                fixed_value: Some(TransportMethod::H2Connect),
+            },
+            outer_security: LayerDescriptor {
+                mode: LayerMode::Fixed,
+                supported: &[OuterSecurity::Tls],
+                default: Some(OuterSecurity::Tls),
+                fixed_value: Some(OuterSecurity::Tls),
+            },
+            protocol_internal_security: None,
+            components: ComponentDescriptorSet {
+                camouflage: NAIVE_CAMOUFLAGE_COMPONENTS,
+                ingress: NAIVE_INGRESS_COMPONENTS,
                 performance: EMPTY_COMPONENTS,
                 network: EMPTY_COMPONENTS,
             },
@@ -380,6 +414,7 @@ fn transport_label(transport: TransportMethod) -> &'static str {
         TransportMethod::Quic => "QUIC",
         TransportMethod::Kcp => "KCP",
         TransportMethod::WebTransport => "WebTransport",
+        TransportMethod::H2Connect => "H/2 CONNECT",
     }
 }
 
@@ -416,6 +451,7 @@ mod tests {
             descriptor.protocol_internal_security,
             Some(ProtocolInternalSecurity::WireGuardNoise)
         );
+        assert_eq!(descriptor.components.network, WIREGUARD_NETWORK_COMPONENTS);
     }
 
     #[test]
@@ -423,8 +459,15 @@ mod tests {
         let descriptor = protocol_descriptor(ProxyProtocol::Vless);
         assert_eq!(descriptor.transport.default, Some(TransportMethod::Raw));
         assert_eq!(descriptor.outer_security.mode, LayerMode::Optional);
-        assert_eq!(descriptor.components.camouflage, VLESS_CAMOUFLAGE_COMPONENTS);
-        assert_eq!(descriptor.components.performance, VLESS_PERFORMANCE_COMPONENTS);
+        assert_eq!(
+            descriptor.components.camouflage,
+            VLESS_CAMOUFLAGE_COMPONENTS
+        );
+        assert_eq!(
+            descriptor.components.performance,
+            VLESS_PERFORMANCE_COMPONENTS
+        );
+        assert_eq!(descriptor.components.ingress, VLESS_INGRESS_COMPONENTS);
         assert!(descriptor.components.network.is_empty());
     }
 
@@ -446,30 +489,39 @@ mod tests {
     fn resolved_stack_summary_for_wireguard_uses_ip_and_udp() {
         let model = EndpointModel::from_profile(crate::Transport::WireGuard, None, "");
         let resolved = resolve_endpoint(&model);
-        assert_eq!(
-            resolved.stack_summary,
-            "Payload IP -> WireGuard -> UDP"
-        );
+        assert_eq!(resolved.stack_summary, "Payload IP -> WireGuard -> UDP");
     }
 
     #[test]
     fn resolved_stack_summary_for_raw_vless_includes_raw_transport() {
         let model = EndpointModel::from_profile(crate::Transport::Raw, None, "");
         let resolved = resolve_endpoint(&model);
-        assert_eq!(resolved.stack_summary, "Payload TCP/UDP -> VLESS -> RAW -> TCP");
+        assert_eq!(
+            resolved.stack_summary,
+            "Payload TCP/UDP -> VLESS -> RAW -> TCP"
+        );
     }
 
     #[test]
     fn component_flags_are_preserved_in_resolved_endpoint() {
-        let mut model =
-            EndpointModel::from_profile(
-                crate::Transport::ShadowTls,
-                Some(OuterSecurity::Tls),
-                "xtls-rprx-vision",
-            );
+        let mut model = EndpointModel::from_profile(
+            crate::Transport::ShadowTls,
+            Some(OuterSecurity::Tls),
+            "xtls-rprx-vision",
+        );
         model.components.ingress.push(Component::ShadowTls);
         let resolved = resolve_endpoint(&model);
-        assert!(resolved.active_components.camouflage.contains(&Component::ShadowTls));
-        assert!(resolved.active_components.ingress.contains(&Component::ShadowTls));
+        assert!(
+            resolved
+                .active_components
+                .camouflage
+                .contains(&Component::ShadowTls)
+        );
+        assert!(
+            resolved
+                .active_components
+                .ingress
+                .contains(&Component::ShadowTls)
+        );
     }
 }

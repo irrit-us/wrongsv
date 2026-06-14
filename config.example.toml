@@ -9,9 +9,6 @@ listen = "0.0.0.0:443"
 # Optional: global default flow for all users (overridden by per-user `flow`)
 # flow = "xtls-rprx-vision"
 
-# Optional: ML-KEM-512 secret key seed (64 bytes / 128 hex chars)
-# kyber_secret_key = ""
-
 # ── Transport ──────────────────────────────────────────────────────────────────
 # Choose ONE transport. If none, the server runs raw TCP VLESS (no TLS layer).
 #

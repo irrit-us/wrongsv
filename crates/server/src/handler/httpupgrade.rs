@@ -240,7 +240,6 @@ pub(crate) fn build_httpupgrade_response() -> &'static [u8] {
 pub(crate) fn handle_httpupgrade_connection(
     stream: TcpStream,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     httpupgrade_config: &HttpUpgradeConfig,
     metrics: Arc<wrongsv_metrics::Registry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -279,14 +278,7 @@ pub(crate) fn handle_httpupgrade_connection(
                 "{peer} TLS+HTTPUpgrade upgraded on path '{}'",
                 upgrade_req.path
             );
-            handle_vless_over_httpupgrade_tls(
-                tls_stream,
-                validator,
-                kyber_sk,
-                peer,
-                initial_data,
-                metrics,
-            )
+            handle_vless_over_httpupgrade_tls(tls_stream, validator, peer, initial_data, metrics)
         }
         None => {
             stream.set_read_timeout(Some(Duration::from_secs(30)))?;
@@ -300,14 +292,7 @@ pub(crate) fn handle_httpupgrade_connection(
             raw_stream.set_read_timeout(None)?;
 
             info!("{peer} HTTPUpgrade upgraded on path '{}'", upgrade_req.path);
-            handle_vless_over_httpupgrade_raw(
-                raw_stream,
-                validator,
-                kyber_sk,
-                peer,
-                initial_data,
-                metrics,
-            )
+            handle_vless_over_httpupgrade_raw(raw_stream, validator, peer, initial_data, metrics)
         }
     }
 }
@@ -383,7 +368,6 @@ fn read_first_vless_chunk<S: Read>(
 fn handle_vless_over_httpupgrade_raw(
     mut stream: TcpStream,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     peer: SocketAddr,
     initial_data: Vec<u8>,
     metrics: Arc<wrongsv_metrics::Registry>,
@@ -400,7 +384,6 @@ fn handle_vless_over_httpupgrade_raw(
     let _conn_guard = tap.track_connection();
 
     log_vless_request(peer, request);
-    handle_kyber_addons(peer, &decoded, kyber_sk);
     validate_vless_command(request, use_vision)?;
 
     let resp_buf = response_header_buf(request)?;
@@ -421,7 +404,13 @@ fn handle_vless_over_httpupgrade_raw(
     stream.set_read_timeout(None)?;
 
     if use_vision {
-        relay_vision(stream, target, &decoded.user_sent_id, &account.testseed, tap)?;
+        relay_vision(
+            stream,
+            target,
+            &decoded.user_sent_id,
+            &account.testseed,
+            tap,
+        )?;
     } else {
         relay_raw_with_initial(stream, target, remaining_body, tap)?;
     }
@@ -432,7 +421,6 @@ fn handle_vless_over_httpupgrade_raw(
 fn handle_vless_over_httpupgrade_tls(
     mut tls_stream: wrongsv_anytls::AnyTlsStream,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     peer: SocketAddr,
     initial_data: Vec<u8>,
     metrics: Arc<wrongsv_metrics::Registry>,
@@ -449,7 +437,6 @@ fn handle_vless_over_httpupgrade_tls(
     let _conn_guard = tap.track_connection();
 
     log_vless_request(peer, request);
-    handle_kyber_addons(peer, &decoded, kyber_sk);
     validate_vless_command(request, use_vision)?;
 
     let resp_buf = response_header_buf(request)?;

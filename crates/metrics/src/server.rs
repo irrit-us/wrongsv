@@ -158,7 +158,8 @@ mod tests {
         let mut s = std::net::TcpStream::connect(addr).unwrap();
         s.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
         s.write_all(
-            format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").as_bytes(),
+            format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
         )
         .unwrap();
         let mut out = String::new();
@@ -173,7 +174,10 @@ mod tests {
         let (addr, handle) = serve("127.0.0.1:0", Arc::clone(&reg)).unwrap();
         let response = http_get(&addr, "/metrics");
         assert!(response.contains("200 OK"), "got: {response}");
-        assert!(response.contains("wrongsv_uptime_seconds"), "got: {response}");
+        assert!(
+            response.contains("wrongsv_uptime_seconds"),
+            "got: {response}"
+        );
         assert!(
             response.contains("wrongsv_user_bytes_in{email=\"alice@test\"} 123"),
             "got: {response}"

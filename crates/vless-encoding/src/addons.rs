@@ -74,7 +74,6 @@ mod tests {
     fn test_roundtrip_flow() {
         let addons = Addons {
             flow: "xtls-rprx-vision".to_string(),
-            ..Default::default()
         };
         let mut buf = BytesMut::new();
         encode_header_addons(&mut buf, &addons).unwrap();
@@ -82,37 +81,5 @@ mod tests {
         let mut cursor = Cursor::new(&buf[..]);
         let decoded = decode_header_addons(&mut cursor).unwrap();
         assert_eq!(decoded.flow, "xtls-rprx-vision");
-    }
-
-    #[test]
-    fn test_roundtrip_with_kyber_ct() {
-        let addons = Addons {
-            flow: "xtls-rprx-vision".to_string(),
-            kyber_ct: b"0123456789ABCDEF".to_vec(),
-        };
-        let mut buf = BytesMut::new();
-        encode_header_addons(&mut buf, &addons).unwrap();
-
-        let mut cursor = Cursor::new(&buf[..]);
-        let decoded = decode_header_addons(&mut cursor).unwrap();
-        assert_eq!(decoded.flow, "xtls-rprx-vision");
-        assert_eq!(decoded.kyber_ct, b"0123456789ABCDEF");
-    }
-
-    #[test]
-    fn test_oversized_addons_errors_instead_of_truncating() {
-        // ML-KEM-512 ciphertext is 768 bytes; once wrapped in the addons
-        // proto with a flow field, the total exceeds the 255-byte limit
-        // imposed by the 1-byte length prefix.  The old encoder silently
-        // truncated `bytes.len() as u8`, corrupting the wire format.
-        let addons = Addons {
-            flow: "xtls-rprx-vision".to_string(),
-            kyber_ct: vec![0xAB; 768],
-        };
-        let mut buf = BytesMut::new();
-        match encode_header_addons(&mut buf, &addons) {
-            Err(AddonsError::TooLarge(n)) => assert!(n > 255, "got {n}"),
-            other => panic!("expected TooLarge, got {other:?}"),
-        }
     }
 }

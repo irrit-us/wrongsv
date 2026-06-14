@@ -1,6 +1,6 @@
 use crate::endpoint::{
-    build_endpoint_model, detect_profile, Component, EndpointModel, EndpointProfile as Transport,
-    OuterSecurity, PayloadNetwork, ProxyProtocol, TransportMethod,
+    Component, EndpointModel, EndpointProfile as Transport, OuterSecurity, PayloadNetwork,
+    ProxyProtocol, TransportMethod, build_endpoint_model, detect_profile,
 };
 
 #[derive(Debug, Clone)]
@@ -26,6 +26,15 @@ pub(crate) struct ClientConfigValues {
     pub wireguard_client_ip: String,
     pub wireguard_allowed_ips: Vec<String>,
     pub wireguard_mtu: u32,
+    pub shadowsocks_method: String,
+    pub shadowsocks_password: String,
+    pub trojan_password: String,
+    pub hysteria2_password: String,
+    pub hysteria2_up_mbps: Option<u64>,
+    pub hysteria2_down_mbps: Option<u64>,
+    pub tuic_uuid: String,
+    pub tuic_password: String,
+    pub tuic_congestion: String,
 }
 
 /// Resolve values for the generated client config from TOML config or defaults.
@@ -159,11 +168,56 @@ pub(crate) fn resolve_client_values(
                     vec![format!("{service}/32")]
                 })
                 .unwrap_or_else(|| vec!["10.66.66.1/32".to_string()]);
-            let wireguard_mtu = cfg
-                .wireguard
+            let wireguard_mtu = cfg.wireguard.as_ref().map(|wg| wg.mtu).unwrap_or(1400);
+            let shadowsocks_method = cfg
+                .shadowsocks
                 .as_ref()
-                .map(|wg| wg.mtu)
-                .unwrap_or(1400);
+                .map(|ss| ss.method.clone())
+                .unwrap_or_else(|| "2022-blake3-aes-128-gcm".to_string());
+            let shadowsocks_password = cfg
+                .shadowsocks
+                .as_ref()
+                .map(|ss| ss.password.clone())
+                .unwrap_or_default();
+            let trojan_password = cfg
+                .trojan
+                .as_ref()
+                .and_then(|t| {
+                    t.password
+                        .clone()
+                        .or_else(|| t.users.first().map(|u| u.password.clone()))
+                })
+                .unwrap_or_default();
+            let hysteria2_password = cfg
+                .hysteria2
+                .as_ref()
+                .and_then(|h2| {
+                    h2.password.clone().or_else(|| {
+                        h2.users
+                            .first()
+                            .map(|u| format!("{}:{}", u.name, u.password))
+                    })
+                })
+                .unwrap_or_default();
+            let hysteria2_up_mbps = cfg.hysteria2.as_ref().and_then(|h2| h2.up_mbps);
+            let hysteria2_down_mbps = cfg.hysteria2.as_ref().and_then(|h2| h2.down_mbps);
+            let tuic_uuid = cfg
+                .tuic
+                .as_ref()
+                .and_then(|t| t.users.first())
+                .map(|u| u.uuid.clone())
+                .unwrap_or_else(|| build_uuid().to_string());
+            let tuic_password = cfg
+                .tuic
+                .as_ref()
+                .and_then(|t| t.users.first())
+                .map(|u| u.password.clone())
+                .unwrap_or_default();
+            let tuic_congestion = cfg
+                .tuic
+                .as_ref()
+                .map(|t| t.congestion_control.clone())
+                .unwrap_or_else(|| "bbr".to_string());
             let endpoint = build_endpoint_model(Some(cfg), transport, flow);
 
             ClientConfigValues {
@@ -188,6 +242,15 @@ pub(crate) fn resolve_client_values(
                 wireguard_client_ip,
                 wireguard_allowed_ips,
                 wireguard_mtu,
+                shadowsocks_method,
+                shadowsocks_password,
+                trojan_password,
+                hysteria2_password,
+                hysteria2_up_mbps,
+                hysteria2_down_mbps,
+                tuic_uuid,
+                tuic_password,
+                tuic_congestion,
             }
         }
         None => ClientConfigValues {
@@ -212,6 +275,15 @@ pub(crate) fn resolve_client_values(
             wireguard_client_ip: "10.66.66.2/32".to_string(),
             wireguard_allowed_ips: vec!["10.66.66.1/32".to_string()],
             wireguard_mtu: 1400,
+            shadowsocks_method: "2022-blake3-aes-128-gcm".to_string(),
+            shadowsocks_password: String::new(),
+            trojan_password: String::new(),
+            hysteria2_password: String::new(),
+            hysteria2_up_mbps: None,
+            hysteria2_down_mbps: None,
+            tuic_uuid: build_uuid().to_string(),
+            tuic_password: String::new(),
+            tuic_congestion: "bbr".to_string(),
         },
     }
 }

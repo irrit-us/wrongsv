@@ -115,8 +115,7 @@ impl KcpPacketMask {
     fn wrap(&self, plaintext: &[u8]) -> Result<Vec<u8>, io::Error> {
         match self {
             Self::Original => {
-                let mut packet =
-                    Vec::with_capacity(MKCP_ORIGINAL_OVERHEAD + plaintext.len() + 3);
+                let mut packet = Vec::with_capacity(MKCP_ORIGINAL_OVERHEAD + plaintext.len() + 3);
                 packet.extend_from_slice(&[0u8; MKCP_ORIGINAL_OVERHEAD]);
                 packet[4..6].copy_from_slice(&(plaintext.len() as u16).to_be_bytes());
                 packet.extend_from_slice(plaintext);
@@ -135,8 +134,7 @@ impl KcpPacketMask {
             Self::Aes128Gcm { key } => {
                 use rand::RngCore;
 
-                let cipher =
-                    aes_gcm::Aes128Gcm::new_from_slice(key).expect("AES-GCM key length");
+                let cipher = aes_gcm::Aes128Gcm::new_from_slice(key).expect("AES-GCM key length");
                 let mut packet = vec![0u8; 12];
                 rand::rngs::OsRng.fill_bytes(&mut packet);
                 let nonce = aes_gcm::Nonce::from_slice(&packet[..12]);
@@ -179,8 +177,7 @@ impl KcpPacketMask {
                 if packet.len() < 12 + 16 {
                     return None;
                 }
-                let cipher =
-                    aes_gcm::Aes128Gcm::new_from_slice(key).expect("AES-GCM key length");
+                let cipher = aes_gcm::Aes128Gcm::new_from_slice(key).expect("AES-GCM key length");
                 let nonce = aes_gcm::Nonce::from_slice(&packet[..12]);
                 let split = packet.len() - 16;
                 let mut plaintext = packet[12..split].to_vec();
@@ -426,7 +423,6 @@ pub(crate) async fn run_kcp_endpoint(
     listen: &str,
     config: KcpConfig,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     shutdown: super::ShutdownSignal,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = listen.parse()?;
@@ -444,18 +440,10 @@ pub(crate) async fn run_kcp_endpoint(
     // KCP update + VLESS consume task
     let update_shared = Arc::clone(&shared);
     let update_v = Arc::clone(&validator);
-    let update_ks = kyber_sk;
     let update_tti = config.tti as u64;
     let update_shutdown = shutdown.clone();
     let update_handle = tokio::spawn(async move {
-        run_kcp_update_loop(
-            update_shared,
-            update_v,
-            update_ks,
-            update_tti,
-            update_shutdown,
-        )
-        .await;
+        run_kcp_update_loop(update_shared, update_v, update_tti, update_shutdown).await;
     });
 
     // UDP recv loop
@@ -504,10 +492,9 @@ pub(crate) async fn run_kcp_endpoint(
                         sh.sessions.insert(key, Arc::clone(&session));
 
                         let v = Arc::clone(&validator);
-                        let ks = kyber_sk;
                         std::thread::spawn(move || {
                             let stream = KcpRelayStream::new(incoming_rx, vless_tx);
-                            if let Err(e) = handle_vless_over_kcp(stream, v, ks, src) {
+                            if let Err(e) = handle_vless_over_kcp(stream, v, src) {
                                 warn!("{src} KCP stream error: {e}");
                             }
                         });
@@ -551,7 +538,6 @@ pub(crate) async fn run_kcp_endpoint(
 async fn run_kcp_update_loop(
     shared: Arc<Mutex<KcpShared>>,
     _validator: Arc<MemoryValidator>,
-    _kyber_sk: Option<[u8; 64]>,
     tti_ms: u64,
     shutdown: super::ShutdownSignal,
 ) {
@@ -610,7 +596,6 @@ async fn run_kcp_update_loop(
 fn handle_vless_over_kcp(
     mut stream: KcpRelayStream,
     validator: Arc<MemoryValidator>,
-    kyber_sk: Option<[u8; 64]>,
     peer: SocketAddr,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut first = vec![0u8; 8192];
@@ -642,7 +627,6 @@ fn handle_vless_over_kcp(
         "{peer} KCP flow={} use_vision={use_vision}",
         decoded.addons.flow
     );
-    handle_kyber_addons(peer, &decoded, kyber_sk);
     validate_vless_command(request, use_vision)?;
 
     let resp_buf = response_header_buf(request)?;
@@ -1002,9 +986,11 @@ mod tests {
         let packet = KcpPacketMask::Aes128Gcm { key: key1 }
             .wrap(b"data")
             .unwrap();
-        assert!(KcpPacketMask::Aes128Gcm { key: key2 }
-            .unwrap(&packet)
-            .is_none());
+        assert!(
+            KcpPacketMask::Aes128Gcm { key: key2 }
+                .unwrap(&packet)
+                .is_none()
+        );
     }
 
     #[test]

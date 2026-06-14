@@ -146,7 +146,10 @@ fn evaluator_reality_uses_real_raw_pubkey() {
         .iter()
         .find(|r| r.protocol == "reality")
         .expect("reality result present");
-    assert_eq!(reality.packet_loss_pct, 0.0, "REALITY should be lossless on loopback: {reality:?}");
+    assert_eq!(
+        reality.packet_loss_pct, 0.0,
+        "REALITY should be lossless on loopback: {reality:?}"
+    );
 
     let _ = server_handle.join();
 }

@@ -52,10 +52,7 @@ pub fn build_vless_header(
     if let Err(_e) = wrongsv_vless_encoding::encode_request_header(
         &mut buf,
         &request,
-        &Addons {
-            flow: flow.into(),
-            ..Default::default()
-        },
+        &Addons { flow: flow.into() },
     ) {
         // VLESS header encoding failed — return empty header.
         // The caller will get a protocol error from the proxy, which

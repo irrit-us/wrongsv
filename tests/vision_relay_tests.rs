@@ -102,7 +102,6 @@ fn vless_connect(
     };
     let addons = Addons {
         flow: flow.to_string(),
-        ..Default::default()
     };
 
     let mut req_buf = bytes::BytesMut::new();

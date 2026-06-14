@@ -96,15 +96,7 @@ fn encode_vless_request(
     };
 
     let mut buf = bytes::BytesMut::new();
-    encoding::encode_request_header(
-        &mut buf,
-        &request,
-        &Addons {
-            flow: flow.into(),
-            ..Default::default()
-        },
-    )
-    .unwrap();
+    encoding::encode_request_header(&mut buf, &request, &Addons { flow: flow.into() }).unwrap();
     buf.to_vec()
 }
 
