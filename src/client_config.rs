@@ -1,5 +1,6 @@
 use serde::Serialize;
 
+use crate::endpoint_registry::{protocol_descriptor, resolve_endpoint, LayerMode};
 use crate::protocol_model::{Component, EndpointModel, OuterSecurity, ProxyProtocol, TransportMethod};
 use crate::{ClientFormat, Transport};
 
@@ -321,19 +322,35 @@ fn validate_client_format_support(
     format: ClientFormat,
     vals: &ClientConfigValues,
 ) -> Result<(), String> {
-    match vals.protocol() {
+    let descriptor = protocol_descriptor(vals.protocol());
+    let resolved = resolve_endpoint(&vals.endpoint);
+
+    if descriptor.transport.mode == LayerMode::Forbidden && resolved.transport.is_some() {
+        return Err(format!(
+            "{} does not allow an explicit transport method in the normalized endpoint model",
+            descriptor.display_name
+        ));
+    }
+    if descriptor.outer_security.mode == LayerMode::Forbidden && resolved.outer_security.is_some() {
+        return Err(format!(
+            "{} does not allow outer transport security in the normalized endpoint model",
+            descriptor.display_name
+        ));
+    }
+
+    match resolved.protocol {
         ProxyProtocol::Vless => {
             if matches!(
-                vals.transport_method(),
+                resolved.transport,
                 Some(TransportMethod::Meek | TransportMethod::GdocsViewer)
             ) && format != ClientFormat::Xray
             {
                 return Err(format!(
                     "{:?} transport is only available through the Xray/V2Ray family adapters",
-                    vals.transport_method().unwrap()
+                    resolved.transport.unwrap()
                 ));
             }
-            if vals.transport_method() == Some(TransportMethod::WebTransport)
+            if resolved.transport == Some(TransportMethod::WebTransport)
                 && !matches!(format, ClientFormat::Xray)
             {
                 return Err("WebTransport export is only implemented for xray-family configs".into());

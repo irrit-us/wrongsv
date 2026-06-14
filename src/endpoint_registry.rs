@@ -1,5 +1,5 @@
 use crate::protocol_model::{
-    BaseCarrier, Component, EndpointComponents, EndpointModel, OuterSecurity, PayloadNetwork,
+    BaseCarrier, EndpointComponents, EndpointModel, OuterSecurity, PayloadNetwork,
     ProtocolInternalSecurity, ProxyProtocol, TransportMethod,
 };
 
@@ -214,6 +214,7 @@ fn base_carrier_label(carrier: BaseCarrier) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol_model::Component;
 
     #[test]
     fn wireguard_descriptor_matches_spec_shape() {
