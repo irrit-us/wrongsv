@@ -11,7 +11,7 @@ permissions:
 jobs:
   build:
     name: Build ${{ matrix.target }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -26,6 +26,17 @@ jobs:
             suffix: ""
             rustflags: "-Ctarget-cpu=x86-64"
             target_cflags: "-march=x86-64 -mtune=generic"
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            suffix: ".exe"
+            rustflags: "-Ctarget-cpu=x86-64"
+            target_cflags: ""
+          - target: x86_64-unknown-freebsd
+            os: ubuntu-latest
+            suffix: ""
+            rustflags: "-Ctarget-cpu=x86-64"
+            target_cflags: ""
+            use_cross: true
 
     steps:
       - uses: actions/checkout@v4
@@ -36,27 +47,55 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Ensure target is installed
+        if: ${{ !matrix.use_cross }}
         run: rustup target add ${{ matrix.target }}
 
-      - name: Install system deps
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y protobuf-compiler
-          if [ "${{ matrix.target }}" = "x86_64-unknown-linux-musl" ]; then
-            sudo apt-get install -y musl-tools
-          fi
+      - name: Install protoc
+        if: ${{ !matrix.use_cross }}
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build
+      - name: Install musl tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update -y && sudo apt-get install -y musl-tools
+
+      - name: Install cross
+        if: matrix.use_cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Build (cross)
+        if: matrix.use_cross
+        run: cross build --release --target ${{ matrix.target }}
+        env:
+          CARGO_BUILD_RUSTFLAGS: ${{ matrix.rustflags }}
+          TARGET_CFLAGS: ${{ matrix.target_cflags }}
+          TARGET_CXXFLAGS: ${{ matrix.target_cflags }}
+
+      - name: Build (native)
+        if: ${{ !matrix.use_cross }}
         run: cargo build --release --target ${{ matrix.target }}
         env:
           CARGO_BUILD_RUSTFLAGS: ${{ matrix.rustflags }}
           TARGET_CFLAGS: ${{ matrix.target_cflags }}
           TARGET_CXXFLAGS: ${{ matrix.target_cflags }}
 
-      - name: Strip
+      - name: Strip and package (Linux native)
+        if: runner.os == 'Linux' && !matrix.use_cross
         run: |
           strip target/${{ matrix.target }}/release/wrongsv \
             -o wrongsv-${{ matrix.target }}${{ matrix.suffix }}
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: cp "target/${{ matrix.target }}/release/wrongsv${{ matrix.suffix }}" "wrongsv-${{ matrix.target }}${{ matrix.suffix }}"
+
+      - name: Package (FreeBSD cross)
+        if: matrix.use_cross
+        run: cp "target/${{ matrix.target }}/release/wrongsv" "wrongsv-${{ matrix.target }}${{ matrix.suffix }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -100,3 +139,5 @@ jobs:
           files: |
             wrongsv-x86_64-unknown-linux-gnu
             wrongsv-x86_64-unknown-linux-musl
+            wrongsv-x86_64-pc-windows-msvc.exe
+            wrongsv-x86_64-unknown-freebsd

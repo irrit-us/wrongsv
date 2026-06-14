@@ -3077,7 +3077,7 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
 name = "wrongsv"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -3120,7 +3120,7 @@ dependencies = [
 
 [[package]]
 name = "wrongsv-anytls"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "md-5",
  "rand 0.8.6",
@@ -3135,7 +3135,7 @@ dependencies = [
 
 [[package]]
 name = "wrongsv-encryption"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "aes-gcm",
  "blake3",
@@ -3147,7 +3147,7 @@ dependencies = [
 
 [[package]]
 name = "wrongsv-evaluator-client"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -3184,7 +3184,7 @@ dependencies = [
 
 [[package]]
 name = "wrongsv-evaluator-server"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "base64",
  "bytes",
@@ -3205,7 +3205,7 @@ dependencies = [
 
 [[package]]
 name = "wrongsv-grpc"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "bytes",
  "prost",
@@ -3216,7 +3216,7 @@ dependencies = [
 
 [[package]]
 name = "wrongsv-metrics"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "serde",
  "toml",
@@ -3225,11 +3225,11 @@ dependencies = [
 
 [[package]]
 name = "wrongsv-net-types"
-version = "0.2.5"
+version = "0.2.6"
 
 [[package]]
 name = "wrongsv-protocol"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "bytes",
  "md-5",
@@ -3240,7 +3240,7 @@ dependencies = [
 
 [[package]]
 name = "wrongsv-reality"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -3258,7 +3258,7 @@ dependencies = [
 
 [[package]]
 name = "wrongsv-server"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -3304,7 +3304,7 @@ dependencies = [
 
 [[package]]
 name = "wrongsv-shadowsocks"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -3321,7 +3321,7 @@ dependencies = [
 
 [[package]]
 name = "wrongsv-uuid"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "hex",
  "rand 0.8.6",
@@ -3330,7 +3330,7 @@ dependencies = [
 
 [[package]]
 name = "wrongsv-vless"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "rand 0.8.6",
  "thiserror 2.0.18",
@@ -3340,7 +3340,7 @@ dependencies = [
 
 [[package]]
 name = "wrongsv-vless-encoding"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "bytes",
  "prost",
@@ -3353,7 +3353,7 @@ dependencies = [
 
 [[package]]
 name = "wrongsv-websocket"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "base64",
  "rand 0.8.6",

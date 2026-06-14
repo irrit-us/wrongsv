@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.2.6] — 2026-06-14
+
+### Added
+
+- **Naive v1 inbound** (`[naive]`): HTTP/2 CONNECT over TLS with HTTP Basic
+  auth (`Proxy-Authorization`) and padded framing
+  (`[u16 BE payload_len][u8 padding_len]` on the first 8 ops per direction).
+  RST_STREAM obfuscation and HTTP/3 variant are deferred — see
+  `docs/deferred-work.md`.
+- **WireGuard UDP outbound routing**: `wireguard.outbound = true` now routes
+  both TCP and UDP destinations through the gvisor stack. UDP sessions use a
+  paired-goroutine relay with a 60s bidirectional idle timeout. ICMP outbound
+  remains deferred.
+- **Client export adapters** for Hysteria2, TUIC, Trojan, and Shadowsocks
+  across mihomo, sing-box, and hiddify renderers (xray skipped where no
+  native handler exists upstream).
+- **Hysteria2 `up_mbps` consumption**: applied as a 200 ms BDP cap on the
+  QUIC send window (quinn does not implement Brutal CC).
+- **TUIC `zero_rtt_handshake` consumption**: toggles rustls
+  `max_early_data_size` for 0-RTT acceptance.
+- **Windows and FreeBSD release builds**: `x86_64-pc-windows-msvc` (native)
+  and `x86_64-unknown-freebsd` (cross-compiled via cross-rs) artifacts are
+  now produced alongside the existing Linux gnu/musl targets.
+
+### Removed
+
+- **VLESS Kyber-via-addons path**: the `wrongsv-kyber` crate, the `KyberCt`
+  addons protobuf field, the `kyber_secret_key` server config, and the build
+  env vars (`BUILD_KYBER_SK_HEX`, `BUILD_KYBER_PK_HEX`) were deleted. Three
+  bugs made the path unreachable in practice (encoder dropped `kyber_ct` when
+  `flow` was empty, the 255-byte addons cap was below the 768-byte ML-KEM-512
+  ciphertext, and the server never derived keys from the shared secret).
+
+### Changed
+
+- **`docs/` filenames lowercased**: `DEFERRED-WORK.md` → `deferred-work.md`,
+  `PROTOCOL-COVERAGE.md` → `protocol-coverage.md`,
+  `PROTOCOL-HIERARCHY-STATUS.md` → `protocol-hierarchy-status.md`,
+  `SETUP.md` → `setup.md`, `TESTING.md` → `testing.md`. All internal,
+  README, CONTRIBUTING, and in-source doc-comment links updated.
+
 ## [0.2.4] — 2026-06-05
 
 ### Added
