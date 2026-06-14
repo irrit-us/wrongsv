@@ -5,8 +5,7 @@ use tracing::{error, info};
 use wrongsv_server::Config;
 
 mod client_config;
-mod endpoint_registry;
-mod protocol_model;
+mod endpoint;
 
 #[derive(Debug, ValueEnum, Clone, Copy, PartialEq)]
 #[allow(clippy::enum_variant_names)]

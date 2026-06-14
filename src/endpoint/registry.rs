@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use crate::protocol_model::{
+use crate::endpoint::model::{
     BaseCarrier, Component, EndpointComponents, EndpointModel, OuterSecurity, PayloadNetwork,
     ProtocolInternalSecurity, ProxyProtocol, TransportMethod,
 };
@@ -247,7 +247,7 @@ fn base_carrier_label(carrier: BaseCarrier) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol_model::Component;
+    use crate::endpoint::model::Component;
 
     #[test]
     fn wireguard_descriptor_matches_spec_shape() {
