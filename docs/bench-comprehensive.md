@@ -1,5 +1,27 @@
 # Comprehensive Bench Report
 
+## Summary
+
+Across 8 protocols (anytls-tcp, hysteria2, reality-vision, shadowsocks-2022,
+shadowtls, tls-vision, trojan-tls, vmess) × 4 implementations (wrongsv, xray,
+sing-box, mihomo), every supported cell sustains **200 req/s at 100% success**
+over a 10-minute soak with no memory leaks detected.
+
+- **Latency** is indistinguishable across implementations: p50 0.5–0.6 ms,
+  p95 0.7–0.8 ms, p99 0.8–0.9 ms.
+- **Memory footprint** is the clearest separator. Peak RSS:
+  - `wrongsv` ≈ **6.7–9.0 MB**
+  - `xray` ≈ 30.7–37.3 MB
+  - `sing-box` ≈ 34.0–35.4 MB
+  - `mihomo` ≈ 41.5–43.3 MB
+  → wrongsv runs in roughly **¼ the memory** of the next-smallest implementation.
+- **Protocol coverage**: `wrongsv` and `sing-box` cover all 8; `xray` lacks
+  anytls-tcp and shadowtls; `mihomo` lacks tls-vision, reality-vision, and
+  shadowtls.
+- **No failures remain.** All previously-failing tls-vision/trojan-tls cells
+  pass in run `20260615-204011` after harness fixes (xray 26.5.9 cert-pinning
+  migration, mihomo SAFE_PATHS removal, wrongsv inline-PEM injection).
+
 - Combined report across runs:
   - `20260615-142339` → `benches/traffic/comprehensive/results/20260615-142339`
   - `20260615-162915` → `benches/traffic/comprehensive/results/20260615-162915`
