@@ -107,7 +107,9 @@ Review the following areas with findings classified by severity.
 - Golden tests:
   - Generated main configs for each supported cluster.
   - Client configs for FlClash AnyTLS, FlClash REALITY, sing-box AnyTLS,
-    Hiddify AnyTLS, and xray REALITY.
+    Hiddify ShadowTLS/XHTTP, and xray REALITY.
+  - Hiddify AnyTLS must remain a skip/negative case until
+    `wrongsv-external-tests` records a passing direct GUI run.
 - Integration tests:
   - `wrongsv generate-main-config` -> diagnostics -> client config generation.
   - Deploy dry-run or mocked SSH path.
@@ -116,7 +118,8 @@ Review the following areas with findings classified by severity.
   - `flclash:anytls_tcp`
   - `flclash:vless_reality_vision`
   - `sing-box:anytls_tcp`
-  - `hiddify:anytls_tcp`
+  - `hiddify:shadowtls_tcp`
+  - `hiddify:anytls_tcp` as a documented gap until direct E2E passes
   - `xray-core:vless_reality_vision`
 - Negative tests:
   - `anytls-reality` must fail.

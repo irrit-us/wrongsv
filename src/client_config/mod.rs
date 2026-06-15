@@ -77,14 +77,16 @@ fn validate_client_format_support(
                     "WebTransport export is only implemented for xray-family configs".into(),
                 );
             }
+            if vals.has_component(Component::AnyTls) && matches!(format, ClientFormat::Hiddify) {
+                return Err(
+                    "Hiddify AnyTLS export is disabled until wrongsv-external-tests records a passing direct GUI run; use --format mihomo for FlClash or --format sing-box".into(),
+                );
+            }
             if vals.has_component(Component::AnyTls)
-                && !matches!(
-                    format,
-                    ClientFormat::Mihomo | ClientFormat::SingBox | ClientFormat::Hiddify
-                )
+                && !matches!(format, ClientFormat::Mihomo | ClientFormat::SingBox)
             {
                 return Err(
-                    "AnyTLS export is only implemented for mihomo and sing-box-family configs"
+                    "AnyTLS export is only implemented for mihomo/FlClash and sing-box configs"
                         .into(),
                 );
             }
@@ -1961,11 +1963,15 @@ mod tests {
     }
 
     #[test]
-    fn hiddify_anytls_wraps_singbox_outbound() {
-        let json = hiddify_format("1.2.3.4", "test", &test_vals(Transport::AnyTls));
-        assert!(json.contains(r#""type": "anytls""#));
-        assert!(json.contains(r#""password": "anytls-pass""#));
-        assert!(json.contains(r#""configs""#));
+    fn hiddify_anytls_export_fails_until_direct_e2e_passes() {
+        let err = generate_client_config(
+            ClientFormat::Hiddify,
+            "1.2.3.4",
+            "test",
+            &test_vals(Transport::AnyTls),
+        )
+        .expect_err("hiddify anytls export should be gated by direct E2E capability");
+        assert!(err.contains("Hiddify AnyTLS export is disabled"));
     }
 
     #[test]
