@@ -1,0 +1,49 @@
+{
+  "log": { "loglevel": "warning" },
+  "inbounds": [
+    {
+      "tag": "socks-in",
+      "listen": "127.0.0.1",
+      "port": 18080,
+      "protocol": "socks",
+      "settings": { "udp": true, "auth": "noauth" }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "proxy",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "127.0.0.1",
+            "port": 18443,
+            "users": [
+              {
+                "id": "12345678-1234-1234-1234-123456789abc",
+                "flow": "xtls-rprx-vision",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "tls",
+        "tlsSettings": {
+          "serverName": "localhost",
+          "allowInsecure": true,
+          "alpn": ["h2", "http/1.1"]
+        }
+      }
+    },
+    { "tag": "direct", "protocol": "freedom" }
+  ],
+  "routing": {
+    "domainStrategy": "AsIs",
+    "rules": [
+      { "type": "field", "inboundTag": ["socks-in"], "outboundTag": "proxy" }
+    ]
+  }
+}

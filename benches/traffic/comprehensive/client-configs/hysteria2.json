@@ -1,0 +1,27 @@
+{
+  "log": { "level": "warn" },
+  "inbounds": [
+    {
+      "type": "socks",
+      "tag": "socks-in",
+      "listen": "127.0.0.1",
+      "listen_port": 18080
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "hysteria2",
+      "tag": "hy2-out",
+      "server": "127.0.0.1",
+      "server_port": 18443,
+      "password": "alice-password",
+      "tls": {
+        "enabled": true,
+        "server_name": "localhost",
+        "insecure": true,
+        "alpn": ["h3"]
+      }
+    },
+    { "type": "direct", "tag": "direct" }
+  ]
+}

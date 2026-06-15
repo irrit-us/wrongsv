@@ -1,0 +1,36 @@
+{
+  "log": { "level": "warn" },
+  "inbounds": [
+    {
+      "type": "socks",
+      "tag": "socks-in",
+      "listen": "127.0.0.1",
+      "listen_port": 18080
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "vless-out",
+      "server": "127.0.0.1",
+      "server_port": 18443,
+      "uuid": "12345678-1234-1234-1234-123456789abc",
+      "flow": "",
+      "detour": "shadowtls-out"
+    },
+    {
+      "type": "shadowtls",
+      "tag": "shadowtls-out",
+      "server": "127.0.0.1",
+      "server_port": 18443,
+      "version": 3,
+      "password": "your-shadowtls-password",
+      "tls": {
+        "enabled": true,
+        "server_name": "www.microsoft.com",
+        "utls": { "enabled": true, "fingerprint": "chrome" }
+      }
+    },
+    { "type": "direct", "tag": "direct" }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "log": { "level": "warn" },
+  "inbounds": [
+    {
+      "type": "vless",
+      "tag": "tls-vision-in",
+      "listen": "127.0.0.1",
+      "listen_port": 18443,
+      "users": [
+        {
+          "uuid": "12345678-1234-1234-1234-123456789abc",
+          "flow": "xtls-rprx-vision"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "localhost",
+        "alpn": ["h2", "http/1.1"],
+        "certificate_path": "/tmp/wrongsv-bench-cert.pem",
+        "key_path": "/tmp/wrongsv-bench-key.pem"
+      }
+    }
+  ],
+  "outbounds": [
+    { "type": "direct", "tag": "direct" }
+  ]
+}

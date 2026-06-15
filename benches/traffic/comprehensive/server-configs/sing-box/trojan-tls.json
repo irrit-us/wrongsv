@@ -1,0 +1,27 @@
+{
+  "log": { "level": "warn" },
+  "inbounds": [
+    {
+      "type": "trojan",
+      "tag": "trojan-in",
+      "listen": "127.0.0.1",
+      "listen_port": 18443,
+      "users": [
+        {
+          "name": "user@example.com",
+          "password": "change-me-to-a-long-random-password"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "localhost",
+        "alpn": ["h2", "http/1.1"],
+        "certificate_path": "/tmp/wrongsv-bench-cert.pem",
+        "key_path": "/tmp/wrongsv-bench-key.pem"
+      }
+    }
+  ],
+  "outbounds": [
+    { "type": "direct", "tag": "direct" }
+  ]
+}

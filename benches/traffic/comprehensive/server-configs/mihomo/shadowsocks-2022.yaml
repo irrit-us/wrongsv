@@ -1,0 +1,17 @@
+mixed-port: 7890
+allow-lan: false
+bind-address: 127.0.0.1
+mode: rule
+log-level: warning
+listeners:
+  - name: ss-in
+    type: shadowsocks
+    port: 18388
+    listen: 127.0.0.1
+    cipher: 2022-blake3-aes-128-gcm
+    password: AAAAAAAAAAAAAAAAAAAAAA==
+    udp: true
+proxies: []
+proxy-groups: []
+rules:
+  - MATCH,DIRECT

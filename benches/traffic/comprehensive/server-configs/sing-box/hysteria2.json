@@ -1,0 +1,23 @@
+{
+  "log": { "level": "warn" },
+  "inbounds": [
+    {
+      "type": "hysteria2",
+      "tag": "hy2-in",
+      "listen": "127.0.0.1",
+      "listen_port": 18443,
+      "users": [
+        { "name": "alice", "password": "alice-password" }
+      ],
+      "tls": {
+        "enabled": true,
+        "alpn": ["h3"],
+        "certificate_path": "/tmp/wrongsv-bench-cert.pem",
+        "key_path": "/tmp/wrongsv-bench-key.pem"
+      }
+    }
+  ],
+  "outbounds": [
+    { "type": "direct", "tag": "direct" }
+  ]
+}

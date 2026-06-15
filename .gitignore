@@ -11,6 +11,7 @@ benches/traffic/tools/wrk2/
 benches/traffic/tools/bin/
 benches/traffic/results/
 !benches/traffic/results/.gitkeep
+benches/traffic/comprehensive/results/
 wrongsv.gz
 
 # Evaluator test output

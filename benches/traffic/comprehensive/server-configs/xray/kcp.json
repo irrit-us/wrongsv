@@ -1,0 +1,38 @@
+{
+  "log": { "loglevel": "warning" },
+  "inbounds": [
+    {
+      "tag": "vless-kcp-in",
+      "listen": "127.0.0.1",
+      "port": 18443,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "12345678-1234-1234-1234-123456789abc",
+            "email": "user@example.com",
+            "flow": ""
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "mkcp",
+        "kcpSettings": {
+          "mtu": 1350,
+          "tti": 10,
+          "uplinkCapacity": 100,
+          "downlinkCapacity": 100,
+          "congestion": false,
+          "readBufferSize": 2,
+          "writeBufferSize": 2,
+          "header": { "type": "none" },
+          "seed": "your-kcp-seed"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    { "tag": "direct", "protocol": "freedom" }
+  ]
+}

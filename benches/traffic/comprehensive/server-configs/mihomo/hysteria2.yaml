@@ -1,0 +1,10 @@
+listeners:
+  - name: hy2-in
+    type: hysteria2
+    listen: 127.0.0.1
+    port: 18443
+    users:
+      alice: "alice-password"
+    ignore-client-bandwidth: false
+    certificate: /tmp/wrongsv-bench-cert.pem
+    private-key: /tmp/wrongsv-bench-key.pem

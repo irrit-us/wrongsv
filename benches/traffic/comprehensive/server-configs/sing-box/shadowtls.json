@@ -1,0 +1,32 @@
+{
+  "log": { "level": "warn" },
+  "inbounds": [
+    {
+      "type": "shadowtls",
+      "tag": "shadowtls-in",
+      "listen": "127.0.0.1",
+      "listen_port": 18443,
+      "version": 3,
+      "users": [
+        { "name": "user", "password": "your-shadowtls-password" }
+      ],
+      "handshake": {
+        "server": "www.microsoft.com",
+        "server_port": 443
+      },
+      "detour": "vless-in"
+    },
+    {
+      "type": "vless",
+      "tag": "vless-in",
+      "listen": "127.0.0.1",
+      "listen_port": 0,
+      "users": [
+        { "uuid": "12345678-1234-1234-1234-123456789abc", "flow": "" }
+      ]
+    }
+  ],
+  "outbounds": [
+    { "type": "direct", "tag": "direct" }
+  ]
+}

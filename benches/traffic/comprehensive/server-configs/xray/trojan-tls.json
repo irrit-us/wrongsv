@@ -1,0 +1,35 @@
+{
+  "log": { "loglevel": "warning" },
+  "inbounds": [
+    {
+      "tag": "trojan-in",
+      "listen": "127.0.0.1",
+      "port": 18443,
+      "protocol": "trojan",
+      "settings": {
+        "clients": [
+          {
+            "password": "change-me-to-a-long-random-password",
+            "email": "user@example.com"
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "tls",
+        "tlsSettings": {
+          "alpn": ["h2", "http/1.1"],
+          "certificates": [
+            {
+              "certificateFile": "/tmp/wrongsv-bench-cert.pem",
+              "keyFile": "/tmp/wrongsv-bench-key.pem"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    { "tag": "direct", "protocol": "freedom" }
+  ]
+}

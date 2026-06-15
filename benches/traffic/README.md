@@ -88,3 +88,66 @@ All results are saved to `benches/traffic/results/<timestamp>/<scenario>/`.
 | 100 req/s | 72.5% | 1.206s |
 
 > Bottleneck at 100 req/s is sing-box SOCKS5 connection management, not wrongsv.
+
+## Comprehensive multi-server comparison
+
+For head-to-head comparison of wrongsv vs xray / sing-box / mihomo across all
+protocol configs — including memory leak detection over a 30-min soak under
+realistic network conditions — see `comprehensive/`.
+
+```bash
+# Run the full matrix (4 servers × ~30 configs × 30-min soak — long)
+./benches/traffic/run.sh comprehensive
+
+# Subset: one config, one server, short soak (for smoke-testing)
+SERVERS=wrongsv CONFIGS=vmess SOAK_DURATION=60 SHAPE_NETEM=0 \
+    ./benches/traffic/run.sh comprehensive
+
+# Without tc-netem shaping (no root needed)
+SHAPE_NETEM=0 ./benches/traffic/run.sh comprehensive
+```
+
+### What it measures per cell
+
+- **Throughput** — sustained req/s and bytes/s via vegeta through a SOCKS5
+  client (xray, held constant across cells; only the server-under-test varies).
+- **Latency** — p50/p95/p99 from vegeta's HDR histogram.
+- **Memory** — `/proc/PID/status` VmRSS sampled every 5 s; leak verdict is the
+  slope of a linear regression in KB/min over the soak.
+- **Compatibility** — cells where a server lacks a canonical config for that
+  protocol are recorded as `unsupported`.
+
+### Network shaping
+
+When `SHAPE_NETEM=1` (default), the matrix runs `tc qdisc replace dev lo root
+netem delay 50ms 5ms distribution normal loss 0.1%` on `lo` to simulate a
+realistic WAN. Requires `CAP_NET_ADMIN` (sudo); degrades to unshaped loopback
+if sudo is unavailable.
+
+### Env vars
+
+| Var | Default | Purpose |
+|-----|---------|---------|
+| `SERVERS` | `wrongsv xray sing-box mihomo` | Servers to bench |
+| `CONFIGS` | (auto-discovered) | Protocol configs to bench |
+| `SOAK_DURATION` | `1800` (30 min) | Seconds per cell |
+| `LOAD_RATE` | `200` | Requests/second |
+| `LOAD_PAYLOAD` | `8192` | Bytes per response |
+| `SHAPE_NETEM` | `1` | Apply tc-netem on `lo` |
+| `LEAK_THRESHOLD_KB_PER_MIN` | `50` | Slope above this flags leak |
+
+### Output
+
+`results/<timestamp>/<config>/<server>.json` per cell, plus an auto-generated
+`REPORT.md` aggregating per-config tables, per-server summaries, and a flagged
+leak list. See `comprehensive/report.py` for the format.
+
+## Microbenchmarks
+
+Computational efficiency of encode/decode hot paths is covered by criterion
+benches at the workspace root:
+
+```bash
+cargo bench --bench throughput   # VLESS encode/decode, XTLS Vision padding
+cargo bench --bench protocols    # VMess, Shadowsocks-2022, AnyTLS, WebSocket
+```

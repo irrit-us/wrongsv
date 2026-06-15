@@ -117,9 +117,16 @@ case "${1:-all}" in
         run_scenario "$1"
         stop_server
         ;;
+    comprehensive)
+        # Delegate to the comparison-matrix harness (wrongsv vs xray/sing-box/mihomo,
+        # all configs, soak + memory leak detection + tc-netem shaping).
+        shift
+        exec "$BENCH_DIR/comprehensive/matrix.sh" "$@"
+        ;;
     *)
         echo "Usage: $0 [scenario]"
         echo "Scenarios: reality-stress, multi-user, throughput-ladder, tls-handshake, all"
+        echo "Special:   comprehensive  — multi-server comparison matrix (see comprehensive/README.md)"
         echo ""
         echo "Env vars:"
         echo "  SERVER_HOST=$SERVER_HOST"

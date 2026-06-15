@@ -1,0 +1,18 @@
+mixed-port: 7890
+allow-lan: false
+bind-address: 127.0.0.1
+mode: rule
+log-level: warning
+listeners:
+  - name: vmess-in
+    type: vmess
+    port: 18443
+    listen: 127.0.0.1
+    users:
+      - username: user@example.com
+        uuid: 12345678-1234-1234-1234-123456789abc
+        alterId: 0
+proxies: []
+proxy-groups: []
+rules:
+  - MATCH,DIRECT
