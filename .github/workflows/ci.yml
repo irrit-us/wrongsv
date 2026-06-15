@@ -18,9 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
+      # rust-toolchain.toml pins the version; install rustfmt against it.
+      - run: rustup show active-toolchain && rustup component add rustfmt
       - run: cargo fmt --all -- --check
 
   clippy:
@@ -28,9 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+      - run: rustup show active-toolchain && rustup component add clippy
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
@@ -43,7 +40,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - run: rustup show active-toolchain
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
@@ -56,7 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - run: rustup show active-toolchain
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:

@@ -736,7 +736,7 @@ pub struct NaiveUserConfig {
 }
 
 /// Naive TLS configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct NaiveTlsConfig {
     #[serde(default)]
     pub certificate: Option<String>,
@@ -768,16 +768,6 @@ pub struct NaiveServerConfig {
     /// TLS configuration — required (Naive runs over TLS).
     #[serde(default)]
     pub tls: NaiveTlsConfig,
-}
-
-impl Default for NaiveTlsConfig {
-    fn default() -> Self {
-        NaiveTlsConfig {
-            certificate: None,
-            key: None,
-            dest: None,
-        }
-    }
 }
 
 fn default_naive_padding_header() -> String {

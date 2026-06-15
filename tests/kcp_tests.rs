@@ -131,7 +131,7 @@ fn mkcp_open(seed: &str, packet: &[u8]) -> Option<Vec<u8>> {
             return None;
         }
         let mut data = packet.to_vec();
-        let padded_len = if data.len() % 4 == 0 {
+        let padded_len = if data.len().is_multiple_of(4) {
             data.len()
         } else {
             data.len() + (4 - data.len() % 4)

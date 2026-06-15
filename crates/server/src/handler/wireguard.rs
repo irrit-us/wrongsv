@@ -131,12 +131,9 @@ pub(crate) fn run_wireguard_endpoint(
     let runtime_config = write_runtime_config(&config)?;
     let mut child = spawn_wireguard_helper(&helper_binary, &runtime_config)?;
 
-    match wait_for_helper_start(&mut child, Duration::from_secs(3))? {
-        Some(status) => {
-            let _ = fs::remove_file(&runtime_config);
-            return Err(format!("wireguard helper exited during startup: {status}").into());
-        }
-        None => {}
+    if let Some(status) = wait_for_helper_start(&mut child, Duration::from_secs(3))? {
+        let _ = fs::remove_file(&runtime_config);
+        return Err(format!("wireguard helper exited during startup: {status}").into());
     }
 
     loop {

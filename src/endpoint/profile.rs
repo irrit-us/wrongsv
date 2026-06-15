@@ -192,10 +192,10 @@ pub(crate) fn build_endpoint_model(
             }
         }
         (Some(config), EndpointProfile::WireGuard) => {
-            if let Some(wireguard) = &config.wireguard {
-                if wireguard.outbound {
-                    model.components.network.push(Component::RoutedTunnel);
-                }
+            if let Some(wireguard) = &config.wireguard
+                && wireguard.outbound
+            {
+                model.components.network.push(Component::RoutedTunnel);
             }
         }
         (Some(_), EndpointProfile::Naive) => {

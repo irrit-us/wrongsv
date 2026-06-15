@@ -653,7 +653,7 @@ pub fn read_response(
         )
         .map_err(|e| VmessError::AuthFailed(format!("response len decrypt: {e}")))?;
     let payload_len = u16::from_be_bytes(decrypted_len[..2].try_into().unwrap()) as usize;
-    if payload_len < 4 || payload_len > 255 {
+    if !(4..=255).contains(&payload_len) {
         return Err(VmessError::Protocol(format!(
             "response header length out of range: {payload_len}"
         )));

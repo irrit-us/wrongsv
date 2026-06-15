@@ -317,12 +317,12 @@ impl GeckoAsyncUdpSocket {
         per_source: &mut std::collections::HashMap<String, usize>,
         key: &GeckoReassemblyKey,
     ) {
-        if reassembly.remove(key).is_some() {
-            if let Some(count) = per_source.get_mut(&key.addr) {
-                *count = count.saturating_sub(1);
-                if *count == 0 {
-                    per_source.remove(&key.addr);
-                }
+        if reassembly.remove(key).is_some()
+            && let Some(count) = per_source.get_mut(&key.addr)
+        {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                per_source.remove(&key.addr);
             }
         }
     }
