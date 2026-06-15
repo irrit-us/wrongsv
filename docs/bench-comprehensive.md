@@ -3,6 +3,7 @@
 - Combined report across runs:
   - `20260615-142339` → `benches/traffic/comprehensive/results/20260615-142339`
   - `20260615-162915` → `benches/traffic/comprehensive/results/20260615-162915`
+  - `20260615-204011` → `benches/traffic/comprehensive/results/20260615-204011`
 
 ## Methodology
 
@@ -14,6 +15,15 @@
 - Throughput: req/s sustained over soak duration.
 
 ## Per-config comparison
+
+### anytls-tcp
+
+| Run | Server | Status | Req/s | Success % | p50 (ms) | p95 (ms) | p99 (ms) | RSS peak (MB) | RSS slope (KB/min) | Leak? |
+|-----|--------|--------|------:|----------:|---------:|---------:|---------:|--------------:|-------------------:|:-----:|
+| 20260615-204011 | wrongsv | ok | 200.0 | 100.00 | 0.5 | 0.7 | 0.8 | 8.3 | +0.0 | ok |
+| 20260615-204011 | xray | `unsupported` | — | — | — | — | — | — | — | — |
+| 20260615-204011 | sing-box | ok | 200.0 | 100.00 | 0.5 | 0.7 | 0.8 | 35.1 | +23.4 | ok |
+| 20260615-204011 | mihomo | ok | 200.0 | 100.00 | 0.5 | 0.7 | 0.9 | 42.3 | -335.7 | ok |
 
 ### hysteria2
 
@@ -57,6 +67,10 @@
 | 20260615-142339 | xray | `client_start_failed` | — | — | — | — | — | — | — | — |
 | 20260615-142339 | sing-box | `client_start_failed` | — | — | — | — | — | — | — | — |
 | 20260615-142339 | mihomo | `unsupported` | — | — | — | — | — | — | — | — |
+| 20260615-204011 | wrongsv | ok | 200.0 | 100.00 | 0.5 | 0.7 | 0.9 | 8.1 | +0.0 | ok |
+| 20260615-204011 | xray | ok | 200.0 | 100.00 | 0.5 | 0.7 | 0.8 | 34.3 | +12.1 | ok |
+| 20260615-204011 | sing-box | ok | 200.0 | 100.00 | 0.5 | 0.7 | 0.8 | 35.4 | +16.6 | ok |
+| 20260615-204011 | mihomo | `unsupported` | — | — | — | — | — | — | — | — |
 
 ### trojan-tls
 
@@ -66,6 +80,10 @@
 | 20260615-142339 | xray | `client_start_failed` | — | — | — | — | — | — | — | — |
 | 20260615-142339 | sing-box | `client_start_failed` | — | — | — | — | — | — | — | — |
 | 20260615-142339 | mihomo | `server_start_failed` | — | — | — | — | — | — | — | — |
+| 20260615-204011 | wrongsv | ok | 200.0 | 100.00 | 0.5 | 0.7 | 0.9 | 8.3 | +0.0 | ok |
+| 20260615-204011 | xray | ok | 200.0 | 100.00 | 0.5 | 0.7 | 0.9 | 33.8 | +10.9 | ok |
+| 20260615-204011 | sing-box | ok | 200.0 | 100.00 | 0.5 | 0.7 | 0.9 | 34.5 | +21.8 | ok |
+| 20260615-204011 | mihomo | ok | 200.0 | 100.00 | 0.5 | 0.7 | 0.9 | 42.1 | -346.7 | ok |
 
 ### vmess
 
@@ -80,10 +98,10 @@
 
 | Server | Cells run | OK | Failed | Unsupported | Mean req/s | Mean RSS peak (MB) | Leaks |
 |--------|----------:|---:|-------:|------------:|-----------:|-------------------:|------:|
-| wrongsv | 7 | 5 | 2 | 0 | 200.0 | 7.9 | 0 |
-| xray | 5 | 3 | 2 | 0 | 200.0 | 32.9 | 0 |
-| sing-box | 7 | 5 | 2 | 0 | 200.0 | 34.5 | 0 |
-| mihomo | 7 | 3 | 1 | 3 | 200.0 | 42.1 | 0 |
+| wrongsv | 10 | 8 | 2 | 0 | 200.0 | 8.0 | 0 |
+| xray | 8 | 5 | 2 | 1 | 200.0 | 33.4 | 0 |
+| sing-box | 10 | 8 | 2 | 0 | 200.0 | 34.7 | 0 |
+| mihomo | 10 | 5 | 1 | 4 | 200.0 | 42.2 | 0 |
 
 ## ✓ No memory leaks detected
 
