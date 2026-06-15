@@ -123,6 +123,10 @@ kcp = "0.6"
 name = "throughput"
 harness = false
 
+[[bench]]
+name = "protocols"
+harness = false
+
 [profile.release]
 lto = true
 codegen-units = 1
