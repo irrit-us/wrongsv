@@ -1,0 +1,33 @@
+{
+  "log": { "level": "warn" },
+  "inbounds": [
+    {
+      "type": "socks",
+      "tag": "socks-in",
+      "listen": "127.0.0.1",
+      "listen_port": 18080,
+      "sniff": false
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "anytls",
+      "tag": "proxy",
+      "server": "127.0.0.1",
+      "server_port": 18443,
+      "password": "your-secure-password",
+      "tls": {
+        "enabled": true,
+        "server_name": "localhost",
+        "alpn": ["h2", "http/1.1"],
+        "insecure": true
+      }
+    },
+    { "type": "direct", "tag": "direct" }
+  ],
+  "route": {
+    "rules": [
+      { "inbound": ["socks-in"], "outbound": "proxy" }
+    ]
+  }
+}

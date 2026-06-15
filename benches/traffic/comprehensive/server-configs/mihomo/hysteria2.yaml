@@ -6,5 +6,5 @@ listeners:
     users:
       alice: "alice-password"
     ignore-client-bandwidth: false
-    certificate: /tmp/wrongsv-bench-cert.pem
-    private-key: /tmp/wrongsv-bench-key.pem
+    certificate: ./cert.pem
+    private-key: ./key.pem

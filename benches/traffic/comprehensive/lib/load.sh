@@ -40,6 +40,7 @@ start_xray_client() {
         return 2
     fi
     [ -x "$XRAY_BIN" ] || { echo "[load] xray binary missing: $XRAY_BIN" >&2; return 1; }
+    cfg="$(_prepare_xray_client_config "$cfg")" || return 1
     "$XRAY_BIN" run -c "$cfg" >"$log_path" 2>&1 &
     local pid=$!
     if ! _wait_for_port "$CLIENT_SOCKS_PORT"; then
@@ -48,6 +49,33 @@ start_xray_client() {
         return 1
     fi
     echo "$pid"
+}
+
+# xray 26.5.9 removed `allowInsecure`; clients must instead pin the server cert
+# via `pinnedPeerCertSha256`. Compute the pin from the shared bench cert (set up
+# by lib/certs.sh) and rewrite the user-checked-in client config into a tmp copy.
+# Falls back to passthrough if there is no `tlsSettings.allowInsecure` to rewrite.
+_prepare_xray_client_config() {
+    local src="$1"
+    local out
+    out="$(mktemp -t "xray-client-XXXXXX.json")"
+    local pin=""
+    if command -v bench_cert_pin_sha256 >/dev/null 2>&1; then
+        pin="$(bench_cert_pin_sha256 2>/dev/null || true)"
+    fi
+    if [ -n "$pin" ]; then
+        # Drop allowInsecure (legacy), pin the cert SHA256 instead. xray 26.5.9
+        # accepts pinnedPeerCertSha256 as a string (not array).
+        jq --arg pin "$pin" '
+          (.. | objects | select(has("allowInsecure"))) |= (
+            del(.allowInsecure)
+            | .pinnedPeerCertSha256 = $pin
+          )
+        ' "$src" > "$out" || { cp "$src" "$out"; }
+    else
+        cp "$src" "$out"
+    fi
+    echo "$out"
 }
 
 start_singbox_client() {
@@ -70,13 +98,14 @@ start_singbox_client() {
 }
 
 # Dispatcher: pick the right client binary for a given protocol.
-# xray-core lacks shadowtls and hysteria2 client outbounds, so those use sing-box.
-# All other protocols default to xray (consistent with the original constant-client design).
+# xray-core lacks shadowtls, hysteria2, and anytls client outbounds, so those
+# use sing-box. All other protocols default to xray (consistent with the
+# original constant-client design).
 start_client_for() {
     local config_name="$1"
     local log_path="$2"
     case "$config_name" in
-        shadowtls|hysteria2)
+        shadowtls|hysteria2|anytls-tcp|anytls)
             start_singbox_client "$config_name" "$log_path"
             ;;
         *)

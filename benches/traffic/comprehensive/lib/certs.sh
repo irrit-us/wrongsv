@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
-# certs.sh — generate a self-signed ECDSA P-256 cert reusable across all
-# competitor server configs (xray, sing-box, mihomo). wrongsv generates its
-# own self-signed cert internally when no cert/key is configured, so we only
-# need a shared cert for the other three.
-#
-# The cert is generated once per matrix run into /tmp and reused.
+# certs.sh — generate a self-signed ECDSA P-256 cert reusable across every SUT
+# (wrongsv, xray, sing-box, mihomo). A shared cert is required so the xray
+# client can pin one sha256 (pinnedPeerCertSha256) regardless of which SUT is
+# behind it — xray 26.5.9 removed `allowInsecure`.
 set -uo pipefail
 
 CERT_PATH="${BENCH_CERT_PATH:-/tmp/wrongsv-bench-cert.pem}"
@@ -32,6 +30,16 @@ ensure_bench_cert() {
     echo "[certs] generated $CERT_PATH (CN=$CERT_CN)" >&2
 }
 
+# Print the SHA256 of the DER-encoded cert as a lowercase hex string. xray's
+# pinnedPeerCertSha256 expects this exact form. Empty output if cert missing.
+bench_cert_pin_sha256() {
+    [ -f "$CERT_PATH" ] || return 1
+    openssl x509 -in "$CERT_PATH" -outform DER 2>/dev/null \
+        | openssl dgst -sha256 2>/dev/null \
+        | awk '{print $NF}'
+}
+
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     ensure_bench_cert
+    bench_cert_pin_sha256
 fi

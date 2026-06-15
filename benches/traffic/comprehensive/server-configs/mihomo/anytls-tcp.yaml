@@ -4,13 +4,12 @@ bind-address: 127.0.0.1
 mode: rule
 log-level: warning
 listeners:
-  - name: trojan-in
-    type: trojan
+  - name: anytls-in
+    type: anytls
     port: 18443
     listen: 127.0.0.1
     users:
-      - username: user@example.com
-        password: change-me-to-a-long-random-password
+      user@example.com: your-secure-password
     certificate: ./cert.pem
     private-key: ./key.pem
 proxies: []

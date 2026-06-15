@@ -46,15 +46,52 @@ _proto_for_config() {
     esac
 }
 
-# Rewrite wrongsv config to listen on 127.0.0.1 instead of 0.0.0.0
-# (and the matrix-assigned port). Writes to a tmp file and echoes its path.
+# Rewrite wrongsv config to listen on 127.0.0.1 instead of 0.0.0.0,
+# and — for TLS-bearing configs — inject the shared bench cert+key as
+# inline PEM strings under the appropriate section. Without this, wrongsv
+# self-generates a different cert per run, breaking the xray client's
+# pinnedPeerCertSha256 (which is computed from the shared cert).
+# Writes to a tmp file and echoes its path.
 _prepare_wrongsv_config() {
     local src="$1"
     local port="$2"
+    local config_name="$3"
     local out
     out="$(mktemp -t "wrongsv-bench-XXXXXX.toml")"
-    # Substitute the listen line — accept any 0.0.0.0:PORT or 127.0.0.1:PORT
-    sed -E "s|^listen = \"[^\"]+\"|listen = \"127.0.0.1:${port}\"|" "$src" > "$out"
+    # Section header that takes `certificate`/`key` fields, by config family.
+    local section=""
+    case "$config_name" in
+        tls-vision)        section="[tls]" ;;
+        trojan-tls)        section="[trojan]" ;;
+        anytls-*|anytls)   section="[anytls]" ;;
+    esac
+    BENCH_CERT_PATH_VAL="${BENCH_CERT_PATH:-/tmp/wrongsv-bench-cert.pem}" \
+    BENCH_KEY_PATH_VAL="${BENCH_KEY_PATH:-/tmp/wrongsv-bench-key.pem}" \
+    SRC="$src" OUT="$out" PORT="$port" SECTION="$section" \
+    python3 - <<'PYEOF'
+import os, pathlib
+src     = os.environ["SRC"]
+out     = os.environ["OUT"]
+port    = os.environ["PORT"]
+section = os.environ["SECTION"]
+cert_p  = os.environ["BENCH_CERT_PATH_VAL"]
+key_p   = os.environ["BENCH_KEY_PATH_VAL"]
+
+lines = pathlib.Path(src).read_text().splitlines()
+out_lines = []
+for line in lines:
+    if line.startswith("listen = "):
+        out_lines.append(f'listen = "127.0.0.1:{port}"')
+        continue
+    out_lines.append(line)
+    if section and line.strip() == section:
+        cert = pathlib.Path(cert_p).read_text().rstrip("\n")
+        key  = pathlib.Path(key_p).read_text().rstrip("\n")
+        out_lines.append(f'certificate = """\n{cert}\n"""')
+        out_lines.append(f'key = """\n{key}\n"""')
+
+pathlib.Path(out).write_text("\n".join(out_lines) + "\n")
+PYEOF
     echo "$out"
 }
 
@@ -96,7 +133,7 @@ start_server() {
                 *)                                 port=18443 ;;
             esac
             local cfg
-            cfg="$(_prepare_wrongsv_config "$src" "$port")"
+            cfg="$(_prepare_wrongsv_config "$src" "$port" "$config_name")"
             "$WRONGSV_BIN" --config "$cfg" >"$log_path" 2>&1 &
             local pid=$!
             if ! _wait_for_port "$port" "$(_proto_for_config "$config_name")"; then
@@ -142,12 +179,19 @@ start_server() {
             [ -x "$MIHOMO_BIN" ] || { echo "[server] mihomo binary missing: $MIHOMO_BIN" >&2; return 1; }
             local port
             port="$(_competitor_port mihomo "$cfg")"
-            # mihomo wants config in a directory; create one
+            # mihomo wants config in a directory; create one.
+            # mihomo 1.19.x restricts file paths read by config to under HOME
+            # or the config dir (SAFE_PATHS is ignored in this build), so we
+            # copy the shared bench cert+key into the cfg dir and the YAMLs
+            # reference them via relative paths (./cert.pem, ./key.pem).
             local cfg_dir
             cfg_dir="$(mktemp -d -t "mihomo-bench-XXXXXX")"
             cp "$cfg" "$cfg_dir/config.yaml"
-            # SAFE_PATHS allows mihomo to read certs from /tmp (e.g. /tmp/wrongsv-bench-cert.pem)
-            SAFE_PATHS="/tmp" "$MIHOMO_BIN" -d "$cfg_dir" >"$log_path" 2>&1 &
+            local bench_cert="${BENCH_CERT_PATH:-/tmp/wrongsv-bench-cert.pem}"
+            local bench_key="${BENCH_KEY_PATH:-/tmp/wrongsv-bench-key.pem}"
+            [ -f "$bench_cert" ] && cp "$bench_cert" "$cfg_dir/cert.pem"
+            [ -f "$bench_key" ]  && cp "$bench_key"  "$cfg_dir/key.pem"
+            "$MIHOMO_BIN" -d "$cfg_dir" >"$log_path" 2>&1 &
             local pid=$!
             if ! _wait_for_port "$port" "$(_proto_for_config "$config_name")"; then
                 kill "$pid" 2>/dev/null || true
