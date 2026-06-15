@@ -20,6 +20,7 @@ pub(crate) struct ClientConfigValues {
     pub xhttp_path: String,
     pub xhttp_host: String,
     pub shadowtls_password: String,
+    pub anytls_password: String,
     pub wireguard_private_key: String,
     pub wireguard_public_key: String,
     pub wireguard_preshared_key: Option<String>,
@@ -136,6 +137,11 @@ pub(crate) fn resolve_client_values(
                 .as_ref()
                 .map(|s| s.password.clone())
                 .unwrap_or_default();
+            let anytls_password = cfg
+                .anytls
+                .as_ref()
+                .map(|a| a.password.clone())
+                .unwrap_or_default();
             let wireguard_private_key = cfg
                 .wireguard
                 .as_ref()
@@ -236,6 +242,7 @@ pub(crate) fn resolve_client_values(
                 xhttp_path,
                 xhttp_host,
                 shadowtls_password,
+                anytls_password,
                 wireguard_private_key,
                 wireguard_public_key,
                 wireguard_preshared_key,
@@ -269,6 +276,7 @@ pub(crate) fn resolve_client_values(
             xhttp_path: "/xhttp".to_string(),
             xhttp_host: String::new(),
             shadowtls_password: String::new(),
+            anytls_password: String::new(),
             wireguard_private_key: String::new(),
             wireguard_public_key: String::new(),
             wireguard_preshared_key: None,

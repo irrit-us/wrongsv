@@ -6,6 +6,7 @@ use wrongsv_server::Config;
 
 mod client_config;
 mod endpoint;
+mod main_config;
 
 pub(crate) use endpoint::EndpointProfile as Transport;
 
@@ -26,6 +27,9 @@ enum ClientFormat {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Generate one complete randomized main TOML config from cooperative components
+    #[command(name = "generate-main-config", alias = "generate-main-configs")]
+    GenerateMainConfig(main_config::GenerateMainConfigArgs),
     /// Start the multi-protocol evaluator orchestrator (server side)
     EvalServer {
         /// Listen address for the control channel
@@ -121,6 +125,13 @@ fn main() {
     // -- subcommand dispatch --
     if let Some(cmd) = cli.command {
         match cmd {
+            Commands::GenerateMainConfig(args) => {
+                if let Err(e) = main_config::run(args) {
+                    error!("{e}");
+                    process::exit(1);
+                }
+                return;
+            }
             Commands::EvalServer {
                 listen,
                 token,

@@ -78,9 +78,15 @@ fn validate_client_format_support(
                 );
             }
             if vals.has_component(Component::AnyTls)
-                && !matches!(format, ClientFormat::SingBox | ClientFormat::Hiddify)
+                && !matches!(
+                    format,
+                    ClientFormat::Mihomo | ClientFormat::SingBox | ClientFormat::Hiddify
+                )
             {
-                return Err("AnyTLS export is only implemented for sing-box-family configs".into());
+                return Err(
+                    "AnyTLS export is only implemented for mihomo and sing-box-family configs"
+                        .into(),
+                );
             }
         }
         ProxyProtocol::WireGuard => {
@@ -405,6 +411,21 @@ fn mihomo_format(server_host: &str, client_name: &str, vals: &ClientConfigValues
         });
         return serde_json::to_string_pretty(&config).expect("tuic mihomo config should serialize");
     }
+    if vals.has_component(Component::AnyTls) {
+        let config = serde_json::json!({
+            "name": client_name,
+            "type": "anytls",
+            "server": server_host,
+            "port": port,
+            "password": vals.anytls_password,
+            "sni": vals.servername,
+            "client-fingerprint": "chrome",
+            "skip-cert-verify": true,
+            "udp": true,
+        });
+        return serde_json::to_string_pretty(&config)
+            .expect("anytls mihomo config should serialize");
+    }
 
     let (tls, client_fingerprint, servername, skip_cert_verify, reality_opts) =
         match vals.outer_security() {
@@ -695,6 +716,30 @@ fn singbox_simple_outbound(
     }
 }
 
+fn singbox_anytls_outbound(
+    server_host: &str,
+    client_name: &str,
+    port: u16,
+    vals: &ClientConfigValues,
+) -> serde_json::Value {
+    serde_json::json!({
+        "type": "anytls",
+        "tag": client_name,
+        "server": server_host,
+        "server_port": port,
+        "password": vals.anytls_password,
+        "tls": {
+            "enabled": true,
+            "server_name": vals.servername,
+            "insecure": true,
+            "utls": {
+                "enabled": true,
+                "fingerprint": "chrome",
+            },
+        },
+    })
+}
+
 fn singbox_format(server_host: &str, client_name: &str, vals: &ClientConfigValues) -> String {
     let port: u16 = vals.port.parse().unwrap_or(443);
 
@@ -755,6 +800,20 @@ fn singbox_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
             | ProxyProtocol::Tuic
     ) {
         let outbound = singbox_simple_outbound(server_host, client_name, port, vals);
+        let direct_outbound = serde_json::json!({"type": "direct", "tag": "direct"});
+        let config = SingBoxConfig {
+            inbounds: vec![SingBoxInbound {
+                inbound_type: "mixed".into(),
+                tag: "mixed-in".into(),
+                listen: "127.0.0.1".into(),
+                listen_port: 10809,
+            }],
+            outbounds: vec![outbound, direct_outbound],
+        };
+        return serde_json::to_string_pretty(&config).expect("SingBoxConfig should serialize");
+    }
+    if vals.has_component(Component::AnyTls) {
+        let outbound = singbox_anytls_outbound(server_host, client_name, port, vals);
         let direct_outbound = serde_json::json!({"type": "direct", "tag": "direct"});
         let config = SingBoxConfig {
             inbounds: vec![SingBoxInbound {
@@ -1342,6 +1401,16 @@ fn hiddify_format(server_host: &str, client_name: &str, vals: &ClientConfigValue
         };
         return serde_json::to_string_pretty(&config).expect("HiddifyConfig should serialize");
     }
+    if vals.has_component(Component::AnyTls) {
+        let outbound = singbox_anytls_outbound(server_host, client_name, port, vals);
+        let direct_outbound = serde_json::json!({"type": "direct", "tag": "direct"});
+        let config = HiddifyConfig {
+            remarks: client_name.to_string(),
+            subscription: String::new(),
+            configs: vec![outbound, direct_outbound],
+        };
+        return serde_json::to_string_pretty(&config).expect("HiddifyConfig should serialize");
+    }
 
     if vals.transport_method() == Some(TransportMethod::Xhttp) {
         let xray_config: serde_json::Value =
@@ -1506,6 +1575,7 @@ mod tests {
             xhttp_path: "/xhttp-path".into(),
             xhttp_host: "xhost.example.com".into(),
             shadowtls_password: "shadow-pass".into(),
+            anytls_password: "anytls-pass".into(),
             wireguard_private_key: "wireguard-private-key".into(),
             wireguard_public_key: "wireguard-public-key".into(),
             wireguard_preshared_key: Some("wireguard-preshared-key".into()),
@@ -1612,6 +1682,26 @@ mod tests {
     }
 
     #[test]
+    fn mihomo_anytls_renders_anytls_proxy_entry() {
+        let json = mihomo_format("1.2.3.4", "test", &test_vals(Transport::AnyTls));
+        assert!(json.contains(r#""type": "anytls""#));
+        assert!(json.contains(r#""password": "anytls-pass""#));
+        assert!(json.contains(r#""sni": "example.com""#));
+        assert!(json.contains(r#""client-fingerprint": "chrome""#));
+        assert!(!json.contains(r#""type": "vless""#));
+    }
+
+    #[test]
+    fn singbox_anytls_renders_anytls_outbound() {
+        let json = singbox_format("1.2.3.4", "test", &test_vals(Transport::AnyTls));
+        assert!(json.contains(r#""type": "anytls""#));
+        assert!(json.contains(r#""password": "anytls-pass""#));
+        assert!(json.contains(r#""server_name": "example.com""#));
+        assert!(json.contains(r#""fingerprint": "chrome""#));
+        assert!(!json.contains(r#""type": "vless""#));
+    }
+
+    #[test]
     fn singbox_has_packet_encoding() {
         let mut vals = test_vals(Transport::Raw);
         vals.flow.clear();
@@ -1683,6 +1773,14 @@ mod tests {
         let err = generate_client_config(ClientFormat::Xray, "1.2.3.4", "test", &vals)
             .expect_err("wireguard xray export should fail");
         assert!(err.contains("WireGuard export is not implemented"));
+    }
+
+    #[test]
+    fn xray_anytls_export_fails_cleanly() {
+        let vals = test_vals(Transport::AnyTls);
+        let err = generate_client_config(ClientFormat::Xray, "1.2.3.4", "test", &vals)
+            .expect_err("anytls xray export should fail");
+        assert!(err.contains("AnyTLS export"));
     }
 
     #[test]
@@ -1860,6 +1958,14 @@ mod tests {
         let json = hiddify_format("1.2.3.4", "test", &vals);
         assert!(json.contains(r#""type": "tuic""#));
         assert!(json.contains(r#""uuid": "12345678-1234-1234-1234-123456789abc""#));
+    }
+
+    #[test]
+    fn hiddify_anytls_wraps_singbox_outbound() {
+        let json = hiddify_format("1.2.3.4", "test", &test_vals(Transport::AnyTls));
+        assert!(json.contains(r#""type": "anytls""#));
+        assert!(json.contains(r#""password": "anytls-pass""#));
+        assert!(json.contains(r#""configs""#));
     }
 
     #[test]

@@ -3,6 +3,7 @@ target/
 etc/
 usr/
 perf-*.rpm
+locals/
 
 # Traffic bench tool sources and binaries (built by benches/traffic/setup.sh)
 benches/traffic/tools/deathcore/
