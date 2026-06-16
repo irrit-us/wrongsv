@@ -16,6 +16,7 @@ SERVERNAME=""
 OUTPUT_DIR=""
 EXTERNAL_TESTS_ROOT=""
 GENERATE_CLIENTS=1
+DRY_RUN=0
 
 usage() {
   cat >&2 <<'EOF'
@@ -34,6 +35,7 @@ Options:
   --output-dir <path>          local generated client config dir
   --external-tests-root <path> wrongsv-external-tests dir
   --no-client-configs          deploy only
+  --dry-run                    validate inputs and print deployment plan as JSON
   -h, --help                   show this help
 
 The generated client set is filtered by wrongsv-external-tests/e2e-harness
@@ -102,6 +104,10 @@ while [[ $# -gt 0 ]]; do
       GENERATE_CLIENTS=0
       shift
       ;;
+    --dry-run)
+      DRY_RUN=1
+      shift
+      ;;
     --*)
       echo "unknown option: $1" >&2
       usage
@@ -144,10 +150,14 @@ if [[ "$GENERATE_CLIENTS" -eq 1 && ! -d "$EXTERNAL_TESTS_ROOT/e2e-harness" ]]; t
   exit 1
 fi
 
-REMOTE_HOSTNAME="$(ssh -G "$HOST" | awk '$1=="hostname"{print $2; exit}')"
-if [[ -z "$REMOTE_HOSTNAME" ]]; then
-  echo "could not resolve $HOST via ssh -G" >&2
-  exit 1
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  REMOTE_HOSTNAME="${HOST##*@}"
+else
+  REMOTE_HOSTNAME="$(ssh -G "$HOST" | awk '$1=="hostname"{print $2; exit}')"
+  if [[ -z "$REMOTE_HOSTNAME" ]]; then
+    echo "could not resolve $HOST via ssh -G" >&2
+    exit 1
+  fi
 fi
 if [[ -z "$SERVER_HOST" ]]; then
   SERVER_HOST="$REMOTE_HOSTNAME"
@@ -173,6 +183,93 @@ if [[ -z "$OUTPUT_DIR" ]]; then
   OUTPUT_DIR="$ROOT/deploy-output/${safe_host}-$(date -u +%Y%m%dT%H%M%SZ)"
 fi
 
+LISTEN_PORT="$(python3 - "$CONFIG" <<'PY'
+import sys
+import tomllib
+
+with open(sys.argv[1], "rb") as fh:
+    listen = tomllib.load(fh).get("listen", "")
+if ":" not in listen:
+    raise SystemExit("config listen is missing a port")
+print(listen.rsplit(":", 1)[1].strip("]"))
+PY
+)"
+
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  python3 - \
+    "$HOST" \
+    "$CONFIG" \
+    "$REMOTE_DIR" \
+    "$SERVICE" \
+    "$TARGET" \
+    "$PROFILE" \
+    "$SERVER_HOST" \
+    "$SERVERNAME" \
+    "$OUTPUT_DIR" \
+    "$EXTERNAL_TESTS_ROOT" \
+    "$GENERATE_CLIENTS" \
+    "$CLIENTS" \
+    "$CLIENT_NAME" \
+    "$LISTEN_PORT" <<'PY'
+import json
+import sys
+
+(
+    host,
+    config,
+    remote_dir,
+    service,
+    target,
+    profile,
+    server_host,
+    servername,
+    output_dir,
+    external_tests_root,
+    generate_clients,
+    clients,
+    client_name,
+    listen_port,
+) = sys.argv[1:]
+
+actions = [
+    f"build wrongsv for {target} ({profile})",
+    f"install binary to {remote_dir}/wrongsv",
+    f"install {config} as {remote_dir}/config.toml with mode 0600",
+    f"restart {service} or start wrongsv from {remote_dir}",
+    f"check listener reachability for port {listen_port}",
+]
+if generate_clients == "1":
+    actions.append("generate capability-validated client configs")
+
+plan = {
+    "actions": actions,
+    "clientName": client_name,
+    "clients": clients,
+    "config": config,
+    "dryRun": True,
+    "externalTestsRoot": external_tests_root,
+    "generateClientConfigs": generate_clients == "1",
+    "host": host,
+    "listenPort": listen_port,
+    "notes": [
+        "dry-run does not run ssh, cargo, scp, remote commands, or client generation",
+        "real deploy derives endpoint carriers from the built binary before connectivity checks",
+    ],
+    "outputDir": output_dir,
+    "profile": profile,
+    "remoteBinary": f"{remote_dir}/wrongsv",
+    "remoteConfig": f"{remote_dir}/config.toml",
+    "remoteDir": remote_dir,
+    "serverHost": server_host,
+    "servername": servername,
+    "service": service,
+    "target": target,
+}
+print(json.dumps(plan, indent=2, sort_keys=True))
+PY
+  exit 0
+fi
+
 echo "==> building wrongsv for $TARGET ($PROFILE)"
 BUILD_ARGS=(build --target "$TARGET" -p wrongsv --bin wrongsv)
 ARTIFACT_PROFILE="$PROFILE"
@@ -194,18 +291,6 @@ if [[ ! -x "$BIN" ]]; then
   echo "missing build artifact: $BIN" >&2
   exit 1
 fi
-
-LISTEN_PORT="$(python3 - "$CONFIG" <<'PY'
-import sys
-import tomllib
-
-with open(sys.argv[1], "rb") as fh:
-    listen = tomllib.load(fh).get("listen", "")
-if ":" not in listen:
-    raise SystemExit("config listen is missing a port")
-print(listen.rsplit(":", 1)[1].strip("]"))
-PY
-)"
 
 DIAGNOSTICS="$("$BIN" \
   --config "$CONFIG" \

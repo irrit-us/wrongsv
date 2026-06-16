@@ -186,6 +186,10 @@ node scripts/generate-client-configs.js --self-test --external-tests-root ../wro
 node --check scripts/generate-main-configs.js
 bash -n scripts/deploy-remote.sh
 bash -n scripts/deploy_remote.sh
+scripts/deploy-remote.sh example.invalid --dry-run \
+  --config configs/anytls-vision.toml \
+  --server-host 203.0.113.10 \
+  --no-client-configs
 ```
 
 Run generation and client compatibility checks:
