@@ -30,6 +30,7 @@ set -uo pipefail
 
 COMP_DIR="$(realpath "$(dirname "$0")")"
 LIB="$COMP_DIR/lib"
+REPO_ROOT="$(realpath "$COMP_DIR/../../..")"
 RESULTS_BASE="${RESULTS_DIR:-$COMP_DIR/results/$(date +%Y%m%d-%H%M%S)}"
 mkdir -p "$RESULTS_BASE"
 
@@ -55,6 +56,15 @@ LOAD_MAX_CONNECTIONS="${LOAD_MAX_CONNECTIONS:-0}"
 SHAPE_NETEM="${SHAPE_NETEM:-1}"
 LEAK_THRESHOLD_KB_PER_MIN="${LEAK_THRESHOLD_KB_PER_MIN:-50}"
 SAMPLE_INTERVAL="${SAMPLE_INTERVAL:-5}"
+BENCH_GIT_COMMIT="${BENCH_GIT_COMMIT:-$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
+BENCH_OS="${BENCH_OS:-$(uname -srm 2>/dev/null || echo unknown)}"
+BENCH_CPU="${BENCH_CPU:-$(awk -F: '/model name|Hardware|Processor/{gsub(/^[ \t]+/, "", $2); print $2; exit}' /proc/cpuinfo 2>/dev/null || true)}"
+BENCH_CPU="${BENCH_CPU:-unknown}"
+case "$WRONGSV_BIN" in
+    */debug/wrongsv) DEFAULT_WRONGSV_BUILD_PROFILE="debug" ;;
+    *) DEFAULT_WRONGSV_BUILD_PROFILE="release" ;;
+esac
+WRONGSV_BUILD_PROFILE="${WRONGSV_BUILD_PROFILE:-$DEFAULT_WRONGSV_BUILD_PROFILE}"
 
 export SOAK_DURATION SAMPLE_INTERVAL LEAK_THRESHOLD_KB_PER_MIN
 
@@ -173,12 +183,23 @@ JSON
     ACTIVE_MEM_PID=""
 
     # 7. Combine memory + load results into the cell's JSON
-    python3 - <<PYEOF > "$out_json"
+    BENCH_GIT_COMMIT="$BENCH_GIT_COMMIT" \
+    BENCH_OS="$BENCH_OS" \
+    BENCH_CPU="$BENCH_CPU" \
+    WRONGSV_BUILD_PROFILE="$WRONGSV_BUILD_PROFILE" \
+    WRONGSV_BIN="$WRONGSV_BIN" \
+        python3 - <<PYEOF > "$out_json"
 import json, os
 result = {
     "server": "$server",
     "config": "$cfg_name",
     "status": "ok",
+    "git_commit": os.environ.get("BENCH_GIT_COMMIT"),
+    "os": os.environ.get("BENCH_OS"),
+    "cpu": os.environ.get("BENCH_CPU"),
+    "wrongsv_build_profile": os.environ.get("WRONGSV_BUILD_PROFILE"),
+    "wrongsv_bin": os.environ.get("WRONGSV_BIN"),
+    "protocol_config": "$cfg_name",
     "duration_sec": $SOAK_DURATION,
     "load_rate": $LOAD_RATE,
     "load_payload_bytes": $LOAD_PAYLOAD,
@@ -224,6 +245,7 @@ log "Servers: $SERVERS"
 log "Configs: $CONFIGS"
 log "Soak duration: ${SOAK_DURATION}s, load rate: ${LOAD_RATE}/s, payload: ${LOAD_PAYLOAD}B"
 log "Load workers: ${LOAD_WORKERS}, idle connections: ${LOAD_CONNECTIONS}, max connections: ${LOAD_MAX_CONNECTIONS}"
+log "Metadata: commit=${BENCH_GIT_COMMIT}, os=${BENCH_OS}, cpu=${BENCH_CPU}, wrongsv_profile=${WRONGSV_BUILD_PROFILE}"
 
 if [ "$SHAPE_NETEM" = "1" ]; then
     netem_apply

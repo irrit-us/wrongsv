@@ -221,6 +221,7 @@ def render_markdown(runs) -> str:
 
 CSV_COLUMNS = [
     "run", "config", "server", "status",
+    "git_commit", "os", "cpu", "wrongsv_build_profile", "wrongsv_bin", "protocol_config",
     "duration_sec", "load_rate", "load_payload_bytes", "netem_shaped",
     "load_workers", "load_connections", "load_max_connections",
     "requests", "success_ratio",
@@ -253,6 +254,12 @@ def write_csv(runs, out_path: Path) -> int:
                         "config": cfg,
                         "server": server,
                         "status": d.get("status"),
+                        "git_commit": d.get("git_commit"),
+                        "os": d.get("os"),
+                        "cpu": d.get("cpu"),
+                        "wrongsv_build_profile": d.get("wrongsv_build_profile"),
+                        "wrongsv_bin": d.get("wrongsv_bin"),
+                        "protocol_config": d.get("protocol_config"),
                         "duration_sec": d.get("duration_sec"),
                         "load_rate": d.get("load_rate"),
                         "load_payload_bytes": d.get("load_payload_bytes"),

@@ -143,7 +143,9 @@ if sudo is unavailable.
 
 `results/<timestamp>/<config>/<server>.json` per cell, plus an auto-generated
 `REPORT.md` aggregating per-config tables, per-server summaries, and a flagged
-leak list. See `comprehensive/report.py` for the format.
+leak list. Cell JSON and CSV output include benchmark metadata such as commit,
+OS, CPU, wrongsv build profile, protocol config, and load parameters. See
+`comprehensive/report.py` for the format.
 
 ## Microbenchmarks
 
