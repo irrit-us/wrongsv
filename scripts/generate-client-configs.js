@@ -104,6 +104,14 @@ function runWrongsvJson(opts, args) {
   return JSON.parse(output);
 }
 
+function writePrivateFile(filePath, content) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, content, { encoding: "utf8", mode: 0o600 });
+  if (process.platform !== "win32") {
+    fs.chmodSync(filePath, 0o600);
+  }
+}
+
 function loadHarness(root) {
   const capabilities = require(path.join(root, "e2e-harness", "capabilities"));
   const scenarios = require(path.join(root, "e2e-harness", "scenarios"));
@@ -461,11 +469,11 @@ function main() {
       const raw = JSON.parse(rawText);
       validateRawForScenario(raw, client);
       const rawPath = path.join(opts.outputDir, "raw", `${client}-${format}.json`);
-      fs.writeFileSync(rawPath, JSON.stringify(raw, null, 2) + "\n", "utf8");
+      writePrivateFile(rawPath, JSON.stringify(raw, null, 2) + "\n");
 
       const runtime = runtimeContent(raw, client, builders, `${opts.clientName}-${client}`);
       const filePath = path.join(opts.outputDir, `${client}${runtime.extension}`);
-      fs.writeFileSync(filePath, runtime.content.trimEnd() + "\n", "utf8");
+      writePrivateFile(filePath, runtime.content.trimEnd() + "\n");
       manifest.generated.push({
         client,
         scenarioId,
@@ -478,10 +486,9 @@ function main() {
     }
   }
 
-  fs.writeFileSync(
+  writePrivateFile(
     path.join(opts.outputDir, "manifest.json"),
-    JSON.stringify(manifest, null, 2) + "\n",
-    "utf8"
+    JSON.stringify(manifest, null, 2) + "\n"
   );
   const lines = [
     `# wrongsv client configs`,
@@ -500,7 +507,7 @@ function main() {
     ...manifest.failed.map((item) => `- ${item.client}: ${item.error}`),
     ``,
   ];
-  fs.writeFileSync(path.join(opts.outputDir, "manifest.md"), lines.join("\n"), "utf8");
+  writePrivateFile(path.join(opts.outputDir, "manifest.md"), lines.join("\n"));
 
   if (manifest.failed.length > 0) {
     console.error(JSON.stringify(manifest.failed, null, 2));
@@ -533,4 +540,5 @@ module.exports = {
   validateRawForScenario,
   runtimeContent,
   runSelfTest,
+  writePrivateFile,
 };

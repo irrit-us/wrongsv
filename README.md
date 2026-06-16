@@ -60,6 +60,7 @@ wrongsv (binary)
 
 [docs/setup.md](docs/setup.md) has the full build and configuration guide.
 [docs/simple-deploy.md](docs/simple-deploy.md) has step-by-step TLS and REALITY deployment walkthroughs.
+[docs/security.md](docs/security.md) documents generated secret handling and file permissions.
 
 ### Build
 

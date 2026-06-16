@@ -189,8 +189,30 @@ fn write_file(path: &Path, content: &str) -> Result<(), String> {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
     }
-    std::fs::write(path, format!("{}\n", content.trim_end()))
+    write_private_file(path, format!("{}\n", content.trim_end()).as_bytes())
+}
+
+#[cfg(unix)]
+fn write_private_file(path: &Path, content: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| format!("failed to restrict permissions on {}: {e}", path.display()))?;
+    file.write_all(content)
         .map_err(|e| format!("failed to write {}: {e}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn write_private_file(path: &Path, content: &[u8]) -> Result<(), String> {
+    std::fs::write(path, content).map_err(|e| format!("failed to write {}: {e}", path.display()))
 }
 
 impl ComponentSet {
@@ -842,5 +864,34 @@ mod tests {
     fn rejects_multi_config_alias() {
         let err = ComponentSet::parse("flclash-stealth").expect_err("cluster should be invalid");
         assert!(err.contains("multiple mutually exclusive configs"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_file_restricts_secret_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "wrongsv-main-config-perms-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let path = dir.join("secret.toml");
+
+        write_file(&path, "password = \"secret\"").expect("secret file should be written");
+
+        let content = std::fs::read_to_string(&path).expect("secret file should be readable");
+        assert_eq!(content, "password = \"secret\"\n");
+        let mode = std::fs::metadata(&path)
+            .expect("secret file metadata should be readable")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

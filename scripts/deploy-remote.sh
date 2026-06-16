@@ -229,7 +229,7 @@ ssh "$HOST" "mkdir -p '$REMOTE_DIR'; \
 echo "==> shipping wrongsv + $(basename "$CONFIG") as config.toml"
 scp -q "$BIN" "$HOST:$REMOTE_DIR/wrongsv"
 scp -q "$CONFIG" "$HOST:$REMOTE_DIR/config.toml"
-ssh "$HOST" "chmod +x '$REMOTE_DIR/wrongsv'"
+ssh "$HOST" "chmod +x '$REMOTE_DIR/wrongsv'; chmod 600 '$REMOTE_DIR/config.toml'"
 
 REMOTE_SUM="$(ssh "$HOST" "sha256sum '$REMOTE_DIR/wrongsv'" | awk '{print $1}')"
 if [[ "$LOCAL_SUM" != "$REMOTE_SUM" ]]; then
