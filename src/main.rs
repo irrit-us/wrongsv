@@ -31,6 +31,14 @@ enum Commands {
     #[command(name = "generate-main-config", alias = "generate-main-configs")]
     GenerateMainConfig(main_config::GenerateMainConfigArgs),
     /// Start the multi-protocol evaluator orchestrator (server side)
+    #[command(after_long_help = "\
+Examples:
+  wrongsv eval-server --listen 0.0.0.0:19999 --token TOKEN --proxy-bind 0.0.0.0
+  wrongsv eval-server --protocols reality,anytls,grpc+tls --duration 30
+
+Supported protocol names include:
+  reality, anytls, tls, raw, ws, ws+tls, httpupgrade, httpupgrade+tls,
+  grpc, grpc+tls, xhttp, xhttp+tls, quic, kcp, webtransport, shadowtls, vmess")]
     EvalServer {
         /// Listen address for the control channel
         #[arg(long, default_value = "127.0.0.1:19999")]
@@ -38,7 +46,7 @@ enum Commands {
         /// Shared authentication token (auto-generated if not provided)
         #[arg(long)]
         token: Option<String>,
-        /// Comma-separated protocol list (default: all 14 combinations)
+        /// Comma-separated protocol list (default: all 17 combinations)
         #[arg(long)]
         protocols: Option<String>,
         /// Test duration per protocol in seconds
@@ -53,6 +61,12 @@ enum Commands {
         fixed_proxy_port: Option<u16>,
     },
     /// Run a multi-protocol evaluation against an evaluator server
+    #[command(after_long_help = "\
+Examples:
+  wrongsv eval-client --server 203.0.113.10:19999 --token TOKEN --duration 30 --output eval-remote
+
+Outputs:
+  The command writes <output>.json and <output>.csv, for example eval-remote.json and eval-remote.csv.")]
     EvalClient {
         /// Evaluator server address
         #[arg(long, default_value = "127.0.0.1:19999")]
@@ -71,6 +85,13 @@ enum Commands {
 
 #[derive(Parser)]
 #[command(name = "wrongsv", about = "VLESS proxy server")]
+#[command(after_long_help = "\
+Examples:
+  wrongsv --config server.toml
+  wrongsv --config server.toml --print-endpoint-diagnostics --server-host 203.0.113.10 --servername www.microsoft.com
+  wrongsv generate-main-config --cluster anytls,vision --output-dir generated-anytls
+  wrongsv eval-server --token TOKEN
+  wrongsv eval-client --server 127.0.0.1:19999 --token TOKEN")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -352,4 +373,42 @@ fn load_config(path: &str) -> Result<wrongsv_server::Config, Box<dyn std::error:
     let content = std::fs::read_to_string(path)?;
     let config: wrongsv_server::Config = toml::from_str(&content)?;
     Ok(config)
+}
+
+#[cfg(test)]
+mod cli_help_tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    fn subcommand_help(name: &str) -> String {
+        let mut command = Cli::command();
+        command
+            .find_subcommand_mut(name)
+            .unwrap_or_else(|| panic!("missing subcommand {name}"))
+            .render_long_help()
+            .to_string()
+    }
+
+    #[test]
+    fn public_help_includes_examples_and_supported_values() {
+        let root_help = Cli::command().render_long_help().to_string();
+        assert!(root_help.contains("Examples:"));
+        assert!(root_help.contains("generate-main-config --cluster anytls,vision"));
+        assert!(root_help.contains("Possible values:"));
+
+        let generate_help = subcommand_help("generate-main-config");
+        assert!(generate_help.contains("Supported cooperative clusters:"));
+        assert!(generate_help.contains("anytls-vision"));
+        assert!(generate_help.contains("anytls-reality"));
+
+        let eval_server_help = subcommand_help("eval-server");
+        assert!(eval_server_help.contains("all 17 combinations"));
+        assert!(eval_server_help.contains("grpc+tls"));
+        assert!(eval_server_help.contains("Examples:"));
+
+        let eval_client_help = subcommand_help("eval-client");
+        assert!(eval_client_help.contains("Examples:"));
+        assert!(eval_client_help.contains("eval-remote.json"));
+        assert!(eval_client_help.contains("eval-remote.csv"));
+    }
 }
