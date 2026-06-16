@@ -182,6 +182,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo build -p wrongsv --bin wrongsv
 node --check scripts/generate-client-configs.js
+node scripts/generate-client-configs.js --self-test --external-tests-root ../wrongsv-external-tests
 node --check scripts/generate-main-configs.js
 bash -n scripts/deploy-remote.sh
 bash -n scripts/deploy_remote.sh

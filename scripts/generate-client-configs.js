@@ -4,11 +4,15 @@ const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
 
+const REPO_ROOT = path.resolve(__dirname, "..");
+const DEFAULT_EXTERNAL_TESTS_ROOT = path.resolve(REPO_ROOT, "..", "wrongsv-external-tests");
+
 function parseArgs(argv) {
   const opts = {
     clients: "all",
     clientName: "wrongsv",
     serverName: "localhost",
+    selfTest: false,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -47,6 +51,9 @@ function parseArgs(argv) {
         opts.clients = next;
         i++;
         break;
+      case "--self-test":
+        opts.selfTest = true;
+        break;
       case "-h":
       case "--help":
         printHelp();
@@ -54,6 +61,11 @@ function parseArgs(argv) {
       default:
         throw new Error(`unknown argument: ${arg}`);
     }
+  }
+
+  if (opts.selfTest) {
+    opts.externalTestsRoot = opts.externalTestsRoot || DEFAULT_EXTERNAL_TESTS_ROOT;
+    return opts;
   }
 
   for (const key of ["wrongsvBin", "config", "externalTestsRoot", "outputDir", "serverHost"]) {
@@ -79,6 +91,7 @@ Usage:
 Options:
   --clients <csv|all>     default: all clients known to wrongsv-external-tests
   --client-name <name>    default: wrongsv
+  --self-test             validate scenario mapping and external capability assumptions
 `);
 }
 
@@ -250,8 +263,125 @@ function runtimeContent(raw, client, builders, clientName) {
   }
 }
 
+function assertSelf(condition, message) {
+  if (!condition) {
+    throw new Error(message);
+  }
+}
+
+function diagnosticsFor({
+  protocol,
+  transport = null,
+  outerSecurity = null,
+  protocolInternalSecurity = null,
+  camouflage = [],
+  performance = [],
+}) {
+  return {
+    resolved: {
+      protocol,
+      transport,
+      outer_security: outerSecurity,
+      protocol_internal_security: protocolInternalSecurity,
+      active_components: {
+        camouflage,
+        performance,
+      },
+    },
+  };
+}
+
+function runSelfTest(externalTestsRoot) {
+  const { capabilities, scenarios, builders } = loadHarness(externalTestsRoot);
+  const wrongsvRepo = path.resolve(externalTestsRoot, "..", "wrongsv");
+  const scenarioCatalog = scenarios.buildScenarios(wrongsvRepo);
+
+  const mappingCases = [
+    [diagnosticsFor({ protocol: "vless", camouflage: ["anytls"] }), "anytls_tcp"],
+    [diagnosticsFor({ protocol: "vless", outerSecurity: "reality" }), "vless_reality_vision"],
+    [
+      diagnosticsFor({
+        protocol: "vless",
+        outerSecurity: "tls",
+        performance: ["vision"],
+      }),
+      "vless_tls_vision",
+    ],
+    [diagnosticsFor({ protocol: "vless", transport: "grpc" }), "vless_grpc"],
+    [diagnosticsFor({ protocol: "vless", transport: "xhttp" }), "vless_xhttp"],
+    [diagnosticsFor({ protocol: "vless" }), "vless_raw_tcp"],
+    [
+      diagnosticsFor({
+        protocol: "shadowsocks",
+        protocolInternalSecurity: "shadowsocks_2022",
+      }),
+      "shadowsocks_2022",
+    ],
+    [diagnosticsFor({ protocol: "shadowsocks" }), "shadowsocks_aead"],
+    [diagnosticsFor({ protocol: "trojan" }), "trojan_tls"],
+    [diagnosticsFor({ protocol: "hysteria2" }), "hysteria2_tcp"],
+    [diagnosticsFor({ protocol: "tuic" }), "tuic_tcp"],
+    [diagnosticsFor({ protocol: "vmess" }), "vmess_standard"],
+  ];
+
+  for (const [diagnostics, expected] of mappingCases) {
+    const actual = scenarioIdForDiagnostics(diagnostics);
+    assertSelf(actual === expected, `expected ${expected}, got ${actual}`);
+    assertSelf(scenarioCatalog[actual]?.id === actual, `missing external scenario ${actual}`);
+  }
+
+  const anytlsScenario = scenarioCatalog.anytls_tcp;
+  const realityScenario = scenarioCatalog.vless_reality_vision;
+  assertSelf(anytlsScenario, "missing external anytls_tcp scenario");
+  assertSelf(realityScenario, "missing external vless_reality_vision scenario");
+
+  assertSelf(
+    builders.rawConfigFormat("flclash", anytlsScenario) === "mihomo",
+    "FlClash AnyTLS must use mihomo raw config format"
+  );
+  assertSelf(
+    builders.rawConfigFormat("clash-verge-rev", anytlsScenario) === "mihomo",
+    "clash-verge-rev AnyTLS must use mihomo raw config format"
+  );
+  assertSelf(
+    builders.rawConfigFormat("sing-box", anytlsScenario) === "sing-box",
+    "sing-box AnyTLS must use sing-box raw config format"
+  );
+  assertSelf(
+    builders.rawConfigFormat("xray-core", realityScenario) === "xray",
+    "xray-core REALITY must use xray raw config format"
+  );
+
+  const runnable = (client, scenario) =>
+    capabilities.CLIENT_CAPABILITIES[client]?.runnableScenarios?.includes(scenario) === true;
+  const gap = (client, scenario) =>
+    capabilities.CLIENT_CAPABILITIES[client]?.harnessGaps?.includes(scenario) === true;
+
+  assertSelf(runnable("flclash", "anytls_tcp"), "FlClash must declare anytls_tcp runnable");
+  assertSelf(
+    runnable("clash-verge-rev", "anytls_tcp"),
+    "clash-verge-rev/Mihomo must declare anytls_tcp runnable"
+  );
+  assertSelf(runnable("sing-box", "anytls_tcp"), "sing-box must declare anytls_tcp runnable");
+  assertSelf(!gap("flclash", "anytls_tcp"), "FlClash anytls_tcp must not be a harness gap");
+  assertSelf(!runnable("xray-core", "anytls_tcp"), "xray-core must not advertise AnyTLS");
+  assertSelf(!runnable("v2ray", "anytls_tcp"), "v2ray must not advertise AnyTLS");
+  assertSelf(
+    !runnable("hiddify", "anytls_tcp"),
+    "Hiddify AnyTLS must stay gated until direct GUI E2E passes"
+  );
+  assertSelf(gap("hiddify", "anytls_tcp"), "Hiddify AnyTLS must be documented as a harness gap");
+
+  console.log("generate-client-configs self-test OK");
+}
+
 function main() {
   const opts = parseArgs(process.argv.slice(2));
+  if (opts.selfTest) {
+    runSelfTest(opts.externalTestsRoot);
+    return;
+  }
+
   const { capabilities, scenarios, builders } = loadHarness(opts.externalTestsRoot);
   const wrongsvRepo = path.resolve(opts.externalTestsRoot, "..", "wrongsv");
   const scenarioCatalog = scenarios.buildScenarios(wrongsvRepo);
@@ -389,9 +519,18 @@ function main() {
   }, null, 2));
 }
 
-try {
-  main();
-} catch (error) {
-  console.error(error.stack || error.message);
-  process.exit(1);
+if (require.main === module) {
+  try {
+    main();
+  } catch (error) {
+    console.error(error.stack || error.message);
+    process.exit(1);
+  }
 }
+
+module.exports = {
+  scenarioIdForDiagnostics,
+  validateRawForScenario,
+  runtimeContent,
+  runSelfTest,
+};
