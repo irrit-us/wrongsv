@@ -691,6 +691,24 @@ fn uuid_v4() -> String {
 mod tests {
     use super::*;
 
+    const SUPPORTED_CLUSTERS: &[(&str, &str)] = &[
+        ("reality-vision", "reality-vision"),
+        ("anytls-vision", "anytls-vision"),
+        ("tls-vision", "tls-vision"),
+        ("ws-tcp", "ws-tcp"),
+        ("httpupgrade", "httpupgrade"),
+        ("grpc", "grpc"),
+        ("xhttp", "xhttp"),
+        ("vless-raw", "vless-raw"),
+        ("hysteria2-gecko", "hysteria2-gecko"),
+        ("hysteria2-salamander", "hysteria2-salamander"),
+        ("tuic", "tuic"),
+        ("trojan-tls", "trojan-tls"),
+        ("shadowsocks-2022", "shadowsocks-2022"),
+        ("shadowsocks-aead", "shadowsocks-aead"),
+        ("vmess", "vmess"),
+    ];
+
     fn args(cluster: &str) -> GenerateMainConfigArgs {
         GenerateMainConfigArgs {
             cluster: cluster.into(),
@@ -703,6 +721,100 @@ mod tests {
             shadowsocks_method: "2022-blake3-aes-128-gcm".into(),
             tuic_congestion: "cubic".into(),
         }
+    }
+
+    fn render(cluster: &str) -> RenderedConfig {
+        let set = ComponentSet::parse(cluster).expect("cluster should parse");
+        render_config(&set, &args(cluster)).expect("cluster should render")
+    }
+
+    fn value<'a>(rendered: &'a RenderedConfig, key: &str) -> &'a str {
+        rendered.values[key]
+            .as_str()
+            .unwrap_or_else(|| panic!("missing string value {key} for {}", rendered.canonical))
+    }
+
+    fn assert_hex_len(text: &str, len: usize) {
+        assert_eq!(text.len(), len);
+        assert!(
+            text.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "{text} is not hex"
+        );
+    }
+
+    fn assert_url_password_bytes(text: &str, expected_len: usize) {
+        let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(text)
+            .expect("password should be URL-safe base64 without padding");
+        assert_eq!(decoded.len(), expected_len);
+    }
+
+    fn assert_standard_b64_bytes(text: &str, expected_len: usize) {
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(text)
+            .expect("password should be standard base64");
+        assert_eq!(decoded.len(), expected_len);
+    }
+
+    fn assert_uuid_v4(text: &str) {
+        let uuid = wrongsv_uuid::Uuid::parse_string(text).expect("uuid should parse");
+        let bytes = uuid.as_bytes();
+        assert_eq!(bytes[6] >> 4, 4, "{text} should be UUIDv4");
+        assert_eq!(bytes[8] >> 6, 2, "{text} should use RFC4122 variant");
+    }
+
+    #[test]
+    fn renders_all_supported_clusters_to_valid_toml() {
+        for (cluster, expected_canonical) in SUPPORTED_CLUSTERS {
+            let rendered = render(cluster);
+            assert_eq!(
+                &rendered.canonical, expected_canonical,
+                "{cluster} canonical mismatch"
+            );
+            assert_eq!(
+                rendered.filename,
+                format!("{expected_canonical}.toml"),
+                "{cluster} filename mismatch"
+            );
+            validate_rendered(&rendered.content)
+                .unwrap_or_else(|err| panic!("{cluster} should validate: {err}"));
+            toml::from_str::<wrongsv_server::Config>(&rendered.content)
+                .unwrap_or_else(|err| panic!("{cluster} TOML should parse: {err}"));
+        }
+    }
+
+    #[test]
+    fn generated_secret_shapes_match_protocol_requirements() {
+        let reality = render("reality-vision");
+        assert_uuid_v4(value(&reality, "uuid"));
+        assert_hex_len(value(&reality, "privateKey"), 64);
+        assert_hex_len(value(&reality, "shortId"), 8);
+
+        let anytls = render("anytls-vision");
+        assert_uuid_v4(value(&anytls, "uuid"));
+        assert_url_password_bytes(value(&anytls, "password"), 32);
+
+        let shadowsocks_2022 = render("shadowsocks-2022");
+        assert_standard_b64_bytes(value(&shadowsocks_2022, "password"), 16);
+
+        let shadowsocks_aead = render("shadowsocks-aead");
+        assert_url_password_bytes(value(&shadowsocks_aead, "password"), 24);
+
+        let trojan = render("trojan-tls");
+        assert_url_password_bytes(value(&trojan, "password"), 32);
+
+        let hysteria2 = render("hysteria2-gecko");
+        assert_url_password_bytes(value(&hysteria2, "password"), 24);
+        assert_url_password_bytes(value(&hysteria2, "userPassword"), 24);
+        assert_url_password_bytes(value(&hysteria2, "obfsPassword"), 24);
+        assert_eq!(value(&hysteria2, "obfs"), "gecko");
+
+        let tuic = render("tuic");
+        assert_uuid_v4(value(&tuic, "uuid"));
+        assert_url_password_bytes(value(&tuic, "password"), 24);
+
+        let vmess = render("vmess");
+        assert_uuid_v4(value(&vmess, "uuid"));
     }
 
     #[test]
@@ -720,8 +832,7 @@ mod tests {
 
     #[test]
     fn renders_valid_anytls_vision_config() {
-        let set = ComponentSet::parse("anytls,vision").expect("cluster should parse");
-        let rendered = render_config(&set, &args("anytls,vision")).expect("render should work");
+        let rendered = render("anytls,vision");
         assert_eq!(rendered.canonical, "anytls-vision");
         assert!(rendered.content.contains("[anytls]"));
         validate_rendered(&rendered.content).expect("generated config should validate");
