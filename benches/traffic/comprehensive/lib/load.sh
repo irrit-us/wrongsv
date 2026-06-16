@@ -175,6 +175,9 @@ run_vegeta() {
     local payload="$3"
     local out_json="$4"
     local log_path="$5"
+    local workers="${LOAD_WORKERS:-10}"
+    local connections="${LOAD_CONNECTIONS:-10000}"
+    local max_connections="${LOAD_MAX_CONNECTIONS:-0}"
 
     [ -x "$VEGETA_BIN" ] || { echo "[load] vegeta missing: $VEGETA_BIN" >&2; return 1; }
 
@@ -200,6 +203,9 @@ run_vegeta() {
             -targets="$targets" \
             -rate="${rate}/1s" \
             -duration="${duration_sec}s" \
+            -workers="$workers" \
+            -connections="$connections" \
+            -max-connections="$max_connections" \
             -timeout=10s \
             -insecure \
             -output="$bin" \

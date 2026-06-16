@@ -133,6 +133,9 @@ if sudo is unavailable.
 | `SOAK_DURATION` | `1800` (30 min) | Seconds per cell |
 | `LOAD_RATE` | `200` | Requests/second |
 | `LOAD_PAYLOAD` | `8192` | Bytes per response |
+| `LOAD_WORKERS` | `10` | Initial vegeta workers |
+| `LOAD_CONNECTIONS` | `10000` | Max idle connections per target host |
+| `LOAD_MAX_CONNECTIONS` | `0` | Max active connections per target host; `0` keeps vegeta unlimited |
 | `SHAPE_NETEM` | `1` | Apply tc-netem on `lo` |
 | `LEAK_THRESHOLD_KB_PER_MIN` | `50` | Slope above this flags leak |
 

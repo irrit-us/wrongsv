@@ -14,7 +14,8 @@ For each config in configs/*.toml:
     3. start an xray client (CONSTANT — exposes SOCKS5:18080)
     4. start a local HTTP target (CONSTANT — listens on 18081)
     5. sample SUT's VmRSS every 5s in background
-    6. drive vegeta at LOAD_RATE through SOCKS5 for SOAK_DURATION
+    6. drive vegeta at LOAD_RATE through SOCKS5 for SOAK_DURATION,
+       using LOAD_WORKERS / LOAD_CONNECTIONS / LOAD_MAX_CONNECTIONS
     7. stop everything; record memory slope + throughput + latency
 ```
 
@@ -44,6 +45,9 @@ SERVERS=wrongsv CONFIGS=vmess SOAK_DURATION=60 SHAPE_NETEM=0 ./matrix.sh
 | `SOAK_DURATION` | `1800` (30 min) | Per cell, seconds |
 | `LOAD_RATE` | `200` | Requests/second (vegeta rate) |
 | `LOAD_PAYLOAD` | `8192` | Response body size, bytes |
+| `LOAD_WORKERS` | `10` | Initial vegeta workers |
+| `LOAD_CONNECTIONS` | `10000` | Max idle connections per target host |
+| `LOAD_MAX_CONNECTIONS` | `0` | Max active connections per target host; `0` keeps vegeta unlimited |
 | `SHAPE_NETEM` | `1` | Apply tc-netem on `lo` (needs `CAP_NET_ADMIN`) |
 | `LEAK_THRESHOLD_KB_PER_MIN` | `50` | Slope above this flags as leak |
 | `SAMPLE_INTERVAL` | `5` | Memory sampler period, seconds |
@@ -73,6 +77,11 @@ Each cell writes `results/<timestamp>/<config>/<server>.json`:
   "config": "vmess",
   "status": "ok",
   "duration_sec": 1800,
+  "load_rate": 200,
+  "load_payload_bytes": 8192,
+  "load_workers": 10,
+  "load_connections": 10000,
+  "load_max_connections": 0,
   "memory": {
     "slope_kb_per_min": 0.4,
     "leak": false,

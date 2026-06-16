@@ -21,6 +21,9 @@
 #   SOAK_DURATION   seconds per cell (default 1800 = 30 min)
 #   LOAD_RATE       requests per second (default 200)
 #   LOAD_PAYLOAD    bytes per response (default 8192)
+#   LOAD_WORKERS    initial vegeta workers (default 10)
+#   LOAD_CONNECTIONS max idle connections per target host (default 10000)
+#   LOAD_MAX_CONNECTIONS max active connections per target host (default 0 = unlimited)
 #   SHAPE_NETEM     1|0 — apply tc-netem shaping (default 1)
 #   RESULTS_DIR     output directory (default $COMP_DIR/results/TIMESTAMP)
 set -uo pipefail
@@ -46,6 +49,9 @@ SERVERS="${SERVERS:-wrongsv xray sing-box mihomo}"
 SOAK_DURATION="${SOAK_DURATION:-1800}"
 LOAD_RATE="${LOAD_RATE:-200}"
 LOAD_PAYLOAD="${LOAD_PAYLOAD:-8192}"
+LOAD_WORKERS="${LOAD_WORKERS:-10}"
+LOAD_CONNECTIONS="${LOAD_CONNECTIONS:-10000}"
+LOAD_MAX_CONNECTIONS="${LOAD_MAX_CONNECTIONS:-0}"
 SHAPE_NETEM="${SHAPE_NETEM:-1}"
 LEAK_THRESHOLD_KB_PER_MIN="${LEAK_THRESHOLD_KB_PER_MIN:-50}"
 SAMPLE_INTERVAL="${SAMPLE_INTERVAL:-5}"
@@ -176,6 +182,9 @@ result = {
     "duration_sec": $SOAK_DURATION,
     "load_rate": $LOAD_RATE,
     "load_payload_bytes": $LOAD_PAYLOAD,
+    "load_workers": $LOAD_WORKERS,
+    "load_connections": $LOAD_CONNECTIONS,
+    "load_max_connections": $LOAD_MAX_CONNECTIONS,
     "netem": {"shaped": $( [ "$SHAPE_NETEM" = "1" ] && echo True || echo False )},
 }
 try:
@@ -214,6 +223,7 @@ log "Results dir: $RESULTS_BASE"
 log "Servers: $SERVERS"
 log "Configs: $CONFIGS"
 log "Soak duration: ${SOAK_DURATION}s, load rate: ${LOAD_RATE}/s, payload: ${LOAD_PAYLOAD}B"
+log "Load workers: ${LOAD_WORKERS}, idle connections: ${LOAD_CONNECTIONS}, max connections: ${LOAD_MAX_CONNECTIONS}"
 
 if [ "$SHAPE_NETEM" = "1" ]; then
     netem_apply

@@ -222,6 +222,7 @@ def render_markdown(runs) -> str:
 CSV_COLUMNS = [
     "run", "config", "server", "status",
     "duration_sec", "load_rate", "load_payload_bytes", "netem_shaped",
+    "load_workers", "load_connections", "load_max_connections",
     "requests", "success_ratio",
     "throughput_req_s", "throughput_bytes_in",
     "latency_p50_ns", "latency_p95_ns", "latency_p99_ns", "latency_max_ns",
@@ -256,6 +257,9 @@ def write_csv(runs, out_path: Path) -> int:
                         "load_rate": d.get("load_rate"),
                         "load_payload_bytes": d.get("load_payload_bytes"),
                         "netem_shaped": netem.get("shaped"),
+                        "load_workers": d.get("load_workers"),
+                        "load_connections": d.get("load_connections"),
+                        "load_max_connections": d.get("load_max_connections"),
                         "requests": load.get("requests"),
                         "success_ratio": load.get("success_ratio"),
                         "throughput_req_s": load.get("throughput_req_s"),
