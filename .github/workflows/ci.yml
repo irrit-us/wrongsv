@@ -48,6 +48,36 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --lib --bins
 
+  scripts:
+    name: script syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Node syntax
+        run: |
+          node --check scripts/generate-client-configs.js
+          node --check scripts/generate-main-configs.js
+      - name: Bash syntax
+        run: |
+          bash -n scripts/deploy-remote.sh \
+            scripts/deploy_remote.sh \
+            scripts/eval-remote.sh \
+            benches/traffic/run.sh \
+            benches/traffic/setup.sh \
+            benches/traffic/comprehensive/matrix.sh \
+            benches/traffic/comprehensive/lib/certs.sh \
+            benches/traffic/comprehensive/lib/load.sh \
+            benches/traffic/comprehensive/lib/memory.sh \
+            benches/traffic/comprehensive/lib/netem.sh \
+            benches/traffic/comprehensive/lib/server.sh \
+            benches/traffic/scenarios/multi-user-sim.sh \
+            benches/traffic/scenarios/reality-stress.sh \
+            benches/traffic/scenarios/throughput-ladder.sh \
+            benches/traffic/scenarios/tls-handshake.sh
+
   integration:
     name: cargo test (integration)
     runs-on: ubuntu-latest
