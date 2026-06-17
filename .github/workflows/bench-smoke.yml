@@ -1,0 +1,99 @@
+name: Benchmark Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      preset:
+        description: Benchmark preset to run
+        required: true
+        default: pr-smoke
+        type: choice
+        options:
+          - pr-smoke
+          - nightly-comparison
+          - extended-soak
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: benchmark-smoke-${{ inputs.preset }}
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: rustup show active-toolchain
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build wrongsv
+        run: cargo build --release -p wrongsv --bin wrongsv
+
+      - name: Setup benchmark tools
+        run: ./benches/traffic/setup.sh
+
+      - name: Run benchmark preset
+        shell: bash
+        run: |
+          # Intentionally workflow_dispatch-only for now:
+          # GitHub-hosted runners use SHAPE_NETEM=0, the toolchain setup is heavy,
+          # and the resulting numbers are best treated as operator-invoked samples
+          # rather than unattended scheduled regressions.
+          case "${{ inputs.preset }}" in
+            pr-smoke)
+              SERVERS=wrongsv \
+              CONFIGS="anytls-tcp reality-vision hysteria2 shadowsocks-2022 trojan-tls vmess" \
+              SOAK_DURATION=60 \
+              LOAD_RATE=50 \
+              LOAD_PAYLOAD=2048 \
+              LOAD_WORKERS=4 \
+              LOAD_CONNECTIONS=256 \
+              LOAD_MAX_CONNECTIONS=256 \
+              SHAPE_NETEM=0 \
+                ./benches/traffic/run.sh comprehensive
+              ;;
+            nightly-comparison)
+              SERVERS="wrongsv xray sing-box mihomo" \
+              CONFIGS="anytls-tcp hysteria2 reality-vision shadowsocks-2022 shadowtls tls-vision trojan-tls vmess" \
+              SOAK_DURATION=600 \
+              LOAD_RATE=200 \
+              LOAD_PAYLOAD=8192 \
+              LOAD_WORKERS=10 \
+              LOAD_CONNECTIONS=10000 \
+              LOAD_MAX_CONNECTIONS=0 \
+              SHAPE_NETEM=0 \
+                ./benches/traffic/run.sh comprehensive
+              ;;
+            extended-soak)
+              SOAK_DURATION=1800 \
+              SHAPE_NETEM=0 \
+                ./benches/traffic/run.sh comprehensive
+              ;;
+            *)
+              echo "unknown benchmark preset: ${{ inputs.preset }}" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ inputs.preset }}
+          path: benches/traffic/comprehensive/results/

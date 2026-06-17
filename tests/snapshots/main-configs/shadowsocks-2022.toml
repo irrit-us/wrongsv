@@ -1,0 +1,6 @@
+listen = "0.0.0.0:443"
+
+[shadowsocks]
+method = "2022-blake3-aes-128-gcm"
+password = "<PASSWORD>"
+udp = true

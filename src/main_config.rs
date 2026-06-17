@@ -40,6 +40,9 @@ pub(crate) struct GenerateMainConfigArgs {
     /// Write TOML plus manifest files to this directory
     #[arg(long, value_name = "DIR", conflicts_with = "output")]
     pub output_dir: Option<PathBuf>,
+    /// Skip manifest.json when writing a directory output
+    #[arg(long)]
+    pub no_manifest: bool,
     /// Listener address for the generated server config
     #[arg(long, default_value = "0.0.0.0:443")]
     pub listen: String,
@@ -140,24 +143,26 @@ pub(crate) fn run(args: GenerateMainConfigArgs) -> Result<(), String> {
         .map_err(|e| format!("failed to create {}: {e}", output_dir.display()))?;
     let config_path = output_dir.join(&rendered.filename);
     write_file(&config_path, &rendered.content)?;
-    write_file(
-        &output_dir.join("manifest.json"),
-        &serde_json::to_string_pretty(&serde_json::json!({
-            "generatedAtUnix": SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-            "cluster": args.cluster,
-            "canonical": rendered.canonical,
-            "listen": args.listen,
-            "file": {
-                "protocol": rendered.canonical,
-                "path": config_path,
-                "values": rendered.values,
-            },
-        }))
-        .map_err(|e| format!("failed to serialize manifest: {e}"))?,
-    )?;
+    if !args.no_manifest {
+        write_file(
+            &output_dir.join("manifest.json"),
+            &serde_json::to_string_pretty(&serde_json::json!({
+                "generatedAtUnix": SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+                "cluster": args.cluster,
+                "canonical": rendered.canonical,
+                "listen": args.listen,
+                "file": {
+                    "protocol": rendered.canonical,
+                    "path": config_path,
+                    "values": rendered.values,
+                },
+            }))
+            .map_err(|e| format!("failed to serialize manifest: {e}"))?,
+        )?;
+    }
     write_file(
         &output_dir.join("README.md"),
         &format!(
@@ -170,6 +175,7 @@ pub(crate) fn run(args: GenerateMainConfigArgs) -> Result<(), String> {
         serde_json::to_string_pretty(&serde_json::json!({
             "outputDir": output_dir,
             "files": [config_path],
+            "manifestWritten": !args.no_manifest,
         }))
         .map_err(|e| format!("failed to serialize output: {e}"))?
     );
@@ -712,6 +718,7 @@ fn uuid_v4() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     const SUPPORTED_CLUSTERS: &[(&str, &str)] = &[
         ("reality-vision", "reality-vision"),
@@ -736,7 +743,8 @@ mod tests {
             cluster: cluster.into(),
             output: None,
             output_dir: None,
-            listen: "127.0.0.1:2443".into(),
+            no_manifest: false,
+            listen: "0.0.0.0:443".into(),
             email: "user@example.com".into(),
             reality_dest: "www.microsoft.com:443".into(),
             fallback_dest: "127.0.0.1:8080".into(),
@@ -748,6 +756,28 @@ mod tests {
     fn render(cluster: &str) -> RenderedConfig {
         let set = ComponentSet::parse(cluster).expect("cluster should parse");
         render_config(&set, &args(cluster)).expect("cluster should render")
+    }
+
+    fn fixture(path: &str) -> String {
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
+            .unwrap_or_else(|err| panic!("failed to read fixture {path}: {err}"))
+    }
+
+    fn normalized_snapshot_content(rendered: &RenderedConfig) -> String {
+        let mut text = rendered.content.clone();
+        for (key, placeholder) in [
+            ("uuid", "<UUID>"),
+            ("privateKey", "<REALITY_PRIVATE_KEY>"),
+            ("shortId", "<REALITY_SHORT_ID>"),
+            ("password", "<PASSWORD>"),
+            ("userPassword", "<USER_PASSWORD>"),
+            ("obfsPassword", "<OBFS_PASSWORD>"),
+        ] {
+            if let Some(value) = rendered.values.get(key).and_then(|item| item.as_str()) {
+                text = text.replace(value, placeholder);
+            }
+        }
+        format!("{}\n", text.trim_end_matches('\n'))
     }
 
     fn value<'a>(rendered: &'a RenderedConfig, key: &str) -> &'a str {
@@ -840,6 +870,18 @@ mod tests {
     }
 
     #[test]
+    fn generated_main_config_snapshots_match_fixtures() {
+        for (cluster, expected_canonical) in SUPPORTED_CLUSTERS {
+            let rendered = render(cluster);
+            let actual = normalized_snapshot_content(&rendered);
+            let expected = fixture(&format!(
+                "tests/snapshots/main-configs/{expected_canonical}.toml"
+            ));
+            assert_eq!(actual, expected, "{cluster} snapshot mismatch");
+        }
+    }
+
+    #[test]
     fn rejects_anytls_reality_cluster() {
         let err = ComponentSet::parse("anytls-reality").expect_err("cluster should be invalid");
         assert!(err.contains("mutually exclusive"));
@@ -850,6 +892,29 @@ mod tests {
         let err = ComponentSet::parse("reality-vision,anytls-vision")
             .expect_err("cluster should be invalid");
         assert!(err.contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn output_dir_can_skip_manifest_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "wrongsv-no-manifest-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let mut args = args("anytls-vision");
+        args.output_dir = Some(dir.clone());
+        args.no_manifest = true;
+
+        run(args).expect("generation without manifest should succeed");
+
+        assert!(dir.join("anytls-vision.toml").exists());
+        assert!(dir.join("README.md").exists());
+        assert!(!dir.join("manifest.json").exists());
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

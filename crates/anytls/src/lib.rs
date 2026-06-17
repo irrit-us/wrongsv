@@ -36,6 +36,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rustls::ServerConfig;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 
 pub use auth::verify_password_hash;
 pub use padding::PaddingScheme;
@@ -363,15 +364,14 @@ pub(crate) fn tls_read_exact(
 
 /// Build a TLS `ServerConfig` from PEM-encoded certificate and key.
 pub fn build_tls_config(cert_pem: &str, key_pem: &str) -> Result<ServerConfig, AnyTlsError> {
-    let certs = rustls_pemfile::certs(&mut cert_pem.as_bytes())
+    let certs = CertificateDer::pem_slice_iter(cert_pem.as_bytes())
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| AnyTlsError::Tls(format!("parse cert: {e}")))?;
     if certs.is_empty() {
         return Err(AnyTlsError::Tls("no certificates found".into()));
     }
-    let key = rustls_pemfile::private_key(&mut key_pem.as_bytes())
-        .map_err(|e| AnyTlsError::Tls(format!("parse key: {e}")))?
-        .ok_or_else(|| AnyTlsError::Tls("no private key found".into()))?;
+    let key = PrivateKeyDer::from_pem_slice(key_pem.as_bytes())
+        .map_err(|e| AnyTlsError::Tls(format!("parse key: {e}")))?;
 
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     let mut tls_config = ServerConfig::builder_with_provider(provider)

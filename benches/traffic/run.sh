@@ -79,13 +79,20 @@ run_scenario() {
     local scenario="$1"
     local script="$SCENARIOS_DIR/$scenario.sh"
     if [ ! -f "$script" ]; then
+        local available=()
+        local candidate
         err "Scenario not found: $scenario (looked for $script)"
-        err "Available: $(ls "$SCENARIOS_DIR"/*.sh 2>/dev/null | xargs -I{} basename {} .sh)"
+        for candidate in "$SCENARIOS_DIR"/*.sh; do
+            [ -e "$candidate" ] || continue
+            available+=("$(basename "$candidate" .sh)")
+        done
+        err "Available: ${available[*]}"
         exit 1
     fi
     log "Running scenario: $scenario"
     mkdir -p "$RESULTS_DIR/$scenario"
     # Source the scenario script — it has access to run_tool, SERVER_HOST, etc.
+    # shellcheck source=/dev/null
     source "$script"
 }
 
@@ -93,7 +100,8 @@ run_tool() {
     # Helper: run a tool with args, log output to results dir
     local name="$1"
     shift
-    local out="$RESULTS_DIR/${scenario:-unknown}/$name-$(date +%H%M%S).log"
+    local out
+    out="$RESULTS_DIR/${scenario:-unknown}/$name-$(date +%H%M%S).log"
     log "  -> $name $*"
     "$@" 2>&1 | tee "$out"
     echo ""

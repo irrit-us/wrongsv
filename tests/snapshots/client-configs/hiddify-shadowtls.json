@@ -1,0 +1,32 @@
+{
+  "remarks": "snapshot",
+  "subscription": "",
+  "configs": [
+    {
+      "detour": "snapshot-shadowtls",
+      "packet_encoding": "packetaddr",
+      "server": "1.2.3.4",
+      "server_port": 443,
+      "tag": "snapshot",
+      "type": "vless",
+      "uuid": "12345678-1234-1234-1234-123456789abc"
+    },
+    {
+      "password": "your-shadowtls-password",
+      "server": "1.2.3.4",
+      "server_port": 443,
+      "tag": "snapshot-shadowtls",
+      "tls": {
+        "enabled": true,
+        "insecure": true,
+        "server_name": "example.com"
+      },
+      "type": "shadowtls",
+      "version": 3
+    },
+    {
+      "tag": "direct",
+      "type": "direct"
+    }
+  ]
+}

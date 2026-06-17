@@ -59,8 +59,41 @@ wrongsv (binary)
 ## Quick Start
 
 [docs/setup.md](docs/setup.md) has the full build and configuration guide.
-[docs/simple-deploy.md](docs/simple-deploy.md) has step-by-step TLS and REALITY deployment walkthroughs.
+[docs/config-generation.md](docs/config-generation.md) covers randomized main config generation and validation.
+[docs/deploy.md](docs/deploy.md) covers automated remote deployment, and [docs/simple-deploy.md](docs/simple-deploy.md) remains the manual TLS and REALITY walkthrough.
+[docs/client-compatibility.md](docs/client-compatibility.md) covers capability-gated client export and external E2E coverage.
+[docs/benchmarks.md](docs/benchmarks.md) covers criterion and traffic benchmark workflows.
+[docs/migration-notes.md](docs/migration-notes.md) records user-visible behavior changes for config generation and client export.
+[docs/testing.md](docs/testing.md) covers the local and external verification commands, including the machine-readable review-evidence checks.
 [docs/security.md](docs/security.md) documents generated secret handling and file permissions.
+
+### Review Evidence
+
+When `../wrongsv-external-tests` is present, you can run the standing external
+review checks from the `wrongsv` repo root with:
+
+```bash
+# One-shot local + external review evidence bundle
+node scripts/verify-review-evidence.js --standing-only xray-webtransport
+
+# Local-only aggregate check when the sibling repo is unavailable
+node scripts/verify-review-evidence.js --skip-external --output-file /tmp/wrongsv-review-evidence-summary.json
+
+# Standing-limitations-only external recheck
+node scripts/recheck-external-standing-limitations.js --only xray-webtransport
+
+# Persist the combined JSON summary to a file
+node scripts/verify-review-evidence.js \
+  --standing-only xray-webtransport \
+  --output-file /tmp/wrongsv-review-evidence-summary.json
+```
+
+When you pass `--output-root` instead, the wrapper now writes a default
+`wrongsv-review-evidence-summary.json` alongside the external artifacts in that
+directory. The external half of that bundle now includes the process-core
+client scan summary (`coreClientScans`) plus the Hiddify packaged-core scan
+summary (`hiddifyCoreScan`) in addition to the docs check and the
+standing-limitation rechecks.
 
 ### Build
 
@@ -137,8 +170,9 @@ cargo fmt --all -- --check
 ```
 
 See [docs/testing.md](docs/testing.md) for the complete test suite including
-lifecycle tests (sing-box, mihomo, xray-core), stress tests, benchmarks, and
-manual proxy testing procedures.
+lifecycle tests (sing-box, mihomo, xray-core), stress tests, and manual proxy
+testing procedures. See [docs/benchmarks.md](docs/benchmarks.md) for the
+benchmark-specific workflows and published reports.
 
 ## Interop
 

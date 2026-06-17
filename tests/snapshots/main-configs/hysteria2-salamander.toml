@@ -1,0 +1,16 @@
+listen = "0.0.0.0:443"
+
+[hysteria2]
+password = "<PASSWORD>"
+down_mbps = 100
+ignore_client_bandwidth = false
+disable_udp = false
+
+[[hysteria2.users]]
+name = "flclash"
+password = "<USER_PASSWORD>"
+email = "user@example.com"
+
+[hysteria2.obfs]
+type = "salamander"
+password = "<OBFS_PASSWORD>"

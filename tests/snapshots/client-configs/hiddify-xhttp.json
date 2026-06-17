@@ -1,0 +1,43 @@
+{
+  "remarks": "snapshot",
+  "subscription": "",
+  "configs": [
+    {
+      "tag": "snapshot",
+      "type": "xray",
+      "xconfig": {
+        "outbounds": [
+          {
+            "protocol": "vless",
+            "settings": {
+              "vnext": [
+                {
+                  "address": "1.2.3.4",
+                  "port": 443,
+                  "users": [
+                    {
+                      "encryption": "none",
+                      "id": "12345678-1234-1234-1234-123456789abc"
+                    }
+                  ]
+                }
+              ]
+            },
+            "streamSettings": {
+              "network": "xhttp",
+              "xhttpSettings": {
+                "mode": "stream-one",
+                "path": "/xhttp"
+              }
+            },
+            "tag": "snapshot"
+          }
+        ]
+      }
+    },
+    {
+      "tag": "direct",
+      "type": "direct"
+    }
+  ]
+}

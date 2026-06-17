@@ -20,6 +20,8 @@ pub(crate) struct ExportDiagnostics {
     pub format: &'static str,
     pub supported: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
@@ -34,12 +36,14 @@ pub(crate) fn build_endpoint_diagnostics(
             Ok(()) => ExportDiagnostics {
                 format: client_format_name(format),
                 supported: true,
+                error_code: None,
                 error: None,
             },
             Err(error) => ExportDiagnostics {
                 format: client_format_name(format),
                 supported: false,
-                error: Some(error),
+                error_code: Some(error.code),
+                error: Some(error.message),
             },
         },
     );

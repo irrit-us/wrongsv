@@ -27,7 +27,7 @@ Status labels used here:
 | VLESS + Google Docs Viewer | implemented | implemented | xray-only | optional TLS resolves correctly |
 | VLESS + QUIC | implemented | implemented | implemented | |
 | VLESS + KCP | implemented | implemented | implemented | |
-| VLESS + WebTransport | implemented | implemented | xray-only | |
+| VLESS + WebTransport | implemented | implemented | partial | direct client export is currently gated pending an updated xray/v2ray-compatible config shape; current official Xray/V2Fly transport docs do not define a WebTransport outbound/client shape (see `https://xtls.github.io/en/config/transports/` and `https://www.v2fly.org/en_US/v5/config/stream.html`) |
 
 ### 1.2 VMess
 
@@ -86,7 +86,7 @@ Status labels used here:
 | gdocsviewer | implemented | optional TLS modeled correctly |
 | quic | implemented | fixed for Hysteria2/TUIC, selectable for VLESS |
 | kcp | implemented | |
-| webtransport | implemented | |
+| webtransport | implemented | server/runtime path is implemented; current xray/v2ray client export is gated and not described in current official outbound/client transport docs (`https://xtls.github.io/en/config/transports/`, `https://www.v2fly.org/en_US/v5/config/stream.html`) |
 | h2-connect | implemented | HTTP/2 `CONNECT` over TLS; currently used by Naive inbound |
 
 ## 3. Outer Security Layer

@@ -1,0 +1,17 @@
+{
+  "name": "snapshot",
+  "type": "vless",
+  "server": "1.2.3.4",
+  "port": 443,
+  "uuid": "12345678-1234-1234-1234-123456789abc",
+  "encryption": "none",
+  "flow": "xtls-rprx-vision",
+  "udp": true,
+  "tls": true,
+  "client-fingerprint": "chrome",
+  "servername": "example.com",
+  "reality-opts": {
+    "public-key": "QOHRJn3A9B8sXW1sL_okFOuT3jLDtjvFsd1Qs-A9ol4",
+    "short-id": "aaaaaaaa"
+  }
+}

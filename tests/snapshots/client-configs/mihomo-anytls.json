@@ -1,0 +1,11 @@
+{
+  "client-fingerprint": "chrome",
+  "name": "snapshot",
+  "password": "your-secure-password",
+  "port": 443,
+  "server": "1.2.3.4",
+  "skip-cert-verify": true,
+  "sni": "example.com",
+  "type": "anytls",
+  "udp": true
+}

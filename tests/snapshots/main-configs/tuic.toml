@@ -1,0 +1,13 @@
+listen = "0.0.0.0:443"
+
+[tuic]
+congestion_control = "cubic"
+auth_timeout = 3
+zero_rtt_handshake = false
+heartbeat = 10
+
+[[tuic.users]]
+name = "flclash"
+email = "user@example.com"
+uuid = "<UUID>"
+password = "<PASSWORD>"

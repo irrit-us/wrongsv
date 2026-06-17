@@ -185,9 +185,6 @@ run_vegeta() {
     # vegeta supports HTTPS_PROXY/HTTP_PROXY env, but only HTTP and SOCKS5 are common.
     # Use socks5h scheme so DNS is resolved on the proxy side. Vegeta uses Go's net/http
     # which respects {ALL_,HTTPS_,HTTP_}PROXY; socks5 is supported by Go natively.
-    local report_bin
-    report_bin="$VEGETA_BIN"
-
     # Build targets file inline.
     local targets
     targets="$(mktemp)"

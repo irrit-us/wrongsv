@@ -367,11 +367,34 @@ you need a specific output profile.
 
 The generated JSON keys match Go struct tags in mihomo/sing-box (`client-fingerprint`, `public-key`, `short-id` in kebab-case). For REALITY transport, `reality-opts` block is included.
 
+For randomized main TOML generation, output manifests, and the follow-up
+diagnostics workflow, see [config-generation.md](config-generation.md). For
+capability-gated multi-client export via `wrongsv-external-tests`, see
+[client-compatibility.md](client-compatibility.md).
+
 ## Testing
 
 See [docs/testing.md](testing.md) for the complete test suite — unit tests,
 integration tests, lifecycle tests (sing-box, mihomo, xray-core), stress tests,
-benchmarks, and manual proxy testing.
+and manual proxy testing. See [benchmarks.md](benchmarks.md) for the benchmark
+and soak-test entrypoints.
+
+## Build Reproducibility Notes
+
+- The repo pins Rust through [rust-toolchain.toml](../rust-toolchain.toml).
+- Release artifacts are built from the committed `Cargo.lock` through
+  `.github/workflows/release.yml`.
+- The current release matrix targets Linux GNU, Linux musl, Windows MSVC, and
+  FreeBSD.
+- The project does not currently promise bit-for-bit reproducible binaries
+  across different machines or environments.
+
+For the closest local match to the Linux release artifact, build the same musl
+target used by the release workflow:
+
+```bash
+cargo build --release --target x86_64-unknown-linux-musl -p wrongsv --bin wrongsv
+```
 
 ## Project Structure
 
@@ -385,6 +408,10 @@ wrongsv/
 ├── SECURITY.md
 ├── docs/
 │   ├── setup.md                # this file — build and config guide
+│   ├── config-generation.md    # main TOML generation, manifests, diagnostics
+│   ├── client-compatibility.md # client export + external E2E references
+│   ├── deploy.md               # automated remote deployment entrypoint
+│   ├── benchmarks.md           # criterion + traffic benchmark entrypoint
 │   ├── testing.md              # complete test suite reference
 │   └── simple-deploy.md        # TLS/REALITY deployment walkthrough
 ├── configs/                    # ready-to-use TOML config examples
@@ -403,7 +430,9 @@ wrongsv/
 ├── src/
 │   └── main.rs                 # CLI binary, client config generation
 ├── benches/
-│   └── throughput.rs           # criterion benchmarks
+│   ├── throughput.rs           # criterion benchmarks
+│   ├── protocols.rs            # per-protocol microbenchmarks
+│   └── traffic/                # traffic, soak, and comparative harnesses
 ├── examples/
 │   └── stress.rs               # memory stress test (RSS monitoring)
 ├── tests/

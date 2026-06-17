@@ -13,3 +13,9 @@ into logs, issue trackers, or chat.
 The JSON manifest intentionally includes generated values so deployment and
 client generation can be reproduced from one directory. Treat it like the main
 TOML config.
+
+If you need shareable output without embedded manifest metadata, use the
+available `--no-manifest` options on `wrongsv generate-main-config`,
+`scripts/generate-client-configs.js`, or `scripts/deploy-remote.sh`. The server
+and client config files themselves still contain credentials and must be treated
+as secret-bearing files.

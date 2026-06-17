@@ -1,0 +1,32 @@
+{
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen": "127.0.0.1",
+      "listen_port": 10809
+    }
+  ],
+  "outbounds": [
+    {
+      "password": "your-secure-password",
+      "server": "1.2.3.4",
+      "server_port": 443,
+      "tag": "snapshot",
+      "tls": {
+        "enabled": true,
+        "insecure": true,
+        "server_name": "example.com",
+        "utls": {
+          "enabled": true,
+          "fingerprint": "chrome"
+        }
+      },
+      "type": "anytls"
+    },
+    {
+      "tag": "direct",
+      "type": "direct"
+    }
+  ]
+}

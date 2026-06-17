@@ -1,0 +1,7 @@
+listen = "0.0.0.0:443"
+
+[vmess]
+
+[[vmess.users]]
+id = "<UUID>"
+email = "user@example.com"

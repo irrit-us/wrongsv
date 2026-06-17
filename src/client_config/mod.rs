@@ -12,6 +12,33 @@ use crate::endpoint::{
     TransportMethod, protocol_descriptor, resolve_endpoint,
 };
 
+const WEBTRANSPORT_XRAY_EXPORT_DISABLED: &str =
+    "WebTransport export is disabled pending an updated xray/v2ray-compatible client config shape";
+const HIDDIFY_ANYTLS_PACKAGED_CORE_REASON: &str =
+    "packaged Hiddify core rejected the generated AnyTLS outbound and never exposed the local mixed proxy port";
+
+#[derive(Debug, Clone)]
+pub(crate) struct ClientExportSupportError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl ClientExportSupportError {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+fn hiddify_anytls_export_disabled() -> String {
+    format!(
+        "Hiddify AnyTLS export is disabled: {}; use --format mihomo for FlClash or --format sing-box",
+        HIDDIFY_ANYTLS_PACKAGED_CORE_REASON
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Client config generation — outputs sing-box or mihomo JSON for connecting
 // clients. Separated from CLI parsing so main.rs stays focused on server
@@ -24,7 +51,7 @@ pub(crate) fn generate_client_config(
     client_name: &str,
     vals: &ClientConfigValues,
 ) -> Result<String, String> {
-    validate_client_format_support(format, vals)?;
+    validate_client_format_support(format, vals).map_err(|error| error.message)?;
     Ok(match format {
         ClientFormat::Mihomo => mihomo_format(server_host, client_name, vals),
         ClientFormat::SingBox => singbox_format(server_host, client_name, vals),
@@ -36,20 +63,26 @@ pub(crate) fn generate_client_config(
 fn validate_client_format_support(
     format: ClientFormat,
     vals: &ClientConfigValues,
-) -> Result<(), String> {
+) -> Result<(), ClientExportSupportError> {
     let descriptor = protocol_descriptor(vals.protocol());
     let resolved = resolve_endpoint(&vals.endpoint);
 
     if descriptor.transport.mode == LayerMode::Forbidden && resolved.transport.is_some() {
-        return Err(format!(
-            "{} does not allow an explicit transport method in the normalized endpoint model",
-            descriptor.display_name
+        return Err(ClientExportSupportError::new(
+            "transport_forbidden_in_endpoint_model",
+            format!(
+                "{} does not allow an explicit transport method in the normalized endpoint model",
+                descriptor.display_name
+            ),
         ));
     }
     if descriptor.outer_security.mode == LayerMode::Forbidden && resolved.outer_security.is_some() {
-        return Err(format!(
-            "{} does not allow outer transport security in the normalized endpoint model",
-            descriptor.display_name
+        return Err(ClientExportSupportError::new(
+            "outer_security_forbidden_in_endpoint_model",
+            format!(
+                "{} does not allow outer transport security in the normalized endpoint model",
+                descriptor.display_name
+            ),
         ));
     }
     validate_component_support(
@@ -65,62 +98,74 @@ fn validate_client_format_support(
                 Some(TransportMethod::Meek | TransportMethod::GdocsViewer)
             ) && format != ClientFormat::Xray
             {
-                return Err(format!(
-                    "{:?} transport is only available through the Xray/V2Ray family adapters",
-                    resolved.transport.unwrap()
+                return Err(ClientExportSupportError::new(
+                    "transport_requires_xray_family",
+                    format!(
+                        "{:?} transport is only available through the Xray/V2Ray family adapters",
+                        resolved.transport.unwrap()
+                    ),
                 ));
             }
-            if resolved.transport == Some(TransportMethod::WebTransport)
-                && !matches!(format, ClientFormat::Xray)
-            {
-                return Err(
-                    "WebTransport export is only implemented for xray-family configs".into(),
-                );
+            if resolved.transport == Some(TransportMethod::WebTransport) {
+                return Err(ClientExportSupportError::new(
+                    "webtransport_xray_family_export_disabled",
+                    WEBTRANSPORT_XRAY_EXPORT_DISABLED,
+                ));
             }
             if vals.has_component(Component::AnyTls) && matches!(format, ClientFormat::Hiddify) {
-                return Err(
-                    "Hiddify AnyTLS export is disabled until wrongsv-external-tests records a passing direct GUI run; use --format mihomo for FlClash or --format sing-box".into(),
-                );
+                return Err(ClientExportSupportError::new(
+                    "hiddify_anytls_packaged_core_gap",
+                    hiddify_anytls_export_disabled(),
+                ));
             }
             if vals.has_component(Component::AnyTls)
                 && !matches!(format, ClientFormat::Mihomo | ClientFormat::SingBox)
             {
-                return Err(
-                    "AnyTLS export is only implemented for mihomo/FlClash and sing-box configs"
-                        .into(),
-                );
+                return Err(ClientExportSupportError::new(
+                    "anytls_format_unsupported",
+                    "AnyTLS export is only implemented for mihomo/FlClash and sing-box configs",
+                ));
             }
         }
         ProxyProtocol::WireGuard => {
             if format == ClientFormat::Xray {
-                return Err("WireGuard export is not implemented for xray format".into());
+                return Err(ClientExportSupportError::new(
+                    "wireguard_xray_export_unimplemented",
+                    "WireGuard export is not implemented for xray format",
+                ));
             }
         }
         ProxyProtocol::Vmess => {}
         ProxyProtocol::Shadowsocks | ProxyProtocol::Trojan => {}
         ProxyProtocol::Hysteria2 | ProxyProtocol::Tuic => {
             if matches!(format, ClientFormat::Xray) {
-                return Err(format!(
-                    "{} export is not implemented for xray format (xray does not natively support {})",
-                    descriptor.display_name,
-                    match resolved.protocol {
-                        ProxyProtocol::Hysteria2 => "hysteria2",
-                        ProxyProtocol::Tuic => "tuic",
-                        _ => "this protocol",
-                    }
+                return Err(ClientExportSupportError::new(
+                    "xray_protocol_unsupported",
+                    format!(
+                        "{} export is not implemented for xray format (xray does not natively support {})",
+                        descriptor.display_name,
+                        match resolved.protocol {
+                            ProxyProtocol::Hysteria2 => "hysteria2",
+                            ProxyProtocol::Tuic => "tuic",
+                            _ => "this protocol",
+                        }
+                    ),
                 ));
             }
         }
         ProxyProtocol::Mixed | ProxyProtocol::Naive => {
-            return Err(format!(
-                "{} export is not implemented for {} format",
-                descriptor.display_name,
-                match format {
-                    ClientFormat::Mihomo => "mihomo",
-                    ClientFormat::SingBox => "sing-box",
-                    ClientFormat::Xray => "xray",
-                    ClientFormat::Hiddify => "hiddify",
-                }
+            return Err(ClientExportSupportError::new(
+                "protocol_export_unimplemented",
+                format!(
+                    "{} export is not implemented for {} format",
+                    descriptor.display_name,
+                    match format {
+                        ClientFormat::Mihomo => "mihomo",
+                        ClientFormat::SingBox => "sing-box",
+                        ClientFormat::Xray => "xray",
+                        ClientFormat::Hiddify => "hiddify",
+                    }
+                ),
             ));
         }
     }
@@ -131,7 +176,7 @@ fn validate_component_support(
     display_name: &str,
     active: &EndpointComponents,
     declared: ComponentDescriptorSet,
-) -> Result<(), String> {
+) -> Result<(), ClientExportSupportError> {
     validate_component_bucket(
         display_name,
         "camouflage",
@@ -154,12 +199,15 @@ fn validate_component_bucket(
     bucket: &str,
     active: &[Component],
     supported: &[Component],
-) -> Result<(), String> {
+) -> Result<(), ClientExportSupportError> {
     for component in active {
         if !supported.contains(component) {
-            return Err(format!(
-                "{} does not declare {:?} as a supported {} component",
-                display_name, component, bucket
+            return Err(ClientExportSupportError::new(
+                "unsupported_endpoint_component",
+                format!(
+                    "{} does not declare {:?} as a supported {} component",
+                    display_name, component, bucket
+                ),
             ));
         }
     }
@@ -1536,6 +1584,7 @@ mod tests {
     use super::*;
     use crate::Transport;
     use crate::endpoint::EndpointModel;
+    use std::path::Path;
 
     fn test_vals(transport: Transport) -> ClientConfigValues {
         let outer_security = match transport {
@@ -1594,6 +1643,18 @@ mod tests {
             tuic_password: "tuic-test-password".into(),
             tuic_congestion: "bbr".into(),
         }
+    }
+
+    fn fixture(path: &str) -> String {
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
+            .unwrap_or_else(|err| panic!("failed to read fixture {path}: {err}"))
+    }
+
+    fn checked_in_config(path: &str) -> String {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(path)
+            .display()
+            .to_string()
     }
 
     #[test]
@@ -1971,7 +2032,15 @@ mod tests {
             &test_vals(Transport::AnyTls),
         )
         .expect_err("hiddify anytls export should be gated by direct E2E capability");
-        assert!(err.contains("Hiddify AnyTLS export is disabled"));
+        assert!(err.contains(HIDDIFY_ANYTLS_PACKAGED_CORE_REASON));
+    }
+
+    #[test]
+    fn xray_webtransport_export_is_disabled_until_client_shape_is_updated() {
+        let vals = test_vals(Transport::WebTransport);
+        let err = generate_client_config(ClientFormat::Xray, "1.2.3.4", "test", &vals)
+            .expect_err("webtransport xray export should be gated");
+        assert!(err.contains(WEBTRANSPORT_XRAY_EXPORT_DISABLED));
     }
 
     #[test]
@@ -2002,6 +2071,10 @@ mod tests {
             diagnostics.export.as_ref().map(|item| item.supported),
             Some(true)
         );
+        assert_eq!(
+            diagnostics.export.as_ref().and_then(|item| item.error_code),
+            None
+        );
         let json = serde_json::to_value(&diagnostics).expect("diagnostics should serialize");
         assert_eq!(json["descriptor"]["id"], "vless");
         assert_eq!(json["resolved"]["outer_security"], "reality");
@@ -2016,12 +2089,55 @@ mod tests {
             .export
             .expect("export diagnostics should be present");
         assert!(!export.supported);
+        assert_eq!(
+            export.error_code,
+            Some("wireguard_xray_export_unimplemented")
+        );
         assert!(
             export
                 .error
                 .as_deref()
                 .unwrap_or_default()
                 .contains("WireGuard export is not implemented")
+        );
+    }
+
+    #[test]
+    fn diagnostics_report_webtransport_export_failure() {
+        let vals = test_vals(Transport::WebTransport);
+        let diagnostics = build_endpoint_diagnostics(&vals, Some(ClientFormat::Xray));
+        let export = diagnostics
+            .export
+            .expect("export diagnostics should be present");
+        assert!(!export.supported);
+        assert_eq!(
+            export.error_code,
+            Some("webtransport_xray_family_export_disabled")
+        );
+        assert!(
+            export
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains(WEBTRANSPORT_XRAY_EXPORT_DISABLED)
+        );
+    }
+
+    #[test]
+    fn diagnostics_report_hiddify_anytls_export_failure() {
+        let vals = test_vals(Transport::AnyTls);
+        let diagnostics = build_endpoint_diagnostics(&vals, Some(ClientFormat::Hiddify));
+        let export = diagnostics
+            .export
+            .expect("export diagnostics should be present");
+        assert!(!export.supported);
+        assert_eq!(export.error_code, Some("hiddify_anytls_packaged_core_gap"));
+        assert!(
+            export
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains(HIDDIFY_ANYTLS_PACKAGED_CORE_REASON)
         );
     }
 
@@ -2289,5 +2405,49 @@ email = "user@example.com"
         assert!(json.contains(r#""network": "xhttp""#));
         assert!(json.contains(r#""xhttpSettings""#));
         assert!(json.contains(r#""mode": "stream-one""#));
+    }
+
+    #[test]
+    fn client_config_snapshots_match_fixtures() {
+        for (config_path, format, fixture_path) in [
+            (
+                "configs/reality-vision.toml",
+                ClientFormat::Mihomo,
+                "tests/snapshots/client-configs/mihomo-reality.json",
+            ),
+            (
+                "configs/anytls-vision.toml",
+                ClientFormat::Mihomo,
+                "tests/snapshots/client-configs/mihomo-anytls.json",
+            ),
+            (
+                "configs/anytls-vision.toml",
+                ClientFormat::SingBox,
+                "tests/snapshots/client-configs/singbox-anytls.json",
+            ),
+            (
+                "configs/reality-vision.toml",
+                ClientFormat::Xray,
+                "tests/snapshots/client-configs/xray-reality.json",
+            ),
+            (
+                "configs/shadowtls.toml",
+                ClientFormat::Hiddify,
+                "tests/snapshots/client-configs/hiddify-shadowtls.json",
+            ),
+            (
+                "configs/xhttp.toml",
+                ClientFormat::Hiddify,
+                "tests/snapshots/client-configs/hiddify-xhttp.json",
+            ),
+        ] {
+            let config_path = checked_in_config(config_path);
+            let vals = resolve_client_values(Some(&config_path), None, "example.com");
+            let actual = generate_client_config(format, "1.2.3.4", "snapshot", &vals)
+                .expect("snapshot config should generate")
+                + "\n";
+            let expected = fixture(fixture_path);
+            assert_eq!(actual, expected, "{fixture_path} snapshot mismatch");
+        }
     }
 }

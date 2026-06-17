@@ -718,6 +718,7 @@ fn encode_quic_varint(value: u64) -> Result<Vec<u8>, H2Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustls::pki_types::{CertificateDer, pem::PemObject};
     use std::sync::Once;
 
     static RUSTLS_PROVIDER: Once = Once::new();
@@ -816,8 +817,7 @@ mod tests {
 
     fn build_root_store(cert_pem: &str) -> rustls::RootCertStore {
         ensure_rustls_provider();
-        let mut reader = std::io::Cursor::new(cert_pem.as_bytes());
-        let certs = rustls_pemfile::certs(&mut reader)
+        let certs = CertificateDer::pem_slice_iter(cert_pem.as_bytes())
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         let mut roots = rustls::RootCertStore::empty();

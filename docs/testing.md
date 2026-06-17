@@ -135,10 +135,121 @@ node run-client-suite.js --client hiddify
 # Capability-driven multi-scenario audit
 node run-client-matrix.js --client clash-verge-rev
 node run-client-matrix.js --client v2ray
+
+# Recheck the standing Hiddify AnyTLS / WebTransport limitations
+node scripts/recheck-standing-limitations.js
+
+# Inspect the current sing-box/Mihomo/xray-core/V2Ray binaries
+node scripts/inspect-client-cores.js
+
+# Inspect the current packaged Hiddify bundle for source-vs-core capability markers
+node scripts/inspect-hiddify-core.js
+
+# Same standing-limitation recheck from the wrongsv repo root
+cd ../wrongsv
+node scripts/recheck-external-standing-limitations.js --only xray-webtransport
+
+# One-shot full review evidence check from the wrongsv repo root
+node scripts/verify-review-evidence.js --standing-only xray-webtransport
+
+# Local-only aggregate check when the sibling repo is unavailable
+node scripts/verify-review-evidence.js --skip-external --output-file /tmp/wrongsv-review-evidence-summary.json
+
+# Persist the combined review-evidence JSON to a file
+node scripts/verify-review-evidence.js \
+  --standing-only xray-webtransport \
+  --output-file /tmp/wrongsv-review-evidence-summary.json
+
+# One-shot review evidence check: core-client scans + Hiddify scan + docs + standing limitations
+cd ../wrongsv-external-tests
+node scripts/verify-review-evidence.js
+
+# Same check from the wrongsv repo root
+cd ../wrongsv
+node scripts/verify-external-review-evidence.js --standing-only xray-webtransport
 ```
 
 See `wrongsv-external-tests/README.md` for the full architecture, supported
 clients, and capability matrix.
+
+If `wrongsv-external-tests` is missing, the root-level wrappers fail with a
+machine-readable JSON error that includes `reasonCode = "external_review_helper_missing"`.
+In `--dry-run` mode they instead succeed with a small JSON plan showing the
+delegated external command, which is how CI now exercises them without the
+sibling repo present.
+
+The aggregate root-level verifier can also persist its combined JSON result
+with `--output-file`. If you pass `--output-root` instead, it now writes a
+default `wrongsv-review-evidence-summary.json` under that output directory.
+When you pass `--skip-external`, the aggregate verifier now also forces the
+local self-test into `--local-only` mode, so its JSON summary reports
+`usedHarness = false` even if the sibling repo is checked out.
+
+On the sibling repo side, `scripts/inspect-client-cores.js` now emits a
+machine-readable summary of the current sing-box, Mihomo, xray-core, and
+V2Ray binaries; `scripts/inspect-hiddify-core.js` emits the current Hiddify
+source-vs-bundle capability markers; and `scripts/check-capability-docs.js
+--json` emits a structured docs-check summary. The aggregate review-evidence
+commands now carry those objects under `externalReview.stdout.coreClientScans`,
+`externalReview.stdout.hiddifyCoreScan`, and
+`externalReview.stdout.docsCheck`.
+
+That helper re-runs the currently tracked standing limitations and asserts the
+expected machine-readable statuses and summary counters:
+
+- `hiddify-anytls` → `gap_confirmed`
+- `xray-webtransport` → `untracked_confirmed`
+- `v2ray-webtransport` → `untracked_confirmed`
+
+It also writes the checked JSON summary to `<outputRoot>/summary.json`.
+
+When running multiple external matrices in parallel, set distinct
+`--listen-port-start`, `--target-port-start`, and `--metrics-port` values for
+each invocation so the temporary wrongsv listeners and local target servers do
+not collide.
+
+## Client generation guards
+
+The client-generation path now has its own machine-readable regression checks.
+
+### Local generator self-test
+
+```bash
+# Mapping + CLI export gate checks without requiring wrongsv-external-tests
+node scripts/generate-client-configs.js --self-test --wrongsv-bin target/debug/wrongsv
+
+# Same check with a machine-readable JSON summary
+node scripts/generate-client-configs.js --self-test --json --wrongsv-bin target/debug/wrongsv
+
+# Full check with sibling capability metadata and end-to-end manifest probes
+node scripts/generate-client-configs.js \
+  --self-test \
+  --wrongsv-bin target/debug/wrongsv \
+  --external-tests-root ../wrongsv-external-tests
+```
+
+With the sibling repo present, the self-test now validates:
+
+- scenario mapping from `--print-endpoint-diagnostics`
+- direct CLI export gates for Hiddify AnyTLS and xray-family WebTransport
+- manifest `reasonCode` behavior for:
+  - `scenario_untracked`
+  - `harness_gap`
+  - drifted family-export failures
+
+### Matrix status checks
+
+`wrongsv-external-tests/run-client-matrix.js` now emits machine-readable
+status families beyond plain pass/fail, including:
+
+- `gap_confirmed`
+- `defect_confirmed`
+- `untracked_confirmed`
+- `unexpected_gap_pass`
+- `unexpected_untracked_pass`
+
+To include intentionally untracked scenarios such as `vless_webtransport` in a
+matrix run, pass `--include-untracked`.
 
 ## Stress test
 

@@ -1,0 +1,12 @@
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "<UUID>"
+email = "user@example.com"
+flow = "xtls-rprx-vision"
+
+[reality]
+private_key = "<REALITY_PRIVATE_KEY>"
+short_ids = ["<REALITY_SHORT_ID>"]
+max_time_diff = 300
+dest = "www.microsoft.com:443"

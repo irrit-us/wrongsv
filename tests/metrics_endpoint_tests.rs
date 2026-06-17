@@ -29,6 +29,31 @@ fn http_get(addr: &str, path: &str) -> String {
     out
 }
 
+fn wait_for_listener(addr: &str, timeout: Duration) {
+    let started = std::time::Instant::now();
+    loop {
+        match TcpStream::connect(addr) {
+            Ok(stream) => {
+                drop(stream);
+                return;
+            }
+            Err(err) if started.elapsed() < timeout => {
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::ConnectionRefused
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::WouldBlock
+                ) {
+                    thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(err) => panic!("listener {addr} did not become ready: {err}"),
+        }
+    }
+}
+
 #[test]
 fn metrics_disabled_by_default() {
     let listen = reserve_addr();
@@ -370,7 +395,7 @@ bind = "127.0.0.1"
     let config: wrongsv_server::Config = toml::from_str(&config_toml).unwrap();
     let server = wrongsv_server::InboundServer::new(config).unwrap();
     let _handle = server.spawn();
-    thread::sleep(Duration::from_millis(200));
+    wait_for_listener(&listen, Duration::from_secs(5));
 
     let echo_addr = spawn_echo_target();
     let (_request, encoded) = build_vless_request(user_uuid, email, echo_addr.port(), "");
@@ -704,12 +729,28 @@ bind = "127.0.0.1"
     let (_header_len, header_payload) =
         vmess::build_header(&cmd_key, &eaudid, &body_key, &body_iv, &request).unwrap();
 
-    let mut conn = TcpStream::connect(&listen).unwrap();
-    conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    conn.write_all(&eaudid).unwrap();
-    conn.write_all(&header_payload).unwrap();
-
-    vmess::read_response(&body_key, &body_iv, request.response_header, &mut conn).unwrap();
+    let mut conn = None;
+    let mut last_error = None;
+    for _ in 0..3 {
+        let mut candidate = TcpStream::connect(&listen).unwrap();
+        candidate
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        candidate.write_all(&eaudid).unwrap();
+        candidate.write_all(&header_payload).unwrap();
+        match vmess::read_response(&body_key, &body_iv, request.response_header, &mut candidate) {
+            Ok(()) => {
+                conn = Some(candidate);
+                break;
+            }
+            Err(err) => {
+                last_error = Some(err);
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+    let mut conn =
+        conn.unwrap_or_else(|| panic!("vmess handshake did not stabilize: {:?}", last_error));
 
     let payload = b"vmess-metrics-roundtrip-payload";
     let mut writer = VmessBodyWriter::new_with_options(

@@ -16,6 +16,7 @@ SERVERNAME=""
 OUTPUT_DIR=""
 EXTERNAL_TESTS_ROOT=""
 GENERATE_CLIENTS=1
+NO_MANIFEST=0
 DRY_RUN=0
 
 usage() {
@@ -34,6 +35,7 @@ Options:
   --clients <csv|all>          clients to generate (default: all)
   --output-dir <path>          local generated client config dir
   --external-tests-root <path> wrongsv-external-tests dir
+  --no-manifest                skip manifest.json/manifest.md in generated client output
   --no-client-configs          deploy only
   --dry-run                    validate inputs and print deployment plan as JSON
   -h, --help                   show this help
@@ -99,6 +101,10 @@ while [[ $# -gt 0 ]]; do
     --external-tests-root)
       EXTERNAL_TESTS_ROOT="$2"
       shift 2
+      ;;
+    --no-manifest)
+      NO_MANIFEST=1
+      shift
       ;;
     --no-client-configs)
       GENERATE_CLIENTS=0
@@ -208,6 +214,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
     "$OUTPUT_DIR" \
     "$EXTERNAL_TESTS_ROOT" \
     "$GENERATE_CLIENTS" \
+    "$NO_MANIFEST" \
     "$CLIENTS" \
     "$CLIENT_NAME" \
     "$LISTEN_PORT" <<'PY'
@@ -226,6 +233,7 @@ import sys
     output_dir,
     external_tests_root,
     generate_clients,
+    no_manifest,
     clients,
     client_name,
     listen_port,
@@ -249,6 +257,7 @@ plan = {
     "dryRun": True,
     "externalTestsRoot": external_tests_root,
     "generateClientConfigs": generate_clients == "1",
+    "manifestWritten": None if generate_clients != "1" else no_manifest != "1",
     "host": host,
     "listenPort": listen_port,
     "notes": [
@@ -359,15 +368,21 @@ fi
 
 if [[ "$GENERATE_CLIENTS" -eq 1 ]]; then
   echo "==> generating capability-validated client configs"
-  node "$ROOT/scripts/generate-client-configs.js" \
-    --wrongsv-bin "$BIN" \
-    --config "$CONFIG" \
-    --external-tests-root "$EXTERNAL_TESTS_ROOT" \
-    --output-dir "$OUTPUT_DIR" \
-    --server-host "$SERVER_HOST" \
-    --servername "$SERVERNAME" \
-    --client-name "$CLIENT_NAME" \
+  GENERATE_ARGS=(
+    "$ROOT/scripts/generate-client-configs.js"
+    --wrongsv-bin "$BIN"
+    --config "$CONFIG"
+    --external-tests-root "$EXTERNAL_TESTS_ROOT"
+    --output-dir "$OUTPUT_DIR"
+    --server-host "$SERVER_HOST"
+    --servername "$SERVERNAME"
+    --client-name "$CLIENT_NAME"
     --clients "$CLIENTS"
+  )
+  if [[ "$NO_MANIFEST" -eq 1 ]]; then
+    GENERATE_ARGS+=(--no-manifest)
+  fi
+  node "${GENERATE_ARGS[@]}"
   echo "==> client configs written to $OUTPUT_DIR"
 fi
 

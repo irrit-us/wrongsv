@@ -35,6 +35,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-audit --locked
+      - run: cargo audit
+
   test:
     name: cargo test (unit)
     runs-on: ubuntu-latest
@@ -48,6 +58,24 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --lib --bins
 
+  client-config-self-test:
+    name: client config self-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: rustup show active-toolchain
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p wrongsv --bin wrongsv
+      - name: Client generation mapping self-test
+        run: node scripts/generate-client-configs.js --self-test --wrongsv-bin target/debug/wrongsv
+
   scripts:
     name: script syntax
     runs-on: ubuntu-latest
@@ -56,15 +84,28 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+      - name: Install shellcheck and sshd
+        run: sudo apt-get update -y && sudo apt-get install -y shellcheck openssh-server
       - name: Node syntax
         run: |
           node --check scripts/generate-client-configs.js
           node --check scripts/generate-main-configs.js
+          node --check scripts/recheck-external-standing-limitations.js
+          node --check scripts/verify-review-evidence.js
+          node --check scripts/verify-external-review-evidence.js
+          node scripts/verify-review-evidence.js --skip-external --output-file /tmp/wrongsv-review-evidence.json
+          node scripts/recheck-external-standing-limitations.js --external-tests-root /tmp/does-not-exist --dry-run --only xray-webtransport
+          node scripts/verify-review-evidence.js --external-tests-root /tmp/does-not-exist --dry-run --standing-only xray-webtransport
+          node scripts/verify-external-review-evidence.js --external-tests-root /tmp/does-not-exist --dry-run --standing-only xray-webtransport
       - name: Bash syntax
         run: |
           bash -n scripts/deploy-remote.sh \
             scripts/deploy_remote.sh \
             scripts/eval-remote.sh \
+            scripts/test-deploy-remote-mock.sh \
+            scripts/test-deploy-remote-mock-failure.sh \
+            scripts/test-deploy-remote-local-sshd.sh \
+            scripts/test-deploy-remote-mock-systemd.sh \
             benches/traffic/run.sh \
             benches/traffic/setup.sh \
             benches/traffic/comprehensive/matrix.sh \
@@ -77,6 +118,48 @@ jobs:
             benches/traffic/scenarios/reality-stress.sh \
             benches/traffic/scenarios/throughput-ladder.sh \
             benches/traffic/scenarios/tls-handshake.sh
+      - name: ShellCheck
+        run: |
+          shellcheck -S warning \
+            scripts/deploy-remote.sh \
+            scripts/deploy_remote.sh \
+            scripts/eval-remote.sh \
+            scripts/test-deploy-remote-mock.sh \
+            scripts/test-deploy-remote-mock-failure.sh \
+            scripts/test-deploy-remote-local-sshd.sh \
+            scripts/test-deploy-remote-mock-systemd.sh \
+            benches/traffic/run.sh \
+            benches/traffic/setup.sh \
+            benches/traffic/comprehensive/matrix.sh \
+            benches/traffic/comprehensive/lib/certs.sh \
+            benches/traffic/comprehensive/lib/load.sh \
+            benches/traffic/comprehensive/lib/memory.sh \
+            benches/traffic/comprehensive/lib/netem.sh \
+            benches/traffic/comprehensive/lib/server.sh \
+            benches/traffic/scenarios/multi-user-sim.sh \
+            benches/traffic/scenarios/reality-stress.sh \
+            benches/traffic/scenarios/throughput-ladder.sh \
+            benches/traffic/scenarios/tls-handshake.sh
+      - name: Deploy dry-run
+        run: |
+          scripts/deploy-remote.sh example.invalid --dry-run \
+            --config configs/anytls-vision.toml \
+            --server-host 203.0.113.10 \
+            --no-client-configs
+      - name: Deploy wrapper dry-run
+        run: |
+          scripts/deploy_remote.sh example.invalid --dry-run \
+            --config configs/anytls-vision.toml \
+            --server-host 203.0.113.10 \
+            --no-client-configs
+      - name: Deploy mock integration
+        run: scripts/test-deploy-remote-mock.sh
+      - name: Deploy mock failure integration
+        run: scripts/test-deploy-remote-mock-failure.sh
+      - name: Deploy localhost sshd integration
+        run: scripts/test-deploy-remote-local-sshd.sh
+      - name: Deploy mock systemd failure integration
+        run: scripts/test-deploy-remote-mock-systemd.sh
 
   integration:
     name: cargo test (integration)
