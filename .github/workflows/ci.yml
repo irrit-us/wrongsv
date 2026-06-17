@@ -84,8 +84,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Install shellcheck and sshd
-        run: sudo apt-get update -y && sudo apt-get install -y shellcheck openssh-server
+      - name: Install shellcheck, sshd, and protoc
+        run: sudo apt-get update -y && sudo apt-get install -y shellcheck openssh-server protobuf-compiler
       - name: Node syntax
         run: |
           node --check scripts/generate-client-configs.js
@@ -93,6 +93,7 @@ jobs:
           node --check scripts/recheck-external-standing-limitations.js
           node --check scripts/verify-review-evidence.js
           node --check scripts/verify-external-review-evidence.js
+          cargo build -p wrongsv --bin wrongsv
           node scripts/verify-review-evidence.js --skip-external --output-file /tmp/wrongsv-review-evidence.json
           node scripts/recheck-external-standing-limitations.js --external-tests-root /tmp/does-not-exist --dry-run --only xray-webtransport
           node scripts/verify-review-evidence.js --external-tests-root /tmp/does-not-exist --dry-run --standing-only xray-webtransport

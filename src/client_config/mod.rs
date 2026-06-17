@@ -14,8 +14,7 @@ use crate::endpoint::{
 
 const WEBTRANSPORT_XRAY_EXPORT_DISABLED: &str =
     "WebTransport export is disabled pending an updated xray/v2ray-compatible client config shape";
-const HIDDIFY_ANYTLS_PACKAGED_CORE_REASON: &str =
-    "packaged Hiddify core rejected the generated AnyTLS outbound and never exposed the local mixed proxy port";
+const HIDDIFY_ANYTLS_PACKAGED_CORE_REASON: &str = "packaged Hiddify core rejected the generated AnyTLS outbound and never exposed the local mixed proxy port";
 
 #[derive(Debug, Clone)]
 pub(crate) struct ClientExportSupportError {

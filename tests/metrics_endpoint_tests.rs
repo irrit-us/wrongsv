@@ -611,7 +611,7 @@ bind = "127.0.0.1"
         .reality_raw_pubkey_hex()
         .expect("REALITY config should expose raw_pubkey");
     let _handle = server.spawn();
-    thread::sleep(Duration::from_millis(200));
+    wait_for_listener(&listen, Duration::from_secs(5));
 
     let echo_addr = spawn_echo_target();
 
@@ -619,18 +619,32 @@ bind = "127.0.0.1"
     // verification path is exercised end-to-end (not bypassed).
     let proxy_host = listen.split(':').next().unwrap();
     let proxy_port: u16 = listen.split(':').next_back().unwrap().parse().unwrap();
-    let mut conn = wrongsv_evaluator_client::transport::connect_for_protocol(
-        "reality",
-        proxy_host,
-        proxy_port,
-        echo_addr.port(),
-        &user_uuid.to_string(),
-        "",
-        Some(&pk_b64),
-        Some(short_id),
-        Some(&raw_pubkey_hex),
-    )
-    .expect("REALITY handshake should succeed");
+    let mut conn = None;
+    let mut last_error = None;
+    for _ in 0..3 {
+        match wrongsv_evaluator_client::transport::connect_for_protocol(
+            "reality",
+            proxy_host,
+            proxy_port,
+            echo_addr.port(),
+            &user_uuid.to_string(),
+            "",
+            Some(&pk_b64),
+            Some(short_id),
+            Some(&raw_pubkey_hex),
+        ) {
+            Ok(candidate) => {
+                conn = Some(candidate);
+                break;
+            }
+            Err(err) => {
+                last_error = Some(err);
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+    let mut conn =
+        conn.unwrap_or_else(|| panic!("REALITY handshake should succeed: {:?}", last_error));
 
     let payload = b"reality-metrics-roundtrip-payload";
     conn.write_all(payload).unwrap();
