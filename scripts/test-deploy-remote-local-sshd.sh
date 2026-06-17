@@ -13,6 +13,9 @@ CONFIG_FILE="$TMPDIR/config.toml"
 SECRET_VALUE="deploy-real-sshd-secret"
 REAL_CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
 REAL_RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+REAL_SSH_BIN="$(command -v ssh)"
+REAL_SCP_BIN="$(command -v scp)"
+REAL_SSHD_BIN="$(command -v sshd)"
 
 cleanup() {
   if [[ -n "${REMOTE_WRONGSV_PID:-}" ]]; then
@@ -84,13 +87,13 @@ chmod 600 "$TMPDIR/ssh_client_config"
 
 cat >"$FAKEBIN/ssh" <<EOF
 #!/usr/bin/env bash
-exec /usr/sbin/ssh -F "$TMPDIR/ssh_client_config" "\$@"
+exec "$REAL_SSH_BIN" -F "$TMPDIR/ssh_client_config" "\$@"
 EOF
 chmod +x "$FAKEBIN/ssh"
 
 cat >"$FAKEBIN/scp" <<EOF
 #!/usr/bin/env bash
-exec /usr/sbin/scp -F "$TMPDIR/ssh_client_config" "\$@"
+exec "$REAL_SCP_BIN" -F "$TMPDIR/ssh_client_config" "\$@"
 EOF
 chmod +x "$FAKEBIN/scp"
 
@@ -107,11 +110,11 @@ password = "${SECRET_VALUE}"
 dest = "127.0.0.1:8080"
 EOF
 
-/usr/sbin/sshd -D -f "$TMPDIR/sshd_config" -E "$SSHD_LOG" &
+"$REAL_SSHD_BIN" -D -f "$TMPDIR/sshd_config" -E "$SSHD_LOG" &
 SSHD_PID=$!
 
 for _ in $(seq 1 50); do
-  if /usr/sbin/ssh -F "$TMPDIR/ssh_client_config" mockdeploy 'echo READY' >/dev/null 2>&1; then
+  if "$REAL_SSH_BIN" -F "$TMPDIR/ssh_client_config" mockdeploy 'echo READY' >/dev/null 2>&1; then
     break
   fi
   sleep 0.1
@@ -148,5 +151,5 @@ if grep -F "$SECRET_VALUE" "$OUTPUT_FILE" "$REMOTE_DIR/wrongsv.log" "$SSHD_LOG";
   exit 1
 fi
 
-REMOTE_WRONGSV_PID="$(/usr/sbin/ssh -F "$TMPDIR/ssh_client_config" mockdeploy "pgrep -f '$REMOTE_DIR/wrongsv --config $REMOTE_DIR/config.toml' | head -n 1")"
+REMOTE_WRONGSV_PID="$("$REAL_SSH_BIN" -F "$TMPDIR/ssh_client_config" mockdeploy "pgrep -f '$REMOTE_DIR/wrongsv --config $REMOTE_DIR/config.toml' | head -n 1")"
 [[ -n "$REMOTE_WRONGSV_PID" ]]
