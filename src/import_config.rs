@@ -29,7 +29,7 @@ pub struct ImportConfig {
     #[serde(default)]
     pub meek: Option<ImportMeekConfig>,
     #[serde(default)]
-    pub gdocsviewer: Option<toml::Value>,
+    pub gdocsviewer: Option<ImportGdocsViewerConfig>,
     #[serde(default)]
     pub quic: Option<ImportQuicConfig>,
     #[serde(default)]
@@ -172,6 +172,26 @@ pub struct ImportMeekConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ImportMeekTlsConfig {
+    #[serde(default)]
+    pub certificate: Option<String>,
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub dest: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportGdocsViewerConfig {
+    #[serde(default = "default_gdocsviewer_path")]
+    pub path_prefix: String,
+    #[serde(default)]
+    pub shared_key: Option<String>,
+    #[serde(default)]
+    pub tls: Option<ImportGdocsViewerTlsConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportGdocsViewerTlsConfig {
     #[serde(default)]
     pub certificate: Option<String>,
     #[serde(default)]
@@ -394,6 +414,10 @@ pub enum WrongclTransportSpec {
         path: String,
         host: Option<String>,
     },
+    GdocsViewer {
+        path_prefix: String,
+        shared_key: Option<String>,
+    },
     WebTransport {
         authority: String,
         path: String,
@@ -526,6 +550,12 @@ pub enum WrongclTransportDocument {
         path: String,
         #[serde(default)]
         host: Option<String>,
+    },
+    Gdocsviewer {
+        #[serde(rename = "path-prefix")]
+        path_prefix: String,
+        #[serde(default, rename = "shared-key")]
+        shared_key: Option<String>,
     },
     Webtransport {
         authority: String,
@@ -739,6 +769,36 @@ pub fn build_wrongcl_import_spec(
                     }),
             )
         }
+        "gdocsviewer" => {
+            let gdocsviewer = config
+                .gdocsviewer
+                .as_ref()
+                .ok_or_else(|| "missing [gdocsviewer] table".to_string())?;
+            (
+                vless_proxy_spec(config)?,
+                WrongclTransportSpec::GdocsViewer {
+                    path_prefix: if gdocsviewer.path_prefix.starts_with('/') {
+                        gdocsviewer.path_prefix.clone()
+                    } else {
+                        format!("/{}", gdocsviewer.path_prefix)
+                    },
+                    shared_key: gdocsviewer.shared_key.clone(),
+                },
+                gdocsviewer
+                    .tls
+                    .as_ref()
+                    .map_or(WrongclOuterSecuritySpec::None, |tls| {
+                        tls_spec(
+                            Some(&ImportTlsConfig {
+                                server_name: tls.dest.clone().map(|dest| host_from_dest(&dest)),
+                                alpn: None,
+                                insecure: Some(true),
+                            }),
+                            server_host,
+                        )
+                    }),
+            )
+        }
         "quic" => (
             vless_proxy_spec(config)?,
             quic_transport_spec(config.quic.as_ref())?,
@@ -859,6 +919,10 @@ fn default_xhttp_path() -> String {
 
 fn default_meek_path() -> String {
     "/".into()
+}
+
+fn default_gdocsviewer_path() -> String {
+    "/gdocsviewer".into()
 }
 
 fn default_wt_path() -> String {
@@ -1061,6 +1125,13 @@ fn wrongcl_transport_document(transport: &WrongclTransportSpec) -> WrongclTransp
         WrongclTransportSpec::Meek { path, host } => WrongclTransportDocument::Meek {
             path: path.clone(),
             host: host.clone(),
+        },
+        WrongclTransportSpec::GdocsViewer {
+            path_prefix,
+            shared_key,
+        } => WrongclTransportDocument::Gdocsviewer {
+            path_prefix: path_prefix.clone(),
+            shared_key: shared_key.clone(),
         },
         WrongclTransportSpec::WebTransport {
             authority,
@@ -1686,6 +1757,49 @@ dest = "cover.example:443"
             WrongclTransportSpec::Meek { path, host } => {
                 assert_eq!(path, "/meek");
                 assert_eq!(host.as_deref(), Some("cdn.example"));
+            }
+            other => panic!("unexpected transport {other:?}"),
+        }
+        match spec.outer_security {
+            WrongclOuterSecuritySpec::Tls { server_name, .. } => {
+                assert_eq!(server_name, "cover.example");
+            }
+            other => panic!("unexpected outer security {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wrongcl_import_spec_builds_gdocsviewer_config() {
+        let config: ImportConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[gdocsviewer]
+path_prefix = "gdocsviewer"
+shared_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+[gdocsviewer.tls]
+dest = "cover.example:443"
+"#,
+        )
+        .unwrap();
+
+        let spec =
+            build_wrongcl_import_spec(&config, "gdocsviewer", "wrong.example", false).unwrap();
+        assert_eq!(spec.active_profile, "gdocsviewer");
+        match spec.transport {
+            WrongclTransportSpec::GdocsViewer {
+                path_prefix,
+                shared_key,
+            } => {
+                assert_eq!(path_prefix, "/gdocsviewer");
+                assert_eq!(
+                    shared_key.as_deref(),
+                    Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+                );
             }
             other => panic!("unexpected transport {other:?}"),
         }

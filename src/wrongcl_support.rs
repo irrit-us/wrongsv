@@ -263,6 +263,7 @@ fn wrongcl_profile_implemented(profile: &str) -> bool {
             | "quic"
             | "kcp"
             | "meek"
+            | "gdocsviewer"
             | "webtransport"
             | "websocket"
             | "httpupgrade"
@@ -277,8 +278,8 @@ fn wrongcl_profile_implemented(profile: &str) -> bool {
 fn wrongcl_profile_support_level(profile: &str) -> WrongclSupportLevel {
     match profile {
         "raw" | "tls" | "anytls" | "shadowtls" | "hysteria2" | "tuic" | "quic" | "kcp" | "meek"
-        | "webtransport" | "websocket" | "httpupgrade" | "xhttp" | "grpc" | "trojan" | "mixed"
-        | "shadowsocks" => WrongclSupportLevel::Supported,
+        | "gdocsviewer" | "webtransport" | "websocket" | "httpupgrade" | "xhttp" | "grpc"
+        | "trojan" | "mixed" | "shadowsocks" => WrongclSupportLevel::Supported,
         "reality" => WrongclSupportLevel::Partial,
         _ => WrongclSupportLevel::Unsupported,
     }
@@ -307,6 +308,7 @@ fn wrongcl_support_reason(profile: &str, support: WrongclSupportLevel) -> String
         "quic" => "VLESS over QUIC with TCP and UDP".into(),
         "kcp" => "VLESS over KCP; full support when the active config is TCP-only".into(),
         "meek" => "VLESS over Meek with TCP and UDP".into(),
+        "gdocsviewer" => "VLESS over Google Docs Viewer with TCP and UDP".into(),
         "webtransport" => "VLESS over WebTransport with TCP and UDP".into(),
         "websocket" => {
             "VLESS over WebSocket; full support when the active config is TCP-only and not using Vision"
@@ -374,8 +376,8 @@ fn wrongcl_local_runtime_gap_reason(
     if payload_networks.contains(&PayloadNetworkId::Udp) {
         match profile {
             "raw" | "tls" | "anytls" | "shadowtls" | "reality" | "hysteria2" | "tuic" | "quic"
-            | "meek" | "webtransport" | "websocket" | "httpupgrade" | "xhttp" | "grpc"
-            | "trojan" | "shadowsocks" => None,
+            | "meek" | "gdocsviewer" | "webtransport" | "websocket" | "httpupgrade" | "xhttp"
+            | "grpc" | "trojan" | "shadowsocks" => None,
             _ => Some("wrongcl UDP relay is still being built out for this protocol family".into()),
         }
     } else if payload_networks.contains(&PayloadNetworkId::Ip) {
@@ -397,6 +399,7 @@ fn wrongcl_stack_label(profile: &str) -> &'static str {
         "quic" => "VLESS over QUIC",
         "kcp" => "VLESS over KCP",
         "meek" => "VLESS over Meek",
+        "gdocsviewer" => "VLESS over Google Docs Viewer",
         "webtransport" => "VLESS over WebTransport",
         "websocket" => "VLESS over WebSocket",
         "httpupgrade" => "VLESS over HTTPUpgrade",
@@ -548,6 +551,29 @@ path = "/meek"
         assert!(view.config_adaptable);
         assert!(view.missing_fields.is_empty());
         assert!(view.active_reason.contains("Meek"));
+    }
+
+    #[test]
+    fn wrongcl_capability_view_marks_gdocsviewer_as_supported() {
+        let config: ImportConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[gdocsviewer]
+path_prefix = "/gdocsviewer"
+"#,
+        )
+        .unwrap();
+
+        let resolution = import_resolution_hint(&config);
+        let view = build_wrongcl_capability_view(&config, &resolution);
+        assert_eq!(view.active_support, WrongclSupportLevel::Supported);
+        assert!(view.config_adaptable);
+        assert!(view.missing_fields.is_empty());
+        assert!(view.active_reason.contains("Google Docs Viewer"));
     }
 
     #[test]
