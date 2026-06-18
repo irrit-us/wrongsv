@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
 
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
 use crate::{BaseCarrierId, PayloadNetworkId};
@@ -51,7 +52,7 @@ pub struct ImportConfig {
     #[serde(default)]
     pub mixed: Option<ImportMixedConfig>,
     #[serde(default)]
-    pub wireguard: Option<toml::Value>,
+    pub wireguard: Option<ImportWireGuardConfig>,
     #[serde(default)]
     pub naive: Option<toml::Value>,
 }
@@ -357,6 +358,40 @@ pub struct ImportWebTransportTlsConfig {
     pub dest: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportWireGuardConfig {
+    pub private_key: String,
+    #[serde(default)]
+    pub mtu: Option<u32>,
+    #[serde(default)]
+    pub server_cidrs: Vec<String>,
+    #[serde(default)]
+    pub routes: Vec<String>,
+    #[serde(default)]
+    pub peers: Vec<ImportWireGuardPeerConfig>,
+    #[serde(default)]
+    pub forwards: Vec<ImportWireGuardForwardConfig>,
+    #[serde(default)]
+    pub outbound: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportWireGuardPeerConfig {
+    pub public_key: String,
+    #[serde(default)]
+    pub preshared_key: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub allowed_ips: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportWireGuardForwardConfig {
+    pub service: String,
+    pub target: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportResolutionHint {
     pub active_profile: String,
@@ -378,6 +413,14 @@ pub enum WrongclProxySpec {
     Vless {
         uuid: String,
         flow: String,
+    },
+    WireGuard {
+        private_key: String,
+        peer_public_key: String,
+        pre_shared_key: Option<String>,
+        client_ip: String,
+        allowed_ips: Vec<String>,
+        mtu: u32,
     },
     Hysteria2 {
         server_name: String,
@@ -506,6 +549,19 @@ pub enum WrongclProxyDocument {
         uuid: String,
         #[serde(default)]
         flow: String,
+    },
+    Wireguard {
+        #[serde(rename = "private-key")]
+        private_key: String,
+        #[serde(rename = "peer-public-key")]
+        peer_public_key: String,
+        #[serde(default, rename = "pre-shared-key")]
+        pre_shared_key: Option<String>,
+        #[serde(rename = "client-ip")]
+        client_ip: String,
+        #[serde(rename = "allowed-ips")]
+        allowed_ips: Vec<String>,
+        mtu: u32,
     },
     Hysteria2 {
         #[serde(rename = "server-name")]
@@ -769,6 +825,11 @@ pub fn build_wrongcl_import_spec(
                     }),
             )
         }
+        "wireguard" => (
+            wireguard_proxy_spec(config, draft_mode)?,
+            WrongclTransportSpec::Raw,
+            WrongclOuterSecuritySpec::None,
+        ),
         "gdocsviewer" => {
             let gdocsviewer = config
                 .gdocsviewer
@@ -1082,6 +1143,21 @@ fn wrongcl_proxy_document(proxy: &WrongclProxySpec) -> WrongclProxyDocument {
             uuid: uuid.clone(),
             flow: flow.clone(),
         },
+        WrongclProxySpec::WireGuard {
+            private_key,
+            peer_public_key,
+            pre_shared_key,
+            client_ip,
+            allowed_ips,
+            mtu,
+        } => WrongclProxyDocument::Wireguard {
+            private_key: private_key.clone(),
+            peer_public_key: peer_public_key.clone(),
+            pre_shared_key: pre_shared_key.clone(),
+            client_ip: client_ip.clone(),
+            allowed_ips: allowed_ips.clone(),
+            mtu: *mtu,
+        },
         WrongclProxySpec::Hysteria2 {
             server_name,
             password,
@@ -1324,6 +1400,46 @@ fn mixed_proxy_spec(config: &ImportConfig) -> Result<WrongclProxySpec, String> {
     })
 }
 
+fn wireguard_proxy_spec(
+    config: &ImportConfig,
+    draft_mode: bool,
+) -> Result<WrongclProxySpec, String> {
+    let wireguard = config
+        .wireguard
+        .as_ref()
+        .ok_or_else(|| "missing [wireguard] table".to_string())?;
+    let peer = wireguard
+        .peers
+        .first()
+        .ok_or_else(|| "WireGuard requires one [[wireguard.peers]] entry".to_string())?;
+    let peer_public_key = wireguard_server_public_key(&wireguard.private_key)?;
+    let private_key = if draft_mode {
+        String::new()
+    } else {
+        return Err(
+            "WireGuard [wireguard].private-key is the server key; wrongcl needs the client peer private-key supplied separately"
+                .to_string(),
+        );
+    };
+    let client_ip = peer
+        .allowed_ips
+        .first()
+        .cloned()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            "WireGuard peer allowed_ips must include the client tunnel address".to_string()
+        })?;
+    let allowed_ips = derive_wireguard_allowed_ips(wireguard);
+    Ok(WrongclProxySpec::WireGuard {
+        private_key,
+        peer_public_key,
+        pre_shared_key: peer.preshared_key.clone(),
+        client_ip,
+        allowed_ips,
+        mtu: wireguard.mtu.unwrap_or(1400),
+    })
+}
+
 fn shadowsocks_proxy_spec(config: &ImportConfig) -> Result<WrongclProxySpec, String> {
     let shadowsocks = config
         .shadowsocks
@@ -1479,6 +1595,76 @@ fn shadowtls_spec(
             .unwrap_or_else(|| "cloudfront.net".to_string()),
         password: shadowtls.password.clone(),
     })
+}
+
+fn derive_wireguard_allowed_ips(wireguard: &ImportWireGuardConfig) -> Vec<String> {
+    if wireguard.outbound {
+        if !wireguard.routes.is_empty() {
+            return wireguard.routes.clone();
+        }
+        let mut routes = Vec::new();
+        let has_ipv4 = wireguard.server_cidrs.iter().any(|cidr| {
+            cidr.split('/')
+                .next()
+                .is_some_and(|host| host.contains('.'))
+        });
+        let has_ipv6 = wireguard.server_cidrs.iter().any(|cidr| {
+            cidr.split('/')
+                .next()
+                .is_some_and(|host| host.contains(':'))
+        });
+        if has_ipv4 {
+            routes.push("0.0.0.0/0".to_string());
+        }
+        if has_ipv6 {
+            routes.push("::/0".to_string());
+        }
+        if !routes.is_empty() {
+            return routes;
+        }
+    }
+
+    let mut allowed_ips = wireguard
+        .forwards
+        .iter()
+        .filter_map(|forward| service_ip_cidr(&forward.service))
+        .collect::<Vec<_>>();
+    if allowed_ips.is_empty() {
+        allowed_ips.push("10.66.66.1/32".to_string());
+    }
+    allowed_ips
+}
+
+fn service_ip_cidr(service: &str) -> Option<String> {
+    let host = service
+        .rsplit_once(':')
+        .map(|(host, _)| host)
+        .unwrap_or(service);
+    let host = host
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host);
+    if host.parse::<std::net::Ipv4Addr>().is_ok() {
+        Some(format!("{host}/32"))
+    } else if host.parse::<std::net::Ipv6Addr>().is_ok() {
+        Some(format!("{host}/128"))
+    } else {
+        None
+    }
+}
+
+fn wireguard_server_public_key(private_key_b64: &str) -> Result<String, String> {
+    use x25519_dalek::{PublicKey, StaticSecret};
+
+    let key = base64::engine::general_purpose::STANDARD
+        .decode(private_key_b64)
+        .map_err(|_| "WireGuard private_key must be base64 for 32 bytes".to_string())?;
+    let key: [u8; 32] = key
+        .try_into()
+        .map_err(|_| "WireGuard private_key must decode to 32 bytes".to_string())?;
+    let secret = StaticSecret::from(key);
+    let public = PublicKey::from(&secret);
+    Ok(base64::engine::general_purpose::STANDARD.encode(public.as_bytes()))
 }
 
 fn host_from_dest(dest: &str) -> String {
@@ -1765,6 +1951,50 @@ dest = "cover.example:443"
                 assert_eq!(server_name, "cover.example");
             }
             other => panic!("unexpected outer security {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wrongcl_import_spec_builds_wireguard_draft_config() {
+        let config: ImportConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:51820"
+
+[wireguard]
+private_key = "EGs4lTSJPmgELx6YiJAmPR2meWi6bY+e9rTdCipSj10="
+server_cidrs = ["10.77.0.1/32"]
+outbound = true
+
+[[wireguard.peers]]
+public_key = "MmLJ5iHFVVBp7VsB0hxfpQ0wEzAbT2KQnpQpj0+RtBw="
+allowed_ips = ["10.77.0.2/32"]
+"#,
+        )
+        .unwrap();
+
+        let spec = build_wrongcl_import_spec(&config, "wireguard", "wrong.example", true).unwrap();
+        assert_eq!(spec.active_profile, "wireguard");
+        assert_eq!(spec.listen_port, 51820);
+        match spec.proxy {
+            WrongclProxySpec::WireGuard {
+                private_key,
+                peer_public_key,
+                pre_shared_key,
+                client_ip,
+                allowed_ips,
+                mtu,
+            } => {
+                assert_eq!(private_key, "");
+                assert_eq!(
+                    peer_public_key,
+                    "MmLJ5iHFVVBp7VsB0hxfpQ0wEzAbT2KQnpQpj0+RtBw="
+                );
+                assert_eq!(pre_shared_key, None);
+                assert_eq!(client_ip, "10.77.0.2/32");
+                assert_eq!(allowed_ips, vec!["0.0.0.0/0".to_string()]);
+                assert_eq!(mtu, 1400);
+            }
+            other => panic!("unexpected proxy {other:?}"),
         }
     }
 

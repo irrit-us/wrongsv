@@ -272,6 +272,7 @@ fn wrongcl_profile_implemented(profile: &str) -> bool {
             | "trojan"
             | "mixed"
             | "shadowsocks"
+            | "wireguard"
     )
 }
 
@@ -280,7 +281,7 @@ fn wrongcl_profile_support_level(profile: &str) -> WrongclSupportLevel {
         "raw" | "tls" | "anytls" | "shadowtls" | "hysteria2" | "tuic" | "quic" | "kcp" | "meek"
         | "gdocsviewer" | "webtransport" | "websocket" | "httpupgrade" | "xhttp" | "grpc"
         | "trojan" | "mixed" | "shadowsocks" => WrongclSupportLevel::Supported,
-        "reality" => WrongclSupportLevel::Partial,
+        "wireguard" | "reality" => WrongclSupportLevel::Partial,
         _ => WrongclSupportLevel::Unsupported,
     }
 }
@@ -310,6 +311,10 @@ fn wrongcl_support_reason(profile: &str, support: WrongclSupportLevel) -> String
         "meek" => "VLESS over Meek with TCP and UDP".into(),
         "gdocsviewer" => "VLESS over Google Docs Viewer with TCP and UDP".into(),
         "webtransport" => "VLESS over WebTransport with TCP and UDP".into(),
+        "wireguard" => {
+            "WireGuard tunnel service; needs a client private-key and a helper-backed runtime"
+                .into()
+        }
         "websocket" => {
             "VLESS over WebSocket; full support when the active config is TCP-only and not using Vision"
                 .into()
@@ -343,6 +348,10 @@ fn wrongcl_missing_fields(config: &ImportConfig, profile: &str) -> Vec<WrongclMi
                 Vec::new()
             }
         }
+        "wireguard" => vec![WrongclMissingField {
+            field: "wireguard.private-key".into(),
+            reason: "wrongsv WireGuard server configs contain the server private key and peer public keys; wrongcl needs the client peer private-key supplied separately".into(),
+        }],
         _ => Vec::new(),
     }
 }
@@ -401,6 +410,7 @@ fn wrongcl_stack_label(profile: &str) -> &'static str {
         "meek" => "VLESS over Meek",
         "gdocsviewer" => "VLESS over Google Docs Viewer",
         "webtransport" => "VLESS over WebTransport",
+        "wireguard" => "WireGuard",
         "websocket" => "VLESS over WebSocket",
         "httpupgrade" => "VLESS over HTTPUpgrade",
         "xhttp" => "VLESS over XHTTP",
@@ -574,6 +584,37 @@ path_prefix = "/gdocsviewer"
         assert!(view.config_adaptable);
         assert!(view.missing_fields.is_empty());
         assert!(view.active_reason.contains("Google Docs Viewer"));
+    }
+
+    #[test]
+    fn wrongcl_capability_view_marks_wireguard_as_partial() {
+        let config: ImportConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:51820"
+
+[wireguard]
+private_key = "EGs4lTSJPmgELx6YiJAmPR2meWi6bY+e9rTdCipSj10="
+server_cidrs = ["10.77.0.1/32"]
+outbound = true
+
+[[wireguard.peers]]
+public_key = "MmLJ5iHFVVBp7VsB0hxfpQ0wEzAbT2KQnpQpj0+RtBw="
+allowed_ips = ["10.77.0.2/32"]
+"#,
+        )
+        .unwrap();
+
+        let resolution = import_resolution_hint(&config);
+        let view = build_wrongcl_capability_view(&config, &resolution);
+        assert_eq!(view.active_support, WrongclSupportLevel::Partial);
+        assert!(!view.config_adaptable);
+        assert_eq!(view.missing_fields.len(), 1);
+        assert_eq!(view.missing_fields[0].field, "wireguard.private-key");
+        assert!(view.active_reason.contains("missing client-side fields"));
+        assert!(
+            view.active_reason
+                .contains("no TUN or routed-tunnel runtime")
+        );
     }
 
     #[test]

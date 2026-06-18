@@ -45,6 +45,12 @@ fn stack_summary_from_document(document: &WrongclClientConfigDocument) -> String
         return "TUIC → QUIC → TLS → TCP".to_string();
     }
     if matches!(
+        document.server.endpoint.proxy,
+        WrongclProxyDocument::Wireguard { .. }
+    ) {
+        return "Payload IP → WireGuard → UDP".to_string();
+    }
+    if matches!(
         document.server.endpoint.transport,
         WrongclTransportDocument::Quic { .. }
     ) {
@@ -66,6 +72,7 @@ fn stack_summary_from_document(document: &WrongclClientConfigDocument) -> String
     let mut parts: Vec<&str> = Vec::new();
     parts.push(match &document.server.endpoint.proxy {
         WrongclProxyDocument::Vless { .. } => "VLESS",
+        WrongclProxyDocument::Wireguard { .. } => "WireGuard",
         WrongclProxyDocument::Hysteria2 { .. } => "Hysteria2",
         WrongclProxyDocument::Tuic { .. } => "TUIC",
         WrongclProxyDocument::Trojan { .. } => "Trojan",
