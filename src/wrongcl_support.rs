@@ -274,8 +274,8 @@ fn wrongcl_profile_implemented(profile: &str) -> bool {
 
 fn wrongcl_profile_support_level(profile: &str) -> WrongclSupportLevel {
     match profile {
-        "raw" | "tls" | "anytls" | "shadowtls" | "hysteria2" | "tuic" | "quic" | "kcp" | "websocket"
-        | "httpupgrade" | "xhttp" | "grpc" | "trojan" | "mixed" | "shadowsocks" => {
+        "raw" | "tls" | "anytls" | "shadowtls" | "hysteria2" | "tuic" | "quic" | "kcp"
+        | "websocket" | "httpupgrade" | "xhttp" | "grpc" | "trojan" | "mixed" | "shadowsocks" => {
             WrongclSupportLevel::Supported
         }
         "reality" => WrongclSupportLevel::Partial,
@@ -304,7 +304,7 @@ fn wrongcl_support_reason(profile: &str, support: WrongclSupportLevel) -> String
         "hysteria2" => "Hysteria2 over QUIC/TLS with TCP and UDP".into(),
         "tuic" => "TUIC over QUIC/TLS with TCP and UDP".into(),
         "quic" => "VLESS over QUIC with TCP and UDP".into(),
-        "kcp" => "VLESS over KCP with TCP and UDP".into(),
+        "kcp" => "VLESS over KCP; full support when the active config is TCP-only".into(),
         "websocket" => {
             "VLESS over WebSocket; full support when the active config is TCP-only and not using Vision"
                 .into()
@@ -371,7 +371,7 @@ fn wrongcl_local_runtime_gap_reason(
     if payload_networks.contains(&PayloadNetworkId::Udp) {
         match profile {
             "raw" | "tls" | "anytls" | "shadowtls" | "reality" | "hysteria2" | "tuic" | "quic"
-            | "kcp" | "websocket" | "httpupgrade" | "xhttp" | "grpc" | "trojan" | "shadowsocks" => None,
+            | "websocket" | "httpupgrade" | "xhttp" | "grpc" | "trojan" | "shadowsocks" => None,
             _ => Some("wrongcl UDP relay is still being built out for this protocol family".into()),
         }
     } else if payload_networks.contains(&PayloadNetworkId::Ip) {

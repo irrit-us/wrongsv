@@ -33,7 +33,7 @@ pub struct ImportConfig {
     #[serde(default)]
     pub quic: Option<ImportQuicConfig>,
     #[serde(default)]
-    pub kcp: Option<toml::Value>,
+    pub kcp: Option<ImportKcpConfig>,
     #[serde(default)]
     pub webtransport: Option<toml::Value>,
     #[serde(default)]
