@@ -35,7 +35,7 @@ pub struct ImportConfig {
     #[serde(default)]
     pub kcp: Option<ImportKcpConfig>,
     #[serde(default)]
-    pub webtransport: Option<toml::Value>,
+    pub webtransport: Option<ImportWebTransportConfig>,
     #[serde(default)]
     pub shadowtls: Option<ImportShadowTlsConfig>,
     #[serde(default)]
@@ -295,6 +295,28 @@ pub struct ImportKcpConfig {
     pub tti: Option<u32>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportWebTransportConfig {
+    #[serde(default = "default_wt_path")]
+    pub path: String,
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default = "default_udp")]
+    pub udp_relay: bool,
+    #[serde(default)]
+    pub tls: Option<ImportWebTransportTlsConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportWebTransportTlsConfig {
+    #[serde(default)]
+    pub certificate: Option<String>,
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub dest: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportResolutionHint {
     pub active_profile: String,
@@ -347,6 +369,11 @@ pub enum WrongclTransportSpec {
         seed: String,
         mtu: u16,
         tti: u32,
+    },
+    WebTransport {
+        authority: String,
+        path: String,
+        udp_enabled: bool,
     },
     WebSocket {
         path: String,
@@ -470,6 +497,12 @@ pub enum WrongclTransportDocument {
         seed: String,
         mtu: u16,
         tti: u32,
+    },
+    Webtransport {
+        authority: String,
+        path: String,
+        #[serde(rename = "udp-enabled")]
+        udp_enabled: bool,
     },
     Websocket {
         path: String,
@@ -658,6 +691,11 @@ pub fn build_wrongcl_import_spec(
             kcp_transport_spec(config.kcp.as_ref())?,
             WrongclOuterSecuritySpec::None,
         ),
+        "webtransport" => (
+            vless_proxy_spec(config)?,
+            webtransport_transport_spec(config.webtransport.as_ref(), server_host)?,
+            WrongclOuterSecuritySpec::None,
+        ),
         "grpc" => {
             let grpc = config
                 .grpc
@@ -761,6 +799,10 @@ fn default_xhttp_path() -> String {
     "/xhttp".into()
 }
 
+fn default_wt_path() -> String {
+    "/wt".into()
+}
+
 fn default_udp() -> bool {
     true
 }
@@ -820,6 +862,18 @@ fn payload_networks_for(config: &ImportConfig, profile: &str) -> Vec<PayloadNetw
         "quic" => {
             if config
                 .quic
+                .as_ref()
+                .map(|options| options.udp_relay)
+                .unwrap_or(true)
+            {
+                vec![PayloadNetworkId::Tcp, PayloadNetworkId::Udp]
+            } else {
+                vec![PayloadNetworkId::Tcp]
+            }
+        }
+        "webtransport" => {
+            if config
+                .webtransport
                 .as_ref()
                 .map(|options| options.udp_relay)
                 .unwrap_or(true)
@@ -941,6 +995,15 @@ fn wrongcl_transport_document(transport: &WrongclTransportSpec) -> WrongclTransp
             seed: seed.clone(),
             mtu: *mtu,
             tti: *tti,
+        },
+        WrongclTransportSpec::WebTransport {
+            authority,
+            path,
+            udp_enabled,
+        } => WrongclTransportDocument::Webtransport {
+            authority: authority.clone(),
+            path: path.clone(),
+            udp_enabled: *udp_enabled,
         },
         WrongclTransportSpec::WebSocket { path, host } => WrongclTransportDocument::Websocket {
             path: path.clone(),
@@ -1233,6 +1296,36 @@ fn kcp_transport_spec(kcp: Option<&ImportKcpConfig>) -> Result<WrongclTransportS
     })
 }
 
+fn webtransport_transport_spec(
+    webtransport: Option<&ImportWebTransportConfig>,
+    server_host: &str,
+) -> Result<WrongclTransportSpec, String> {
+    let webtransport = webtransport.ok_or_else(|| "missing [webtransport] table".to_string())?;
+    let authority = webtransport
+        .host
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            webtransport
+                .tls
+                .as_ref()
+                .and_then(|tls| tls.dest.as_deref())
+                .map(host_from_dest)
+        })
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| server_host.to_string());
+    let path = if webtransport.path.starts_with('/') {
+        webtransport.path.clone()
+    } else {
+        format!("/{}", webtransport.path)
+    };
+    Ok(WrongclTransportSpec::WebTransport {
+        authority,
+        path,
+        udp_enabled: webtransport.udp_relay,
+    })
+}
+
 fn shadowtls_spec(
     shadowtls: Option<&ImportShadowTlsConfig>,
 ) -> Result<WrongclOuterSecuritySpec, String> {
@@ -1465,6 +1558,44 @@ tti = 20
     }
 
     #[test]
+    fn wrongcl_import_spec_builds_webtransport_config() {
+        let config: ImportConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[webtransport]
+path = "wt"
+host = "wt.example"
+udp_relay = false
+
+[webtransport.tls]
+dest = "cover.example:443"
+"#,
+        )
+        .unwrap();
+
+        let spec =
+            build_wrongcl_import_spec(&config, "webtransport", "wrong.example", false).unwrap();
+        assert_eq!(spec.active_profile, "webtransport");
+        assert_eq!(spec.listen_port, 443);
+        match spec.transport {
+            WrongclTransportSpec::WebTransport {
+                authority,
+                path,
+                udp_enabled,
+            } => {
+                assert_eq!(authority, "wt.example");
+                assert_eq!(path, "/wt");
+                assert!(!udp_enabled);
+            }
+            other => panic!("unexpected transport {other:?}"),
+        }
+    }
+
+    #[test]
     fn resolution_hint_detects_quic_tcp_only_when_udp_disabled() {
         let config: ImportConfig = toml::from_str(
             r#"
@@ -1481,6 +1612,27 @@ udp_relay = false
 
         let hint = import_resolution_hint(&config);
         assert_eq!(hint.active_profile, "quic");
+        assert_eq!(hint.payload_networks, vec![PayloadNetworkId::Tcp]);
+        assert_eq!(hint.base_carriers, vec![BaseCarrierId::Udp]);
+    }
+
+    #[test]
+    fn resolution_hint_detects_webtransport_tcp_only_when_udp_disabled() {
+        let config: ImportConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[webtransport]
+udp_relay = false
+"#,
+        )
+        .unwrap();
+
+        let hint = import_resolution_hint(&config);
+        assert_eq!(hint.active_profile, "webtransport");
         assert_eq!(hint.payload_networks, vec![PayloadNetworkId::Tcp]);
         assert_eq!(hint.base_carriers, vec![BaseCarrierId::Udp]);
     }

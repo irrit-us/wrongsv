@@ -56,6 +56,12 @@ fn stack_summary_from_document(document: &WrongclClientConfigDocument) -> String
     ) {
         return "VLESS → KCP → TCP".to_string();
     }
+    if matches!(
+        document.server.endpoint.transport,
+        WrongclTransportDocument::Webtransport { .. }
+    ) {
+        return "VLESS → WebTransport → QUIC → TLS → TCP".to_string();
+    }
 
     let mut parts: Vec<&str> = Vec::new();
     parts.push(match &document.server.endpoint.proxy {
@@ -74,6 +80,7 @@ fn stack_summary_from_document(document: &WrongclClientConfigDocument) -> String
         WrongclTransportDocument::Grpc { .. } => "gRPC",
         WrongclTransportDocument::Quic { .. } => "QUIC",
         WrongclTransportDocument::Kcp { .. } => "KCP",
+        WrongclTransportDocument::Webtransport { .. } => "WebTransport",
     });
     match &document.server.endpoint.outer_security {
         WrongclOuterSecurityDocument::None => {}
