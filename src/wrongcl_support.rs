@@ -273,6 +273,7 @@ fn wrongcl_profile_implemented(profile: &str) -> bool {
             | "mixed"
             | "shadowsocks"
             | "wireguard"
+            | "naive"
     )
 }
 
@@ -280,7 +281,7 @@ fn wrongcl_profile_support_level(profile: &str) -> WrongclSupportLevel {
     match profile {
         "raw" | "tls" | "anytls" | "shadowtls" | "hysteria2" | "tuic" | "quic" | "kcp" | "meek"
         | "gdocsviewer" | "webtransport" | "websocket" | "httpupgrade" | "xhttp" | "grpc"
-        | "trojan" | "mixed" | "shadowsocks" => WrongclSupportLevel::Supported,
+        | "trojan" | "mixed" | "shadowsocks" | "naive" => WrongclSupportLevel::Supported,
         "wireguard" | "reality" => WrongclSupportLevel::Partial,
         _ => WrongclSupportLevel::Unsupported,
     }
@@ -311,6 +312,7 @@ fn wrongcl_support_reason(profile: &str, support: WrongclSupportLevel) -> String
         "meek" => "VLESS over Meek with TCP and UDP".into(),
         "gdocsviewer" => "VLESS over Google Docs Viewer with TCP and UDP".into(),
         "webtransport" => "VLESS over WebTransport with TCP and UDP".into(),
+        "naive" => "Naive over HTTP/2 CONNECT over TLS with TCP".into(),
         "wireguard" => {
             "WireGuard tunnel service; needs a client private-key and a helper-backed runtime"
                 .into()
@@ -410,6 +412,7 @@ fn wrongcl_stack_label(profile: &str) -> &'static str {
         "meek" => "VLESS over Meek",
         "gdocsviewer" => "VLESS over Google Docs Viewer",
         "webtransport" => "VLESS over WebTransport",
+        "naive" => "Naive",
         "wireguard" => "WireGuard",
         "websocket" => "VLESS over WebSocket",
         "httpupgrade" => "VLESS over HTTPUpgrade",
@@ -561,6 +564,33 @@ path = "/meek"
         assert!(view.config_adaptable);
         assert!(view.missing_fields.is_empty());
         assert!(view.active_reason.contains("Meek"));
+    }
+
+    #[test]
+    fn wrongcl_capability_view_marks_naive_as_supported() {
+        let config: ImportConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:443"
+
+[naive]
+padding_header_name = "Padding"
+
+[naive.tls]
+dest = "cover.example:443"
+
+[[naive.users]]
+username = "alice"
+password = "secret"
+"#,
+        )
+        .unwrap();
+
+        let resolution = import_resolution_hint(&config);
+        let view = build_wrongcl_capability_view(&config, &resolution);
+        assert_eq!(view.active_support, WrongclSupportLevel::Supported);
+        assert!(view.config_adaptable);
+        assert!(view.missing_fields.is_empty());
+        assert!(view.active_reason.contains("Naive"));
     }
 
     #[test]

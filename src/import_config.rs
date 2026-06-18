@@ -54,7 +54,7 @@ pub struct ImportConfig {
     #[serde(default)]
     pub wireguard: Option<ImportWireGuardConfig>,
     #[serde(default)]
-    pub naive: Option<toml::Value>,
+    pub naive: Option<ImportNaiveConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -359,6 +359,34 @@ pub struct ImportWebTransportTlsConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct ImportNaiveConfig {
+    #[serde(default)]
+    pub users: Vec<ImportNaiveUser>,
+    #[serde(default = "default_naive_padding_header")]
+    pub padding_header_name: String,
+    #[serde(default)]
+    pub tls: Option<ImportNaiveTlsConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportNaiveUser {
+    pub username: String,
+    pub password: String,
+    #[serde(default)]
+    pub email: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportNaiveTlsConfig {
+    #[serde(default)]
+    pub certificate: Option<String>,
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub dest: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct ImportWireGuardConfig {
     pub private_key: String,
     #[serde(default)]
@@ -413,6 +441,11 @@ pub enum WrongclProxySpec {
     Vless {
         uuid: String,
         flow: String,
+    },
+    Naive {
+        username: String,
+        password: String,
+        padding_header_name: String,
     },
     WireGuard {
         private_key: String,
@@ -549,6 +582,12 @@ pub enum WrongclProxyDocument {
         uuid: String,
         #[serde(default)]
         flow: String,
+    },
+    Naive {
+        username: String,
+        password: String,
+        #[serde(rename = "padding-header-name")]
+        padding_header_name: String,
     },
     Wireguard {
         #[serde(rename = "private-key")]
@@ -825,6 +864,11 @@ pub fn build_wrongcl_import_spec(
                     }),
             )
         }
+        "naive" => (
+            naive_proxy_spec(config)?,
+            WrongclTransportSpec::Raw,
+            naive_outer_tls_spec(config, server_host)?,
+        ),
         "wireguard" => (
             wireguard_proxy_spec(config, draft_mode)?,
             WrongclTransportSpec::Raw,
@@ -986,6 +1030,10 @@ fn default_gdocsviewer_path() -> String {
     "/gdocsviewer".into()
 }
 
+fn default_naive_padding_header() -> String {
+    "Padding".into()
+}
+
 fn default_wt_path() -> String {
     "/wt".into()
 }
@@ -1142,6 +1190,15 @@ fn wrongcl_proxy_document(proxy: &WrongclProxySpec) -> WrongclProxyDocument {
         WrongclProxySpec::Vless { uuid, flow } => WrongclProxyDocument::Vless {
             uuid: uuid.clone(),
             flow: flow.clone(),
+        },
+        WrongclProxySpec::Naive {
+            username,
+            password,
+            padding_header_name,
+        } => WrongclProxyDocument::Naive {
+            username: username.clone(),
+            password: password.clone(),
+            padding_header_name: padding_header_name.clone(),
         },
         WrongclProxySpec::WireGuard {
             private_key,
@@ -1400,6 +1457,31 @@ fn mixed_proxy_spec(config: &ImportConfig) -> Result<WrongclProxySpec, String> {
     })
 }
 
+fn naive_proxy_spec(config: &ImportConfig) -> Result<WrongclProxySpec, String> {
+    let naive = config
+        .naive
+        .as_ref()
+        .ok_or_else(|| "missing [naive] table".to_string())?;
+    let user = naive
+        .users
+        .first()
+        .ok_or_else(|| "Naive requires one [[naive.users]] entry".to_string())?;
+    if user.username.trim().is_empty() {
+        return Err("Naive username must be non-empty".to_string());
+    }
+    if user.password.trim().is_empty() {
+        return Err("Naive password must be non-empty".to_string());
+    }
+    if naive.padding_header_name.trim().is_empty() {
+        return Err("Naive padding_header_name must be non-empty".to_string());
+    }
+    Ok(WrongclProxySpec::Naive {
+        username: user.username.clone(),
+        password: user.password.clone(),
+        padding_header_name: naive.padding_header_name.clone(),
+    })
+}
+
 fn wireguard_proxy_spec(
     config: &ImportConfig,
     draft_mode: bool,
@@ -1438,6 +1520,28 @@ fn wireguard_proxy_spec(
         allowed_ips,
         mtu: wireguard.mtu.unwrap_or(1400),
     })
+}
+
+fn naive_outer_tls_spec(
+    config: &ImportConfig,
+    server_host: &str,
+) -> Result<WrongclOuterSecuritySpec, String> {
+    let naive = config
+        .naive
+        .as_ref()
+        .ok_or_else(|| "missing [naive] table".to_string())?;
+    Ok(tls_spec(
+        Some(&ImportTlsConfig {
+            server_name: naive
+                .tls
+                .as_ref()
+                .and_then(|tls| tls.dest.as_deref())
+                .map(host_from_dest),
+            alpn: Some(vec!["h2".to_string()]),
+            insecure: Some(true),
+        }),
+        server_host,
+    ))
 }
 
 fn shadowsocks_proxy_spec(config: &ImportConfig) -> Result<WrongclProxySpec, String> {
@@ -1949,6 +2053,54 @@ dest = "cover.example:443"
         match spec.outer_security {
             WrongclOuterSecuritySpec::Tls { server_name, .. } => {
                 assert_eq!(server_name, "cover.example");
+            }
+            other => panic!("unexpected outer security {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wrongcl_import_spec_builds_naive_config() {
+        let config: ImportConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:443"
+
+[naive]
+padding_header_name = "Padding"
+
+[naive.tls]
+dest = "cover.example:443"
+
+[[naive.users]]
+username = "alice"
+password = "secret"
+email = "alice@example.com"
+"#,
+        )
+        .unwrap();
+
+        let spec = build_wrongcl_import_spec(&config, "naive", "wrong.example", false).unwrap();
+        assert_eq!(spec.active_profile, "naive");
+        match spec.proxy {
+            WrongclProxySpec::Naive {
+                username,
+                password,
+                padding_header_name,
+            } => {
+                assert_eq!(username, "alice");
+                assert_eq!(password, "secret");
+                assert_eq!(padding_header_name, "Padding");
+            }
+            other => panic!("unexpected proxy {other:?}"),
+        }
+        match spec.outer_security {
+            WrongclOuterSecuritySpec::Tls {
+                server_name,
+                insecure_skip_verify,
+                alpn,
+            } => {
+                assert_eq!(server_name, "cover.example");
+                assert!(insecure_skip_verify);
+                assert_eq!(alpn, vec!["h2".to_string()]);
             }
             other => panic!("unexpected outer security {other:?}"),
         }
