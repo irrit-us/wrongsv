@@ -256,6 +256,7 @@ fn wrongcl_profile_implemented(profile: &str) -> bool {
             | "tls"
             | "reality"
             | "anytls"
+            | "shadowtls"
             | "websocket"
             | "httpupgrade"
             | "xhttp"
@@ -268,8 +269,8 @@ fn wrongcl_profile_implemented(profile: &str) -> bool {
 
 fn wrongcl_profile_support_level(profile: &str) -> WrongclSupportLevel {
     match profile {
-        "raw" | "tls" | "anytls" | "websocket" | "httpupgrade" | "xhttp" | "grpc" | "trojan"
-        | "mixed" | "shadowsocks" => WrongclSupportLevel::Supported,
+        "raw" | "tls" | "anytls" | "shadowtls" | "websocket" | "httpupgrade" | "xhttp" | "grpc"
+        | "trojan" | "mixed" | "shadowsocks" => WrongclSupportLevel::Supported,
         "reality" => WrongclSupportLevel::Partial,
         _ => WrongclSupportLevel::Unsupported,
     }
@@ -292,6 +293,7 @@ fn wrongcl_support_reason(profile: &str, support: WrongclSupportLevel) -> String
             "VLESS over AnyTLS; full support when the active config is TCP-only and not using Vision"
                 .into()
         }
+        "shadowtls" => "VLESS over ShadowTLS with TCP and UDP".into(),
         "websocket" => {
             "VLESS over WebSocket; full support when the active config is TCP-only and not using Vision"
                 .into()
@@ -344,8 +346,8 @@ fn wrongcl_local_runtime_gap_reason(
 ) -> Option<String> {
     if payload_networks.contains(&PayloadNetworkId::Udp) {
         match profile {
-            "raw" | "tls" | "anytls" | "reality" | "websocket" | "httpupgrade" | "xhttp"
-            | "grpc" | "trojan" | "shadowsocks" => None,
+            "raw" | "tls" | "anytls" | "shadowtls" | "reality" | "websocket" | "httpupgrade"
+            | "xhttp" | "grpc" | "trojan" | "shadowsocks" => None,
             _ => Some("wrongcl UDP relay is still being built out for this protocol family".into()),
         }
     } else if payload_networks.contains(&PayloadNetworkId::Ip) {
@@ -361,6 +363,7 @@ fn wrongcl_stack_label(profile: &str) -> &'static str {
         "tls" => "VLESS over TLS",
         "reality" => "VLESS over REALITY",
         "anytls" => "VLESS over AnyTLS",
+        "shadowtls" => "VLESS over ShadowTLS",
         "websocket" => "VLESS over WebSocket",
         "httpupgrade" => "VLESS over HTTPUpgrade",
         "xhttp" => "VLESS over XHTTP",
@@ -422,6 +425,29 @@ dest = "www.microsoft.com:443"
         assert_eq!(view.missing_fields.len(), 1);
         assert_eq!(view.missing_fields[0].field, "reality.public-key");
         assert!(view.active_reason.contains("missing client-side fields"));
+    }
+
+    #[test]
+    fn wrongcl_capability_view_marks_shadowtls_as_supported() {
+        let config: ImportConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[shadowtls]
+password = "shadow-pass"
+"#,
+        )
+        .unwrap();
+
+        let resolution = import_resolution_hint(&config);
+        let view = build_wrongcl_capability_view(&config, &resolution);
+        assert_eq!(view.active_support, WrongclSupportLevel::Supported);
+        assert!(view.config_adaptable);
+        assert!(view.missing_fields.is_empty());
+        assert!(view.active_reason.contains("ShadowTLS"));
     }
 
     #[test]

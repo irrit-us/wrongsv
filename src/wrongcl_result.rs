@@ -51,6 +51,7 @@ fn stack_summary_from_document(document: &WrongclClientConfigDocument) -> String
         WrongclOuterSecurityDocument::Tls { .. } => parts.push("TLS"),
         WrongclOuterSecurityDocument::Reality { .. } => parts.push("REALITY"),
         WrongclOuterSecurityDocument::AnyTls { .. } => parts.push("AnyTLS"),
+        WrongclOuterSecurityDocument::ShadowTls { .. } => parts.push("ShadowTLS"),
     }
     parts.push("TCP");
     parts.join(" → ")

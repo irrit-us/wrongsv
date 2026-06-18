@@ -37,7 +37,7 @@ pub struct ImportConfig {
     #[serde(default)]
     pub webtransport: Option<toml::Value>,
     #[serde(default)]
-    pub shadowtls: Option<toml::Value>,
+    pub shadowtls: Option<ImportShadowTlsConfig>,
     #[serde(default)]
     pub vmess: Option<toml::Value>,
     #[serde(default)]
@@ -121,6 +121,13 @@ pub struct ImportAnyTlsConfig {
         alias = "insecure-skip-verify"
     )]
     pub insecure: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportShadowTlsConfig {
+    pub password: String,
+    #[serde(default)]
+    pub dest: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -257,6 +264,10 @@ pub enum WrongclOuterSecuritySpec {
         insecure_skip_verify: bool,
         alpn: Vec<String>,
     },
+    ShadowTls {
+        server_name: String,
+        password: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -370,6 +381,12 @@ pub enum WrongclOuterSecurityDocument {
         #[serde(default)]
         alpn: Vec<String>,
     },
+    #[serde(rename = "shadowtls")]
+    ShadowTls {
+        #[serde(rename = "server-name")]
+        server_name: String,
+        password: String,
+    },
 }
 
 pub fn load_import_config_path(path: impl AsRef<Path>) -> Result<ImportConfig, String> {
@@ -418,6 +435,11 @@ pub fn build_wrongcl_import_spec(
             vless_proxy_spec(config)?,
             WrongclTransportSpec::Raw,
             anytls_spec(config.anytls.as_ref(), server_host)?,
+        ),
+        "shadowtls" => (
+            vless_proxy_spec(config)?,
+            WrongclTransportSpec::Raw,
+            shadowtls_spec(config.shadowtls.as_ref())?,
         ),
         "websocket" => {
             let websocket = config
@@ -757,6 +779,13 @@ fn wrongcl_outer_security_document(
             insecure_skip_verify: *insecure_skip_verify,
             alpn: alpn.clone(),
         },
+        WrongclOuterSecuritySpec::ShadowTls {
+            server_name,
+            password,
+        } => WrongclOuterSecurityDocument::ShadowTls {
+            server_name: server_name.clone(),
+            password: password.clone(),
+        },
     }
 }
 
@@ -886,6 +915,24 @@ fn anytls_spec(
     })
 }
 
+fn shadowtls_spec(
+    shadowtls: Option<&ImportShadowTlsConfig>,
+) -> Result<WrongclOuterSecuritySpec, String> {
+    let shadowtls = shadowtls.ok_or_else(|| "missing [shadowtls] table".to_string())?;
+    if shadowtls.password.trim().is_empty() {
+        return Err("ShadowTLS [shadowtls].password is required".to_string());
+    }
+    Ok(WrongclOuterSecuritySpec::ShadowTls {
+        server_name: shadowtls
+            .dest
+            .as_deref()
+            .map(host_from_dest)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "cloudfront.net".to_string()),
+        password: shadowtls.password.clone(),
+    })
+}
+
 fn host_from_dest(dest: &str) -> String {
     dest.rsplit_once(':')
         .map(|(host, _)| host.to_string())
@@ -956,6 +1003,36 @@ dest = "www.microsoft.com:443"
                 assert_eq!(public_key, "");
                 assert_eq!(short_id, "aaaaaaaa");
                 assert_eq!(raw_pubkey, "");
+            }
+            other => panic!("unexpected outer security {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wrongcl_import_spec_builds_shadowtls_config() {
+        let config: ImportConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[shadowtls]
+password = "shadow-pass"
+"#,
+        )
+        .unwrap();
+
+        let spec = build_wrongcl_import_spec(&config, "shadowtls", "wrong.example", false).unwrap();
+        assert_eq!(spec.active_profile, "shadowtls");
+        assert_eq!(spec.listen_port, 443);
+        match spec.outer_security {
+            WrongclOuterSecuritySpec::ShadowTls {
+                server_name,
+                password,
+            } => {
+                assert_eq!(server_name, "cloudfront.net");
+                assert_eq!(password, "shadow-pass");
             }
             other => panic!("unexpected outer security {other:?}"),
         }
