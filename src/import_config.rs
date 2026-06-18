@@ -27,7 +27,7 @@ pub struct ImportConfig {
     #[serde(default)]
     pub xhttp: Option<ImportXhttpConfig>,
     #[serde(default)]
-    pub meek: Option<toml::Value>,
+    pub meek: Option<ImportMeekConfig>,
     #[serde(default)]
     pub gdocsviewer: Option<toml::Value>,
     #[serde(default)]
@@ -158,6 +158,26 @@ pub struct ImportXhttpConfig {
     pub host: Option<String>,
     #[serde(default)]
     pub tls: Option<ImportTlsConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportMeekConfig {
+    #[serde(default = "default_meek_path")]
+    pub path: String,
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub tls: Option<ImportMeekTlsConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportMeekTlsConfig {
+    #[serde(default)]
+    pub certificate: Option<String>,
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub dest: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -370,6 +390,10 @@ pub enum WrongclTransportSpec {
         mtu: u16,
         tti: u32,
     },
+    Meek {
+        path: String,
+        host: Option<String>,
+    },
     WebTransport {
         authority: String,
         path: String,
@@ -497,6 +521,11 @@ pub enum WrongclTransportDocument {
         seed: String,
         mtu: u16,
         tti: u32,
+    },
+    Meek {
+        path: String,
+        #[serde(default)]
+        host: Option<String>,
     },
     Webtransport {
         authority: String,
@@ -681,6 +710,35 @@ pub fn build_wrongcl_import_spec(
                     }),
             )
         }
+        "meek" => {
+            let meek = config
+                .meek
+                .as_ref()
+                .ok_or_else(|| "missing [meek] table".to_string())?;
+            (
+                vless_proxy_spec(config)?,
+                WrongclTransportSpec::Meek {
+                    path: if meek.path.starts_with('/') {
+                        meek.path.clone()
+                    } else {
+                        format!("/{}", meek.path)
+                    },
+                    host: meek.host.clone(),
+                },
+                meek.tls
+                    .as_ref()
+                    .map_or(WrongclOuterSecuritySpec::None, |tls| {
+                        tls_spec(
+                            Some(&ImportTlsConfig {
+                                server_name: tls.dest.clone().map(|dest| host_from_dest(&dest)),
+                                alpn: None,
+                                insecure: Some(true),
+                            }),
+                            server_host,
+                        )
+                    }),
+            )
+        }
         "quic" => (
             vless_proxy_spec(config)?,
             quic_transport_spec(config.quic.as_ref())?,
@@ -797,6 +855,10 @@ fn default_hu_path() -> String {
 
 fn default_xhttp_path() -> String {
     "/xhttp".into()
+}
+
+fn default_meek_path() -> String {
+    "/".into()
 }
 
 fn default_wt_path() -> String {
@@ -995,6 +1057,10 @@ fn wrongcl_transport_document(transport: &WrongclTransportSpec) -> WrongclTransp
             seed: seed.clone(),
             mtu: *mtu,
             tti: *tti,
+        },
+        WrongclTransportSpec::Meek { path, host } => WrongclTransportDocument::Meek {
+            path: path.clone(),
+            host: host.clone(),
         },
         WrongclTransportSpec::WebTransport {
             authority,
@@ -1592,6 +1658,42 @@ dest = "cover.example:443"
                 assert!(!udp_enabled);
             }
             other => panic!("unexpected transport {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wrongcl_import_spec_builds_meek_config() {
+        let config: ImportConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[meek]
+path = "/meek"
+host = "cdn.example"
+
+[meek.tls]
+dest = "cover.example:443"
+"#,
+        )
+        .unwrap();
+
+        let spec = build_wrongcl_import_spec(&config, "meek", "wrong.example", false).unwrap();
+        assert_eq!(spec.active_profile, "meek");
+        match spec.transport {
+            WrongclTransportSpec::Meek { path, host } => {
+                assert_eq!(path, "/meek");
+                assert_eq!(host.as_deref(), Some("cdn.example"));
+            }
+            other => panic!("unexpected transport {other:?}"),
+        }
+        match spec.outer_security {
+            WrongclOuterSecuritySpec::Tls { server_name, .. } => {
+                assert_eq!(server_name, "cover.example");
+            }
+            other => panic!("unexpected outer security {other:?}"),
         }
     }
 

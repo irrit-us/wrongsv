@@ -74,6 +74,7 @@ fn stack_summary_from_document(document: &WrongclClientConfigDocument) -> String
     });
     parts.push(match &document.server.endpoint.transport {
         WrongclTransportDocument::Raw => "raw",
+        WrongclTransportDocument::Meek { .. } => "Meek",
         WrongclTransportDocument::Websocket { .. } => "WebSocket",
         WrongclTransportDocument::Httpupgrade { .. } => "HTTPUpgrade",
         WrongclTransportDocument::Xhttp { .. } => "XHTTP",
