@@ -47,7 +47,7 @@ pub struct ImportConfig {
     #[serde(default)]
     pub hysteria2: Option<ImportHysteria2Config>,
     #[serde(default)]
-    pub tuic: Option<toml::Value>,
+    pub tuic: Option<ImportTuicConfig>,
     #[serde(default)]
     pub mixed: Option<ImportMixedConfig>,
     #[serde(default)]
@@ -239,6 +239,38 @@ pub struct ImportHysteria2ObfsConfig {
     pub max_packet_size: Option<usize>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportTuicConfig {
+    #[serde(default)]
+    pub users: Vec<ImportTuicUser>,
+    #[serde(default)]
+    pub congestion_control: Option<String>,
+    #[serde(default)]
+    pub auth_timeout: Option<u64>,
+    #[serde(default)]
+    pub zero_rtt_handshake: bool,
+    #[serde(default)]
+    pub heartbeat: Option<u64>,
+    #[serde(default)]
+    pub tls: Option<ImportTuicTlsConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportTuicUser {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+    pub uuid: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportTuicTlsConfig {
+    #[serde(default)]
+    pub dest: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportResolutionHint {
     pub active_profile: String,
@@ -265,6 +297,11 @@ pub enum WrongclProxySpec {
         server_name: String,
         password: String,
         udp_enabled: bool,
+    },
+    Tuic {
+        server_name: String,
+        uuid: String,
+        password: String,
     },
     Trojan {
         password: String,
@@ -357,6 +394,12 @@ pub enum WrongclProxyDocument {
         password: String,
         #[serde(rename = "udp-enabled")]
         udp_enabled: bool,
+    },
+    Tuic {
+        #[serde(rename = "server-name")]
+        server_name: String,
+        uuid: String,
+        password: String,
     },
     Trojan {
         password: String,
@@ -575,6 +618,11 @@ pub fn build_wrongcl_import_spec(
             WrongclTransportSpec::Raw,
             WrongclOuterSecuritySpec::None,
         ),
+        "tuic" => (
+            tuic_proxy_spec(config)?,
+            WrongclTransportSpec::Raw,
+            WrongclOuterSecuritySpec::None,
+        ),
         "trojan" => (
             trojan_proxy_spec(config)?,
             WrongclTransportSpec::Raw,
@@ -785,6 +833,15 @@ fn wrongcl_proxy_document(proxy: &WrongclProxySpec) -> WrongclProxyDocument {
             password: password.clone(),
             udp_enabled: *udp_enabled,
         },
+        WrongclProxySpec::Tuic {
+            server_name,
+            uuid,
+            password,
+        } => WrongclProxyDocument::Tuic {
+            server_name: server_name.clone(),
+            uuid: uuid.clone(),
+            password: password.clone(),
+        },
         WrongclProxySpec::Trojan { password } => WrongclProxyDocument::Trojan {
             password: password.clone(),
         },
@@ -934,6 +991,35 @@ fn hysteria2_proxy_spec(config: &ImportConfig) -> Result<WrongclProxySpec, Strin
         server_name,
         password,
         udp_enabled: !hysteria2.disable_udp,
+    })
+}
+
+fn tuic_proxy_spec(config: &ImportConfig) -> Result<WrongclProxySpec, String> {
+    let tuic = config
+        .tuic
+        .as_ref()
+        .ok_or_else(|| "missing [tuic] table".to_string())?;
+    let user = tuic
+        .users
+        .first()
+        .ok_or_else(|| "TUIC requires one [[tuic.users]] entry".to_string())?;
+    if user.password.trim().is_empty() {
+        return Err("TUIC user password must be non-empty".to_string());
+    }
+    if user.uuid.trim().is_empty() {
+        return Err("TUIC user UUID must be non-empty".to_string());
+    }
+    let server_name = tuic
+        .tls
+        .as_ref()
+        .and_then(|tls| tls.dest.as_deref())
+        .map(host_from_dest)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "foo.cloudfront.net".to_string());
+    Ok(WrongclProxySpec::Tuic {
+        server_name,
+        uuid: user.uuid.clone(),
+        password: user.password.clone(),
     })
 }
 
@@ -1202,6 +1288,38 @@ disable_udp = true
         assert_eq!(hint.active_profile, "hysteria2");
         assert_eq!(hint.payload_networks, vec![PayloadNetworkId::Tcp]);
         assert_eq!(hint.base_carriers, vec![BaseCarrierId::Udp]);
+    }
+
+    #[test]
+    fn wrongcl_import_spec_builds_tuic_config() {
+        let config: ImportConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:443"
+
+[tuic]
+
+[[tuic.users]]
+uuid = "12345678-1234-1234-1234-123456789abc"
+password = "tuic-pass"
+"#,
+        )
+        .unwrap();
+
+        let spec = build_wrongcl_import_spec(&config, "tuic", "wrong.example", false).unwrap();
+        assert_eq!(spec.active_profile, "tuic");
+        assert_eq!(spec.listen_port, 443);
+        match spec.proxy {
+            WrongclProxySpec::Tuic {
+                server_name,
+                uuid,
+                password,
+            } => {
+                assert_eq!(server_name, "foo.cloudfront.net");
+                assert_eq!(uuid, "12345678-1234-1234-1234-123456789abc");
+                assert_eq!(password, "tuic-pass");
+            }
+            other => panic!("unexpected proxy {other:?}"),
+        }
     }
 
     #[test]
