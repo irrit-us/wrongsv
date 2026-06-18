@@ -285,6 +285,16 @@ pub struct ImportQuicTlsConfig {
     pub dest: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportKcpConfig {
+    #[serde(default)]
+    pub seed: Option<String>,
+    #[serde(default)]
+    pub mtu: Option<usize>,
+    #[serde(default)]
+    pub tti: Option<u32>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportResolutionHint {
     pub active_profile: String,
@@ -333,6 +343,11 @@ pub enum WrongclProxySpec {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WrongclTransportSpec {
     Raw,
+    Kcp {
+        seed: String,
+        mtu: u16,
+        tti: u32,
+    },
     WebSocket {
         path: String,
         host: Option<String>,
@@ -450,6 +465,12 @@ pub enum WrongclProxyDocument {
 pub enum WrongclTransportDocument {
     #[default]
     Raw,
+    Kcp {
+        #[serde(default)]
+        seed: String,
+        mtu: u16,
+        tti: u32,
+    },
     Websocket {
         path: String,
         #[serde(default)]
@@ -630,6 +651,11 @@ pub fn build_wrongcl_import_spec(
         "quic" => (
             vless_proxy_spec(config)?,
             quic_transport_spec(config.quic.as_ref())?,
+            WrongclOuterSecuritySpec::None,
+        ),
+        "kcp" => (
+            vless_proxy_spec(config)?,
+            kcp_transport_spec(config.kcp.as_ref())?,
             WrongclOuterSecuritySpec::None,
         ),
         "grpc" => {
@@ -911,6 +937,11 @@ fn wrongcl_proxy_document(proxy: &WrongclProxySpec) -> WrongclProxyDocument {
 fn wrongcl_transport_document(transport: &WrongclTransportSpec) -> WrongclTransportDocument {
     match transport {
         WrongclTransportSpec::Raw => WrongclTransportDocument::Raw,
+        WrongclTransportSpec::Kcp { seed, mtu, tti } => WrongclTransportDocument::Kcp {
+            seed: seed.clone(),
+            mtu: *mtu,
+            tti: *tti,
+        },
         WrongclTransportSpec::WebSocket { path, host } => WrongclTransportDocument::Websocket {
             path: path.clone(),
             host: host.clone(),
@@ -1193,6 +1224,15 @@ fn quic_transport_spec(quic: Option<&ImportQuicConfig>) -> Result<WrongclTranspo
     })
 }
 
+fn kcp_transport_spec(kcp: Option<&ImportKcpConfig>) -> Result<WrongclTransportSpec, String> {
+    let kcp = kcp.ok_or_else(|| "missing [kcp] table".to_string())?;
+    Ok(WrongclTransportSpec::Kcp {
+        seed: kcp.seed.clone().unwrap_or_default(),
+        mtu: kcp.mtu.unwrap_or(1350) as u16,
+        tti: kcp.tti.unwrap_or(50),
+    })
+}
+
 fn shadowtls_spec(
     shadowtls: Option<&ImportShadowTlsConfig>,
 ) -> Result<WrongclOuterSecuritySpec, String> {
@@ -1389,6 +1429,36 @@ udp_relay = true
             } => {
                 assert_eq!(server_name, "cloudfront.net");
                 assert!(udp_enabled);
+            }
+            other => panic!("unexpected transport {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wrongcl_import_spec_builds_kcp_config() {
+        let config: ImportConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[kcp]
+seed = "kcp-seed"
+mtu = 1400
+tti = 20
+"#,
+        )
+        .unwrap();
+
+        let spec = build_wrongcl_import_spec(&config, "kcp", "wrong.example", false).unwrap();
+        assert_eq!(spec.active_profile, "kcp");
+        assert_eq!(spec.listen_port, 443);
+        match spec.transport {
+            WrongclTransportSpec::Kcp { seed, mtu, tti } => {
+                assert_eq!(seed, "kcp-seed");
+                assert_eq!(mtu, 1400);
+                assert_eq!(tti, 20);
             }
             other => panic!("unexpected transport {other:?}"),
         }
