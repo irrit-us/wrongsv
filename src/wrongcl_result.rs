@@ -44,6 +44,12 @@ fn stack_summary_from_document(document: &WrongclClientConfigDocument) -> String
     ) {
         return "TUIC → QUIC → TLS → TCP".to_string();
     }
+    if matches!(
+        document.server.endpoint.transport,
+        WrongclTransportDocument::Quic { .. }
+    ) {
+        return "VLESS → QUIC → TLS → TCP".to_string();
+    }
 
     let mut parts: Vec<&str> = Vec::new();
     parts.push(match &document.server.endpoint.proxy {
@@ -60,6 +66,7 @@ fn stack_summary_from_document(document: &WrongclClientConfigDocument) -> String
         WrongclTransportDocument::Httpupgrade { .. } => "HTTPUpgrade",
         WrongclTransportDocument::Xhttp { .. } => "XHTTP",
         WrongclTransportDocument::Grpc { .. } => "gRPC",
+        WrongclTransportDocument::Quic { .. } => "QUIC",
     });
     match &document.server.endpoint.outer_security {
         WrongclOuterSecurityDocument::None => {}

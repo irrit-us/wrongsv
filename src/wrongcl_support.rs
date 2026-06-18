@@ -260,6 +260,7 @@ fn wrongcl_profile_implemented(profile: &str) -> bool {
             | "shadowtls"
             | "hysteria2"
             | "tuic"
+            | "quic"
             | "websocket"
             | "httpupgrade"
             | "xhttp"
@@ -272,7 +273,7 @@ fn wrongcl_profile_implemented(profile: &str) -> bool {
 
 fn wrongcl_profile_support_level(profile: &str) -> WrongclSupportLevel {
     match profile {
-        "raw" | "tls" | "anytls" | "shadowtls" | "hysteria2" | "tuic" | "websocket"
+        "raw" | "tls" | "anytls" | "shadowtls" | "hysteria2" | "tuic" | "quic" | "websocket"
         | "httpupgrade" | "xhttp" | "grpc" | "trojan" | "mixed" | "shadowsocks" => {
             WrongclSupportLevel::Supported
         }
@@ -301,6 +302,7 @@ fn wrongcl_support_reason(profile: &str, support: WrongclSupportLevel) -> String
         "shadowtls" => "VLESS over ShadowTLS with TCP and UDP".into(),
         "hysteria2" => "Hysteria2 over QUIC/TLS with TCP and UDP".into(),
         "tuic" => "TUIC over QUIC/TLS with TCP and UDP".into(),
+        "quic" => "VLESS over QUIC with TCP and UDP".into(),
         "websocket" => {
             "VLESS over WebSocket; full support when the active config is TCP-only and not using Vision"
                 .into()
@@ -366,7 +368,7 @@ fn wrongcl_local_runtime_gap_reason(
 
     if payload_networks.contains(&PayloadNetworkId::Udp) {
         match profile {
-            "raw" | "tls" | "anytls" | "shadowtls" | "reality" | "hysteria2" | "tuic"
+            "raw" | "tls" | "anytls" | "shadowtls" | "reality" | "hysteria2" | "tuic" | "quic"
             | "websocket" | "httpupgrade" | "xhttp" | "grpc" | "trojan" | "shadowsocks" => None,
             _ => Some("wrongcl UDP relay is still being built out for this protocol family".into()),
         }
@@ -386,6 +388,7 @@ fn wrongcl_stack_label(profile: &str) -> &'static str {
         "shadowtls" => "VLESS over ShadowTLS",
         "hysteria2" => "Hysteria2",
         "tuic" => "TUIC",
+        "quic" => "VLESS over QUIC",
         "websocket" => "VLESS over WebSocket",
         "httpupgrade" => "VLESS over HTTPUpgrade",
         "xhttp" => "VLESS over XHTTP",
@@ -540,6 +543,29 @@ password = "tuic-pass"
         assert!(view.config_adaptable);
         assert!(view.missing_fields.is_empty());
         assert!(view.active_reason.contains("TUIC"));
+    }
+
+    #[test]
+    fn wrongcl_capability_view_marks_quic_as_supported() {
+        let config: ImportConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[quic]
+udp_relay = true
+"#,
+        )
+        .unwrap();
+
+        let resolution = import_resolution_hint(&config);
+        let view = build_wrongcl_capability_view(&config, &resolution);
+        assert_eq!(view.active_support, WrongclSupportLevel::Supported);
+        assert!(view.config_adaptable);
+        assert!(view.missing_fields.is_empty());
+        assert!(view.active_reason.contains("QUIC"));
     }
 
     #[test]

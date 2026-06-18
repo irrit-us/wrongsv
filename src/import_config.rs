@@ -31,7 +31,7 @@ pub struct ImportConfig {
     #[serde(default)]
     pub gdocsviewer: Option<toml::Value>,
     #[serde(default)]
-    pub quic: Option<toml::Value>,
+    pub quic: Option<ImportQuicConfig>,
     #[serde(default)]
     pub kcp: Option<toml::Value>,
     #[serde(default)]
@@ -271,6 +271,20 @@ pub struct ImportTuicTlsConfig {
     pub dest: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportQuicConfig {
+    #[serde(default)]
+    pub tls: Option<ImportQuicTlsConfig>,
+    #[serde(default = "default_udp")]
+    pub udp_relay: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportQuicTlsConfig {
+    #[serde(default)]
+    pub dest: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportResolutionHint {
     pub active_profile: String,
@@ -319,10 +333,25 @@ pub enum WrongclProxySpec {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WrongclTransportSpec {
     Raw,
-    WebSocket { path: String, host: Option<String> },
-    HttpUpgrade { path: String, host: Option<String> },
-    Xhttp { path: String, host: Option<String> },
-    Grpc { service_name: String },
+    WebSocket {
+        path: String,
+        host: Option<String>,
+    },
+    HttpUpgrade {
+        path: String,
+        host: Option<String>,
+    },
+    Xhttp {
+        path: String,
+        host: Option<String>,
+    },
+    Grpc {
+        service_name: String,
+    },
+    Quic {
+        server_name: String,
+        udp_enabled: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -439,6 +468,12 @@ pub enum WrongclTransportDocument {
     Grpc {
         #[serde(rename = "service-name")]
         service_name: String,
+    },
+    Quic {
+        #[serde(rename = "server-name")]
+        server_name: String,
+        #[serde(rename = "udp-enabled")]
+        udp_enabled: bool,
     },
 }
 
@@ -592,6 +627,11 @@ pub fn build_wrongcl_import_spec(
                     }),
             )
         }
+        "quic" => (
+            vless_proxy_spec(config)?,
+            quic_transport_spec(config.quic.as_ref())?,
+            WrongclOuterSecuritySpec::None,
+        ),
         "grpc" => {
             let grpc = config
                 .grpc
@@ -751,6 +791,18 @@ fn payload_networks_for(config: &ImportConfig, profile: &str) -> Vec<PayloadNetw
     match profile {
         "mixed" | "vmess" | "naive" => vec![PayloadNetworkId::Tcp],
         "wireguard" => vec![PayloadNetworkId::Ip],
+        "quic" => {
+            if config
+                .quic
+                .as_ref()
+                .map(|options| options.udp_relay)
+                .unwrap_or(true)
+            {
+                vec![PayloadNetworkId::Tcp, PayloadNetworkId::Udp]
+            } else {
+                vec![PayloadNetworkId::Tcp]
+            }
+        }
         "hysteria2" => {
             if config
                 .hysteria2
@@ -873,6 +925,13 @@ fn wrongcl_transport_document(transport: &WrongclTransportSpec) -> WrongclTransp
         },
         WrongclTransportSpec::Grpc { service_name } => WrongclTransportDocument::Grpc {
             service_name: service_name.clone(),
+        },
+        WrongclTransportSpec::Quic {
+            server_name,
+            udp_enabled,
+        } => WrongclTransportDocument::Quic {
+            server_name: server_name.clone(),
+            udp_enabled: *udp_enabled,
         },
     }
 }
@@ -1119,6 +1178,21 @@ fn anytls_spec(
     })
 }
 
+fn quic_transport_spec(quic: Option<&ImportQuicConfig>) -> Result<WrongclTransportSpec, String> {
+    let quic = quic.ok_or_else(|| "missing [quic] table".to_string())?;
+    let server_name = quic
+        .tls
+        .as_ref()
+        .and_then(|tls| tls.dest.as_deref())
+        .map(host_from_dest)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "cloudfront.net".to_string());
+    Ok(WrongclTransportSpec::Quic {
+        server_name,
+        udp_enabled: quic.udp_relay,
+    })
+}
+
 fn shadowtls_spec(
     shadowtls: Option<&ImportShadowTlsConfig>,
 ) -> Result<WrongclOuterSecuritySpec, String> {
@@ -1286,6 +1360,57 @@ disable_udp = true
 
         let hint = import_resolution_hint(&config);
         assert_eq!(hint.active_profile, "hysteria2");
+        assert_eq!(hint.payload_networks, vec![PayloadNetworkId::Tcp]);
+        assert_eq!(hint.base_carriers, vec![BaseCarrierId::Udp]);
+    }
+
+    #[test]
+    fn wrongcl_import_spec_builds_quic_config() {
+        let config: ImportConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[quic]
+udp_relay = true
+"#,
+        )
+        .unwrap();
+
+        let spec = build_wrongcl_import_spec(&config, "quic", "wrong.example", false).unwrap();
+        assert_eq!(spec.active_profile, "quic");
+        assert_eq!(spec.listen_port, 443);
+        match spec.transport {
+            WrongclTransportSpec::Quic {
+                server_name,
+                udp_enabled,
+            } => {
+                assert_eq!(server_name, "cloudfront.net");
+                assert!(udp_enabled);
+            }
+            other => panic!("unexpected transport {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolution_hint_detects_quic_tcp_only_when_udp_disabled() {
+        let config: ImportConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[quic]
+udp_relay = false
+"#,
+        )
+        .unwrap();
+
+        let hint = import_resolution_hint(&config);
+        assert_eq!(hint.active_profile, "quic");
         assert_eq!(hint.payload_networks, vec![PayloadNetworkId::Tcp]);
         assert_eq!(hint.base_carriers, vec![BaseCarrierId::Udp]);
     }
