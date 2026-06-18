@@ -32,9 +32,17 @@ pub fn build_wrongcl_adapt_result(plan: &WrongclAdaptPlan) -> WrongclAdaptResult
 }
 
 fn stack_summary_from_document(document: &WrongclClientConfigDocument) -> String {
+    if matches!(
+        document.server.endpoint.proxy,
+        WrongclProxyDocument::Hysteria2 { .. }
+    ) {
+        return "Hysteria2 → QUIC → TLS → TCP".to_string();
+    }
+
     let mut parts: Vec<&str> = Vec::new();
     parts.push(match &document.server.endpoint.proxy {
         WrongclProxyDocument::Vless { .. } => "VLESS",
+        WrongclProxyDocument::Hysteria2 { .. } => "Hysteria2",
         WrongclProxyDocument::Trojan { .. } => "Trojan",
         WrongclProxyDocument::Mixed { .. } => "Mixed remote SOCKS/HTTP",
         WrongclProxyDocument::Shadowsocks { .. } => "Shadowsocks",

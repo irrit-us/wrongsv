@@ -45,7 +45,7 @@ pub struct ImportConfig {
     #[serde(default)]
     pub trojan: Option<ImportTrojanConfig>,
     #[serde(default)]
-    pub hysteria2: Option<toml::Value>,
+    pub hysteria2: Option<ImportHysteria2Config>,
     #[serde(default)]
     pub tuic: Option<toml::Value>,
     #[serde(default)]
@@ -200,6 +200,45 @@ pub struct ImportTrojanUser {
     pub password: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportHysteria2Config {
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub users: Vec<ImportHysteria2User>,
+    #[serde(default)]
+    pub disable_udp: bool,
+    #[serde(default)]
+    pub tls: Option<ImportHysteria2TlsConfig>,
+    #[serde(default)]
+    pub obfs: Option<ImportHysteria2ObfsConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportHysteria2User {
+    pub name: String,
+    pub password: String,
+    #[serde(default)]
+    pub email: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportHysteria2TlsConfig {
+    #[serde(default)]
+    pub dest: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportHysteria2ObfsConfig {
+    #[serde(rename = "type")]
+    pub obfs_type: String,
+    pub password: String,
+    #[serde(default)]
+    pub min_packet_size: Option<usize>,
+    #[serde(default)]
+    pub max_packet_size: Option<usize>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportResolutionHint {
     pub active_profile: String,
@@ -221,6 +260,11 @@ pub enum WrongclProxySpec {
     Vless {
         uuid: String,
         flow: String,
+    },
+    Hysteria2 {
+        server_name: String,
+        password: String,
+        udp_enabled: bool,
     },
     Trojan {
         password: String,
@@ -306,6 +350,13 @@ pub enum WrongclProxyDocument {
         uuid: String,
         #[serde(default)]
         flow: String,
+    },
+    Hysteria2 {
+        #[serde(rename = "server-name")]
+        server_name: String,
+        password: String,
+        #[serde(rename = "udp-enabled")]
+        udp_enabled: bool,
     },
     Trojan {
         password: String,
@@ -519,6 +570,11 @@ pub fn build_wrongcl_import_spec(
                     }),
             )
         }
+        "hysteria2" => (
+            hysteria2_proxy_spec(config)?,
+            WrongclTransportSpec::Raw,
+            WrongclOuterSecuritySpec::None,
+        ),
         "trojan" => (
             trojan_proxy_spec(config)?,
             WrongclTransportSpec::Raw,
@@ -647,6 +703,18 @@ fn payload_networks_for(config: &ImportConfig, profile: &str) -> Vec<PayloadNetw
     match profile {
         "mixed" | "vmess" | "naive" => vec![PayloadNetworkId::Tcp],
         "wireguard" => vec![PayloadNetworkId::Ip],
+        "hysteria2" => {
+            if config
+                .hysteria2
+                .as_ref()
+                .map(|options| options.disable_udp)
+                .unwrap_or(false)
+            {
+                vec![PayloadNetworkId::Tcp]
+            } else {
+                vec![PayloadNetworkId::Tcp, PayloadNetworkId::Udp]
+            }
+        }
         "shadowsocks" => {
             if config
                 .shadowsocks
@@ -659,7 +727,7 @@ fn payload_networks_for(config: &ImportConfig, profile: &str) -> Vec<PayloadNetw
                 vec![PayloadNetworkId::Tcp]
             }
         }
-        "trojan" | "hysteria2" | "tuic" => vec![PayloadNetworkId::Tcp, PayloadNetworkId::Udp],
+        "trojan" | "tuic" => vec![PayloadNetworkId::Tcp, PayloadNetworkId::Udp],
         _ => {
             if active_flow(config) == "xtls-rprx-vision" {
                 vec![PayloadNetworkId::Tcp]
@@ -707,6 +775,15 @@ fn wrongcl_proxy_document(proxy: &WrongclProxySpec) -> WrongclProxyDocument {
         WrongclProxySpec::Vless { uuid, flow } => WrongclProxyDocument::Vless {
             uuid: uuid.clone(),
             flow: flow.clone(),
+        },
+        WrongclProxySpec::Hysteria2 {
+            server_name,
+            password,
+            udp_enabled,
+        } => WrongclProxyDocument::Hysteria2 {
+            server_name: server_name.clone(),
+            password: password.clone(),
+            udp_enabled: *udp_enabled,
         },
         WrongclProxySpec::Trojan { password } => WrongclProxyDocument::Trojan {
             password: password.clone(),
@@ -817,6 +894,47 @@ fn trojan_proxy_spec(config: &ImportConfig) -> Result<WrongclProxySpec, String> 
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "Trojan requires a password".to_string())?;
     Ok(WrongclProxySpec::Trojan { password })
+}
+
+fn hysteria2_proxy_spec(config: &ImportConfig) -> Result<WrongclProxySpec, String> {
+    let hysteria2 = config
+        .hysteria2
+        .as_ref()
+        .ok_or_else(|| "missing [hysteria2] table".to_string())?;
+    if let Some(obfs) = hysteria2.obfs.as_ref() {
+        return Err(format!(
+            "wrongcl does not implement Hysteria2 {} packet obfuscation yet",
+            obfs.obfs_type
+        ));
+    }
+    let password = hysteria2
+        .password
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            hysteria2.users.first().and_then(|user| {
+                if user.name.trim().is_empty() || user.password.trim().is_empty() {
+                    None
+                } else {
+                    Some(format!("{}:{}", user.name, user.password))
+                }
+            })
+        })
+        .ok_or_else(|| {
+            "Hysteria2 requires [hysteria2].password or one [[hysteria2.users]] entry".to_string()
+        })?;
+    let server_name = hysteria2
+        .tls
+        .as_ref()
+        .and_then(|tls| tls.dest.as_deref())
+        .map(host_from_dest)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "foo.cloudfront.net".to_string());
+    Ok(WrongclProxySpec::Hysteria2 {
+        server_name,
+        password,
+        udp_enabled: !hysteria2.disable_udp,
+    })
 }
 
 fn mixed_proxy_spec(config: &ImportConfig) -> Result<WrongclProxySpec, String> {
@@ -1036,6 +1154,54 @@ password = "shadow-pass"
             }
             other => panic!("unexpected outer security {other:?}"),
         }
+    }
+
+    #[test]
+    fn wrongcl_import_spec_builds_hysteria2_config() {
+        let config: ImportConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:443"
+
+[hysteria2]
+password = "secret"
+"#,
+        )
+        .unwrap();
+
+        let spec = build_wrongcl_import_spec(&config, "hysteria2", "wrong.example", false).unwrap();
+        assert_eq!(spec.active_profile, "hysteria2");
+        assert_eq!(spec.listen_port, 443);
+        match spec.proxy {
+            WrongclProxySpec::Hysteria2 {
+                server_name,
+                password,
+                udp_enabled,
+            } => {
+                assert_eq!(server_name, "foo.cloudfront.net");
+                assert_eq!(password, "secret");
+                assert!(udp_enabled);
+            }
+            other => panic!("unexpected proxy {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolution_hint_detects_hysteria2_tcp_only_when_udp_disabled() {
+        let config: ImportConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:443"
+
+[hysteria2]
+password = "secret"
+disable_udp = true
+"#,
+        )
+        .unwrap();
+
+        let hint = import_resolution_hint(&config);
+        assert_eq!(hint.active_profile, "hysteria2");
+        assert_eq!(hint.payload_networks, vec![PayloadNetworkId::Tcp]);
+        assert_eq!(hint.base_carriers, vec![BaseCarrierId::Udp]);
     }
 
     #[test]
