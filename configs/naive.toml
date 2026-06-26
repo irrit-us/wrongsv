@@ -6,12 +6,29 @@ listen = "0.0.0.0:443"
 [naive]
 padding_header_name = "Padding"
 
-# Public deployments should configure a certificate trusted by clients.
-# A self-signed ECDSA P-256 certificate is generated when omitted.
+# This checked-in localhost certificate lets strict Naive clients pin/trust the
+# test server without disabling verification. Public deployments should replace
+# it with a trusted certificate; a self-signed ECDSA P-256 certificate is
+# generated when certificate/key are omitted.
 [naive.tls]
 # dest = "127.0.0.1:8080"
-# certificate = """-----BEGIN CERTIFICATE-----..."""
-# key = """-----BEGIN PRIVATE KEY-----..."""
+certificate = """-----BEGIN CERTIFICATE-----
+MIIBwDCCAWagAwIBAgIUVIpqLHXB4HafxDFa/Obz6f0qR7kwCgYIKoZIzj0EAwIw
+FDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDYyNjA0MjE1OFoXDTI2MDkyNDA0
+MjE1OFowFDESMBAGA1UEAwwJbG9jYWxob3N0MFkwEwYHKoZIzj0CAQYIKoZIzj0D
+AQcDQgAEDX1jaWLa/f6xaNyDbamEMXIpb/uFZeHQ5Cpfy4XymQXh3YgGonCSRZoA
+Bj3h8M0rUnCLcNrOYtILulkMEcsR7qOBlTCBkjAdBgNVHQ4EFgQUoLu3GJxVd/cd
+//J3Hqps3P1Fw74wHwYDVR0jBBgwFoAUoLu3GJxVd/cd//J3Hqps3P1Fw74wGgYD
+VR0RBBMwEYIJbG9jYWxob3N0hwR/AAABMA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0P
+AQH/BAQDAgKkMBMGA1UdJQQMMAoGCCsGAQUFBwMBMAoGCCqGSM49BAMCA0gAMEUC
+IQC/YlmwUXRAU7YC4YecfIxKBlQxnmaDEEtyzw6zQQL30QIgKRJ1RErzlWC09b55
+AmRfv6VnEo0w2m04MHYF15g6wrU=
+-----END CERTIFICATE-----"""
+key = """-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg4zwdIeWwQ+HmEZnr
+oPvrRvL/WJFRlxRGQwND896uBqmhRANCAAQNfWNpYtr9/rFo3INtqYQxcilv+4Vl
+4dDkKl/LhfKZBeHdiAaicJJFmgAGPeHwzStScItw2s5i0gu6WQwRyxHu
+-----END PRIVATE KEY-----"""
 
 [[naive.users]]
 username = "alice"
