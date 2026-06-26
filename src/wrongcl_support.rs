@@ -281,10 +281,10 @@ fn wrongcl_profile_implemented(profile: &str) -> bool {
 
 fn wrongcl_profile_support_level(profile: &str) -> WrongclSupportLevel {
     match profile {
-        "raw" | "tls" | "anytls" | "shadowtls" | "hysteria2" | "tuic" | "quic" | "kcp" | "meek"
-        | "gdocsviewer" | "webtransport" | "websocket" | "httpupgrade" | "xhttp" | "grpc"
-        | "trojan" | "mixed" | "shadowsocks" | "naive" | "snell" => WrongclSupportLevel::Supported,
-        "wireguard" | "reality" => WrongclSupportLevel::Partial,
+        "raw" | "tls" | "reality" | "anytls" | "shadowtls" | "hysteria2" | "tuic" | "quic"
+        | "kcp" | "meek" | "gdocsviewer" | "webtransport" | "websocket" | "httpupgrade"
+        | "xhttp" | "grpc" | "trojan" | "mixed" | "shadowsocks" | "wireguard" | "naive"
+        | "snell" => WrongclSupportLevel::Supported,
         _ => WrongclSupportLevel::Unsupported,
     }
 }
@@ -299,9 +299,7 @@ fn wrongcl_support_reason(profile: &str, support: WrongclSupportLevel) -> String
             "VLESS over raw TCP wrapped by TLS; full support when the active config is TCP-only"
                 .into()
         }
-        "reality" => {
-            "VLESS over REALITY; full support when the client public-key is supplied".into()
-        }
+        "reality" => "VLESS over REALITY; full support when the client public-key is supplied or derivable from the server private-key".into(),
         "anytls" => {
             "VLESS over AnyTLS; full support when the active config is TCP-only and not using Vision"
                 .into()
@@ -316,10 +314,7 @@ fn wrongcl_support_reason(profile: &str, support: WrongclSupportLevel) -> String
         "webtransport" => "VLESS over WebTransport with TCP and UDP".into(),
         "naive" => "Naive over HTTP/2 CONNECT over TLS with TCP".into(),
         "snell" => "Snell v1 TCP CONNECT over raw TCP".into(),
-        "wireguard" => {
-            "WireGuard tunnel service; needs a client private-key and a helper-backed runtime"
-                .into()
-        }
+        "wireguard" => "WireGuard tunnel service; full support when the client peer private-key is supplied".into(),
         "websocket" => {
             "VLESS over WebSocket; full support when the active config is TCP-only and not using Vision"
                 .into()
@@ -338,25 +333,42 @@ fn wrongcl_support_reason(profile: &str, support: WrongclSupportLevel) -> String
 fn wrongcl_missing_fields(config: &ImportConfig, profile: &str) -> Vec<WrongclMissingField> {
     match profile {
         "reality" => {
-            let missing_public_key = config
-                .reality
-                .as_ref()
-                .and_then(|reality| reality.public_key.as_ref())
-                .map(|key| key.trim().is_empty())
-                .unwrap_or(true);
+            let missing_public_key = config.reality.as_ref().is_none_or(|reality| {
+                let has_public_key = reality
+                    .public_key
+                    .as_ref()
+                    .is_some_and(|key| !key.trim().is_empty());
+                let has_private_key = reality
+                    .private_key
+                    .as_ref()
+                    .is_some_and(|key| !key.trim().is_empty());
+                !has_public_key && !has_private_key
+            });
             if missing_public_key {
                 vec![WrongclMissingField {
                     field: "reality.public-key".into(),
-                    reason: "wrongsv server configs keep the REALITY private key; wrongcl needs the matching client public-key supplied separately".into(),
+                    reason: "wrongcl needs a REALITY public-key, or a server private-key it can derive one from".into(),
                 }]
             } else {
                 Vec::new()
             }
         }
-        "wireguard" => vec![WrongclMissingField {
-            field: "wireguard.private-key".into(),
-            reason: "wrongsv WireGuard server configs contain the server private key and peer public keys; wrongcl needs the client peer private-key supplied separately".into(),
-        }],
+        "wireguard" => {
+            let missing_private_key = config
+                .wireguard
+                .as_ref()
+                .and_then(|wireguard| wireguard.peers.first())
+                .and_then(|peer| peer.private_key.as_ref())
+                .is_none_or(|key| key.trim().is_empty());
+            if missing_private_key {
+                vec![WrongclMissingField {
+                    field: "wireguard.peers.private-key".into(),
+                    reason: "wrongcl needs the WireGuard client peer private-key".into(),
+                }]
+            } else {
+                Vec::new()
+            }
+        }
         _ => Vec::new(),
     }
 }
@@ -394,7 +406,7 @@ fn wrongcl_local_runtime_gap_reason(
             | "grpc" | "trojan" | "shadowsocks" => None,
             _ => Some("wrongcl UDP relay is still being built out for this protocol family".into()),
         }
-    } else if payload_networks.contains(&PayloadNetworkId::Ip) {
+    } else if payload_networks.contains(&PayloadNetworkId::Ip) && profile != "wireguard" {
         Some("wrongcl has no TUN or routed-tunnel runtime yet".into())
     } else {
         None
@@ -478,6 +490,31 @@ dest = "www.microsoft.com:443"
         assert_eq!(view.missing_fields.len(), 1);
         assert_eq!(view.missing_fields[0].field, "reality.public-key");
         assert!(view.active_reason.contains("missing client-side fields"));
+    }
+
+    #[test]
+    fn wrongcl_capability_view_marks_reality_private_key_as_supported() {
+        let config: ImportConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[reality]
+private_key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+short_ids = ["aaaaaaaa"]
+dest = "www.microsoft.com:443"
+"#,
+        )
+        .unwrap();
+
+        let resolution = import_resolution_hint(&config);
+        let view = build_wrongcl_capability_view(&config, &resolution);
+        assert_eq!(view.active_support, WrongclSupportLevel::Supported);
+        assert!(view.config_adaptable);
+        assert!(view.missing_fields.is_empty());
+        assert!(view.active_reason.contains("VLESS over REALITY"));
     }
 
     #[test]
@@ -642,12 +679,38 @@ allowed_ips = ["10.77.0.2/32"]
         assert_eq!(view.active_support, WrongclSupportLevel::Partial);
         assert!(!view.config_adaptable);
         assert_eq!(view.missing_fields.len(), 1);
-        assert_eq!(view.missing_fields[0].field, "wireguard.private-key");
+        assert_eq!(view.missing_fields[0].field, "wireguard.peers.private-key");
         assert!(view.active_reason.contains("missing client-side fields"));
-        assert!(
-            view.active_reason
-                .contains("no TUN or routed-tunnel runtime")
-        );
+    }
+
+    #[test]
+    fn wrongcl_capability_view_marks_wireguard_with_peer_private_key_as_supported() {
+        let config: ImportConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:51820"
+
+[wireguard]
+private_key = "gJ2bkwJoR/mZyVVzv9VWQ3t+yZ6R37/C5VXhaOSUgWI="
+server_cidrs = ["10.66.66.1/32"]
+
+[[wireguard.peers]]
+private_key = "6D5AXLjT/KiUZxP92lk9B1zlf7R9x2Xp5a04FdknUEI="
+public_key = "mvBoFRzzhoWrCZC9nQkrr57AG6oY03qzZ3+kDVumBG8="
+allowed_ips = ["10.66.66.2/32"]
+
+[[wireguard.forwards]]
+service = "10.66.66.1:8080"
+target = "127.0.0.1:3300"
+"#,
+        )
+        .unwrap();
+
+        let resolution = import_resolution_hint(&config);
+        let view = build_wrongcl_capability_view(&config, &resolution);
+        assert_eq!(view.active_support, WrongclSupportLevel::Supported);
+        assert!(view.config_adaptable);
+        assert!(view.missing_fields.is_empty());
+        assert!(view.active_reason.contains("local wrongcl TCP proxying"));
     }
 
     #[test]

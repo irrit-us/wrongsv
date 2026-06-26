@@ -11,6 +11,7 @@ mtu = 1400
 server_cidrs = ["10.66.66.1/32"]
 
 [[wireguard.peers]]
+private_key = "6D5AXLjT/KiUZxP92lk9B1zlf7R9x2Xp5a04FdknUEI="
 public_key = "mvBoFRzzhoWrCZC9nQkrr57AG6oY03qzZ3+kDVumBG8="
 allowed_ips = ["10.66.66.2/32"]
 email = "user@example.com"

@@ -85,6 +85,8 @@ pub struct ImportTlsConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ImportRealityConfig {
+    #[serde(default, alias = "private_key", alias = "private-key")]
+    pub private_key: Option<String>,
     #[serde(default, alias = "server_name", alias = "server-name", alias = "sni")]
     pub server_name: Option<String>,
     #[serde(default)]
@@ -414,6 +416,14 @@ pub struct ImportWireGuardConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ImportWireGuardPeerConfig {
+    #[serde(
+        default,
+        alias = "private_key",
+        alias = "private-key",
+        alias = "client_private_key",
+        alias = "client-private-key"
+    )]
+    pub private_key: Option<String>,
     pub public_key: String,
     #[serde(default)]
     pub preshared_key: Option<String>,
@@ -1527,14 +1537,14 @@ fn wireguard_proxy_spec(
         .first()
         .ok_or_else(|| "WireGuard requires one [[wireguard.peers]] entry".to_string())?;
     let peer_public_key = wireguard_server_public_key(&wireguard.private_key)?;
-    let private_key = if draft_mode {
-        String::new()
-    } else {
-        return Err(
-            "WireGuard [wireguard].private-key is the server key; wrongcl needs the client peer private-key supplied separately"
-                .to_string(),
-        );
-    };
+    let private_key = peer
+        .private_key
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| draft_mode.then(String::new))
+        .ok_or_else(|| {
+            "WireGuard [[wireguard.peers]].private-key is required for wrongcl import".to_string()
+        })?;
     let client_ip = peer
         .allowed_ips
         .first()
@@ -1630,14 +1640,26 @@ fn reality_spec(
         .or_else(|| reality.dest.clone().map(|dest| host_from_dest(&dest)))
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| server_host.to_string());
-    let public_key = reality
+    let public_key = if let Some(public_key) = reality
         .public_key
         .clone()
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| draft_mode.then(String::new))
-        .ok_or_else(|| {
-            "REALITY [reality].public-key is required (server config holds private_key; client needs the matching public_key)".to_string()
-        })?;
+    {
+        public_key
+    } else if let Some(private_key) = reality
+        .private_key
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        wrongsv_reality::private_key_hex_to_public_b64(private_key)?
+    } else if draft_mode {
+        String::new()
+    } else {
+        return Err(
+            "REALITY [reality].public-key is required (or derive it from [reality].private-key)"
+                .to_string(),
+        );
+    };
     let short_id = reality
         .short_id
         .clone()
@@ -1890,6 +1912,37 @@ dest = "www.microsoft.com:443"
                 assert_eq!(public_key, "");
                 assert_eq!(short_id, "aaaaaaaa");
                 assert_eq!(raw_pubkey, "");
+            }
+            other => panic!("unexpected outer security {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wrongcl_import_spec_derives_reality_public_key_from_private_key() {
+        let config: ImportConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:443"
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+
+[reality]
+private_key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+short_ids = ["aaaaaaaa"]
+dest = "www.microsoft.com:443"
+"#,
+        )
+        .unwrap();
+
+        let spec = build_wrongcl_import_spec(&config, "reality", "wrong.example", false).unwrap();
+        match spec.outer_security {
+            WrongclOuterSecuritySpec::Reality {
+                public_key,
+                short_id,
+                ..
+            } => {
+                assert_eq!(public_key, "1ekGUFKTlUnQVazwPzSCAFeOPtK2XrapZWRHF2G6T1Q");
+                assert_eq!(short_id, "aaaaaaaa");
             }
             other => panic!("unexpected outer security {other:?}"),
         }
@@ -2224,6 +2277,52 @@ allowed_ips = ["10.77.0.2/32"]
                 assert_eq!(pre_shared_key, None);
                 assert_eq!(client_ip, "10.77.0.2/32");
                 assert_eq!(allowed_ips, vec!["0.0.0.0/0".to_string()]);
+                assert_eq!(mtu, 1400);
+            }
+            other => panic!("unexpected proxy {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wrongcl_import_spec_builds_wireguard_strict_config_with_peer_private_key() {
+        let config: ImportConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:51820"
+
+[wireguard]
+private_key = "gJ2bkwJoR/mZyVVzv9VWQ3t+yZ6R37/C5VXhaOSUgWI="
+server_cidrs = ["10.66.66.1/32"]
+
+[[wireguard.peers]]
+private_key = "6D5AXLjT/KiUZxP92lk9B1zlf7R9x2Xp5a04FdknUEI="
+public_key = "mvBoFRzzhoWrCZC9nQkrr57AG6oY03qzZ3+kDVumBG8="
+allowed_ips = ["10.66.66.2/32"]
+
+[[wireguard.forwards]]
+service = "10.66.66.1:8080"
+target = "127.0.0.1:3300"
+"#,
+        )
+        .unwrap();
+
+        let spec = build_wrongcl_import_spec(&config, "wireguard", "wrong.example", false).unwrap();
+        assert_eq!(spec.active_profile, "wireguard");
+        match spec.proxy {
+            WrongclProxySpec::WireGuard {
+                private_key,
+                peer_public_key,
+                client_ip,
+                allowed_ips,
+                mtu,
+                ..
+            } => {
+                assert_eq!(private_key, "6D5AXLjT/KiUZxP92lk9B1zlf7R9x2Xp5a04FdknUEI=");
+                assert_eq!(
+                    peer_public_key,
+                    "V/WCu1yRZ8sMQ6cv4IA5EN9rvD8aOjxDl9dPoJ1+BhI="
+                );
+                assert_eq!(client_ip, "10.66.66.2/32");
+                assert_eq!(allowed_ips, vec!["10.66.66.1/32".to_string()]);
                 assert_eq!(mtu, 1400);
             }
             other => panic!("unexpected proxy {other:?}"),
