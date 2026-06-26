@@ -365,6 +365,7 @@ fn build_default_config() -> Config {
         shadowtls: None,
         vmess: None,
         naive: None,
+        snell: None,
         metrics: None,
     }
 }

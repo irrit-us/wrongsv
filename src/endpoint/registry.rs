@@ -72,6 +72,7 @@ const TUIC_PAYLOADS: &[PayloadNetwork] = &[PayloadNetwork::Tcp, PayloadNetwork::
 const MIXED_PAYLOADS: &[PayloadNetwork] = &[PayloadNetwork::Tcp];
 const WIREGUARD_PAYLOADS: &[PayloadNetwork] = &[PayloadNetwork::Ip];
 const NAIVE_PAYLOADS: &[PayloadNetwork] = &[PayloadNetwork::Tcp];
+const SNELL_PAYLOADS: &[PayloadNetwork] = &[PayloadNetwork::Tcp];
 const VLESS_CAMOUFLAGE_COMPONENTS: &[Component] = &[Component::AnyTls, Component::ShadowTls];
 const VLESS_PERFORMANCE_COMPONENTS: &[Component] = &[Component::Vision];
 const VLESS_INGRESS_COMPONENTS: &[Component] = &[Component::FallbackDestination];
@@ -348,6 +349,34 @@ pub(crate) fn protocol_descriptor(protocol: ProxyProtocol) -> &'static ProtocolD
             components: ComponentDescriptorSet {
                 camouflage: NAIVE_CAMOUFLAGE_COMPONENTS,
                 ingress: NAIVE_INGRESS_COMPONENTS,
+                performance: EMPTY_COMPONENTS,
+                network: EMPTY_COMPONENTS,
+            },
+        },
+        ProxyProtocol::Snell => &ProtocolDescriptor {
+            id: ProxyProtocol::Snell,
+            display_name: "Snell",
+            payload_networks: PayloadDescriptor {
+                supported: SNELL_PAYLOADS,
+                default: SNELL_PAYLOADS,
+                user_configurable: false,
+            },
+            transport: LayerDescriptor {
+                mode: LayerMode::Fixed,
+                supported: &[TransportMethod::Raw],
+                default: Some(TransportMethod::Raw),
+                fixed_value: Some(TransportMethod::Raw),
+            },
+            outer_security: LayerDescriptor {
+                mode: LayerMode::Forbidden,
+                supported: &[],
+                default: None,
+                fixed_value: None,
+            },
+            protocol_internal_security: None,
+            components: ComponentDescriptorSet {
+                camouflage: EMPTY_COMPONENTS,
+                ingress: EMPTY_COMPONENTS,
                 performance: EMPTY_COMPONENTS,
                 network: EMPTY_COMPONENTS,
             },

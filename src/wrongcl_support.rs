@@ -28,6 +28,7 @@ const KNOWN_WRONGCL_PROFILES: &[(&str, &str)] = &[
     ("mixed", "Mixed SOCKS/HTTP proxy inbound"),
     ("wireguard", "WireGuard"),
     ("naive", "Naive"),
+    ("snell", "Snell"),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -274,6 +275,7 @@ fn wrongcl_profile_implemented(profile: &str) -> bool {
             | "shadowsocks"
             | "wireguard"
             | "naive"
+            | "snell"
     )
 }
 
@@ -281,7 +283,7 @@ fn wrongcl_profile_support_level(profile: &str) -> WrongclSupportLevel {
     match profile {
         "raw" | "tls" | "anytls" | "shadowtls" | "hysteria2" | "tuic" | "quic" | "kcp" | "meek"
         | "gdocsviewer" | "webtransport" | "websocket" | "httpupgrade" | "xhttp" | "grpc"
-        | "trojan" | "mixed" | "shadowsocks" | "naive" => WrongclSupportLevel::Supported,
+        | "trojan" | "mixed" | "shadowsocks" | "naive" | "snell" => WrongclSupportLevel::Supported,
         "wireguard" | "reality" => WrongclSupportLevel::Partial,
         _ => WrongclSupportLevel::Unsupported,
     }
@@ -313,6 +315,7 @@ fn wrongcl_support_reason(profile: &str, support: WrongclSupportLevel) -> String
         "gdocsviewer" => "VLESS over Google Docs Viewer with TCP and UDP".into(),
         "webtransport" => "VLESS over WebTransport with TCP and UDP".into(),
         "naive" => "Naive over HTTP/2 CONNECT over TLS with TCP".into(),
+        "snell" => "Snell v1 TCP CONNECT over raw TCP".into(),
         "wireguard" => {
             "WireGuard tunnel service; needs a client private-key and a helper-backed runtime"
                 .into()

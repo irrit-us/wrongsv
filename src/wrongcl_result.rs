@@ -85,6 +85,7 @@ fn stack_summary_from_document(document: &WrongclClientConfigDocument) -> String
         WrongclProxyDocument::Trojan { .. } => "Trojan",
         WrongclProxyDocument::Mixed { .. } => "Mixed remote SOCKS/HTTP",
         WrongclProxyDocument::Shadowsocks { .. } => "Shadowsocks",
+        WrongclProxyDocument::Snell { .. } => "Snell",
     });
     parts.push(match &document.server.endpoint.transport {
         WrongclTransportDocument::Raw => "raw",

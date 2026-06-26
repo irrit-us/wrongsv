@@ -55,6 +55,8 @@ pub struct ImportConfig {
     pub wireguard: Option<ImportWireGuardConfig>,
     #[serde(default)]
     pub naive: Option<ImportNaiveConfig>,
+    #[serde(default)]
+    pub snell: Option<ImportSnellConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -387,6 +389,13 @@ pub struct ImportNaiveTlsConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct ImportSnellConfig {
+    pub psk: String,
+    #[serde(default = "default_snell_version")]
+    pub version: u8,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct ImportWireGuardConfig {
     pub private_key: String,
     #[serde(default)]
@@ -475,6 +484,10 @@ pub enum WrongclProxySpec {
     Shadowsocks {
         method: String,
         password: String,
+    },
+    Snell {
+        psk: String,
+        version: u8,
     },
 }
 
@@ -627,6 +640,10 @@ pub enum WrongclProxyDocument {
     Shadowsocks {
         method: String,
         password: String,
+    },
+    Snell {
+        psk: String,
+        version: u8,
     },
 }
 
@@ -869,6 +886,11 @@ pub fn build_wrongcl_import_spec(
             WrongclTransportSpec::Raw,
             naive_outer_tls_spec(config, server_host)?,
         ),
+        "snell" => (
+            snell_proxy_spec(config)?,
+            WrongclTransportSpec::Raw,
+            WrongclOuterSecuritySpec::None,
+        ),
         "wireguard" => (
             wireguard_proxy_spec(config, draft_mode)?,
             WrongclTransportSpec::Raw,
@@ -1034,6 +1056,10 @@ fn default_naive_padding_header() -> String {
     "Padding".into()
 }
 
+fn default_snell_version() -> u8 {
+    1
+}
+
 fn default_wt_path() -> String {
     "/wt".into()
 }
@@ -1083,6 +1109,8 @@ pub fn active_profile_id(config: &ImportConfig) -> &'static str {
         "wireguard"
     } else if config.naive.is_some() {
         "naive"
+    } else if config.snell.is_some() {
+        "snell"
     } else if config.tls.is_some() {
         "tls"
     } else {
@@ -1092,7 +1120,7 @@ pub fn active_profile_id(config: &ImportConfig) -> &'static str {
 
 fn payload_networks_for(config: &ImportConfig, profile: &str) -> Vec<PayloadNetworkId> {
     match profile {
-        "mixed" | "vmess" | "naive" => vec![PayloadNetworkId::Tcp],
+        "mixed" | "vmess" | "naive" | "snell" => vec![PayloadNetworkId::Tcp],
         "wireguard" => vec![PayloadNetworkId::Ip],
         "quic" => {
             if config
@@ -1243,6 +1271,10 @@ fn wrongcl_proxy_document(proxy: &WrongclProxySpec) -> WrongclProxyDocument {
         WrongclProxySpec::Shadowsocks { method, password } => WrongclProxyDocument::Shadowsocks {
             method: method.clone(),
             password: password.clone(),
+        },
+        WrongclProxySpec::Snell { psk, version } => WrongclProxyDocument::Snell {
+            psk: psk.clone(),
+            version: *version,
         },
     }
 }
@@ -1552,6 +1584,23 @@ fn shadowsocks_proxy_spec(config: &ImportConfig) -> Result<WrongclProxySpec, Str
     Ok(WrongclProxySpec::Shadowsocks {
         method: shadowsocks.method.clone(),
         password: shadowsocks.password.clone(),
+    })
+}
+
+fn snell_proxy_spec(config: &ImportConfig) -> Result<WrongclProxySpec, String> {
+    let snell = config
+        .snell
+        .as_ref()
+        .ok_or_else(|| "missing [snell] table".to_string())?;
+    if snell.psk.trim().is_empty() {
+        return Err("Snell psk must be non-empty".to_string());
+    }
+    if snell.version != 1 {
+        return Err("wrongcl currently supports Snell version 1 TCP CONNECT".to_string());
+    }
+    Ok(WrongclProxySpec::Snell {
+        psk: snell.psk.clone(),
+        version: snell.version,
     })
 }
 
@@ -2104,6 +2153,37 @@ email = "alice@example.com"
             }
             other => panic!("unexpected outer security {other:?}"),
         }
+    }
+
+    #[test]
+    fn wrongcl_import_spec_builds_snell_config() {
+        let config: ImportConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:443"
+
+[snell]
+psk = "hunter2"
+version = 1
+"#,
+        )
+        .unwrap();
+
+        let hint = import_resolution_hint(&config);
+        assert_eq!(hint.active_profile, "snell");
+        assert_eq!(hint.payload_networks, vec![PayloadNetworkId::Tcp]);
+        assert_eq!(hint.base_carriers, vec![BaseCarrierId::Tcp]);
+
+        let spec = build_wrongcl_import_spec(&config, "snell", "wrong.example", false).unwrap();
+        assert_eq!(spec.active_profile, "snell");
+        match spec.proxy {
+            WrongclProxySpec::Snell { psk, version } => {
+                assert_eq!(psk, "hunter2");
+                assert_eq!(version, 1);
+            }
+            other => panic!("unexpected proxy {other:?}"),
+        }
+        assert_eq!(spec.transport, WrongclTransportSpec::Raw);
+        assert_eq!(spec.outer_security, WrongclOuterSecuritySpec::None);
     }
 
     #[test]

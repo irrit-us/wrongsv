@@ -11,6 +11,7 @@ wrongsv-encryption.workspace = true
 wrongsv-reality.workspace = true
 wrongsv-anytls.workspace = true
 wrongsv-shadowsocks.workspace = true
+wrongsv-snell.workspace = true
 wrongsv-websocket.workspace = true
 wrongsv-grpc.workspace = true
 wrongsv-metrics.workspace = true

@@ -108,6 +108,10 @@ pub struct Config {
     /// instead of VLESS.
     #[serde(default)]
     pub naive: Option<NaiveServerConfig>,
+    /// Snell inbound configuration. When set, this listener accepts Snell
+    /// AEAD TCP CONNECT proxy traffic instead of VLESS.
+    #[serde(default)]
+    pub snell: Option<SnellServerConfig>,
     /// Optional metrics endpoint. When set, an HTTP listener exposes a
     /// Prometheus-format `/metrics` endpoint with per-user (by email) byte
     /// counters and system stats. Off by default.
@@ -774,6 +778,20 @@ fn default_naive_padding_header() -> String {
     "Padding".to_string()
 }
 
+/// Snell server-side configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SnellServerConfig {
+    /// Pre-shared key used by the Snell AEAD stream.
+    pub psk: String,
+    /// Snell version. Version 1 is supported for TCP CONNECT in this slice.
+    #[serde(default = "default_snell_version")]
+    pub version: u8,
+}
+
+fn default_snell_version() -> u8 {
+    1
+}
+
 /// ShadowTLS server-side configuration.
 ///
 /// ShadowTLS v3 authenticates the client through the ClientHello session-id
@@ -1013,6 +1031,16 @@ pub enum ConfigError {
     NaiveInvalidCredential,
     #[error("Naive padding header name must be a valid HTTP token")]
     NaiveInvalidPaddingHeader,
+    #[error("Snell inbound cannot be combined with VLESS users")]
+    SnellWithVlessUsers,
+    #[error("Snell inbound cannot be combined with VLESS transport layers")]
+    SnellWithVlessTransport,
+    #[error("Snell inbound cannot be combined with other non-VLESS protocols")]
+    SnellWithNonVless,
+    #[error("Snell PSK must be non-empty")]
+    SnellInvalidPsk,
+    #[error("Snell version must be 1 for the current TCP CONNECT implementation")]
+    SnellInvalidVersion,
 }
 
 impl Config {
@@ -1053,6 +1081,7 @@ impl Config {
             || self.vmess.is_some()
             || self.wireguard.is_some()
             || self.naive.is_some()
+            || self.snell.is_some()
     }
 
     /// True when any stream-based framing transport (WebSocket,
@@ -1105,6 +1134,7 @@ impl Config {
             self.vmess.is_some(),
             self.wireguard.is_some(),
             self.naive.is_some(),
+            self.snell.is_some(),
         ]
         .into_iter()
         .filter(|&e| e)
@@ -1316,6 +1346,20 @@ impl Config {
                     .all(|b| b.is_ascii_graphic() && b != b':' && b != b' ' && b != b'\t')
             {
                 return Err(ConfigError::NaiveInvalidPaddingHeader);
+            }
+        }
+
+        if let Some(snell) = &self.snell {
+            self.check_non_vless_no_users(ConfigError::SnellWithVlessUsers)?;
+            self.check_non_vless_no_transports(ConfigError::SnellWithVlessTransport)?;
+            if self.has_any_non_vless_inbound_except_snell() {
+                return Err(ConfigError::SnellWithNonVless);
+            }
+            if snell.psk.is_empty() {
+                return Err(ConfigError::SnellInvalidPsk);
+            }
+            if snell.version != 1 {
+                return Err(ConfigError::SnellInvalidVersion);
             }
         }
 
@@ -1588,6 +1632,7 @@ impl Config {
             || self.vmess.is_some()
             || self.wireguard.is_some()
             || self.naive.is_some()
+            || self.snell.is_some()
     }
 
     fn has_any_non_vless_inbound_except_tuic(&self) -> bool {
@@ -1598,6 +1643,7 @@ impl Config {
             || self.vmess.is_some()
             || self.wireguard.is_some()
             || self.naive.is_some()
+            || self.snell.is_some()
     }
 
     fn has_any_non_vless_inbound_except_wireguard(&self) -> bool {
@@ -1608,6 +1654,7 @@ impl Config {
             || self.tuic.is_some()
             || self.vmess.is_some()
             || self.naive.is_some()
+            || self.snell.is_some()
     }
 
     fn has_any_non_vless_inbound_except_naive(&self) -> bool {
@@ -1618,6 +1665,18 @@ impl Config {
             || self.tuic.is_some()
             || self.vmess.is_some()
             || self.wireguard.is_some()
+            || self.snell.is_some()
+    }
+
+    fn has_any_non_vless_inbound_except_snell(&self) -> bool {
+        self.shadowsocks.is_some()
+            || self.mixed.is_some()
+            || self.trojan.is_some()
+            || self.hysteria2.is_some()
+            || self.tuic.is_some()
+            || self.vmess.is_some()
+            || self.wireguard.is_some()
+            || self.naive.is_some()
     }
 }
 
@@ -1676,6 +1735,7 @@ flow = "xtls-rprx-vision"
             shadowtls: None,
             vmess: None,
             naive: None,
+            snell: None,
             metrics: None,
         };
         assert!(config.validate().is_err());
@@ -1715,6 +1775,7 @@ flow = "xtls-rprx-vision"
             shadowtls: None,
             vmess: None,
             naive: None,
+            snell: None,
             metrics: None,
         };
         assert!(config.validate().is_err());
@@ -3144,6 +3205,57 @@ password = "secret"
         assert!(matches!(
             config.validate(),
             Err(ConfigError::MultipleInboundProtocols)
+        ));
+    }
+
+    #[test]
+    fn test_parse_snell_config() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[snell]
+psk = "hunter2"
+version = 1
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        let snell = config.snell.unwrap();
+        assert_eq!(snell.psk, "hunter2");
+        assert_eq!(snell.version, 1);
+    }
+
+    #[test]
+    fn test_snell_rejects_vless_users() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[snell]
+psk = "hunter2"
+version = 1
+
+[[users]]
+id = "12345678-1234-1234-1234-123456789abc"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::SnellWithVlessUsers)
+        ));
+    }
+
+    #[test]
+    fn test_snell_rejects_unsupported_version() {
+        let toml = r#"
+listen = "0.0.0.0:443"
+
+[snell]
+psk = "hunter2"
+version = 2
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::SnellInvalidVersion)
         ));
     }
 }

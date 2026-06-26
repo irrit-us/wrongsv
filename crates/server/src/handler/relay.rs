@@ -620,6 +620,7 @@ mod tests {
             shadowtls: None,
             vmess: None,
             naive: None,
+            snell: None,
             metrics: None,
         }
     }

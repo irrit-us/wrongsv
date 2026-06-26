@@ -1,0 +1,5 @@
+listen = "0.0.0.0:443"
+
+[snell]
+psk = "change-this-snell-psk"
+version = 1

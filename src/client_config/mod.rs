@@ -152,7 +152,7 @@ fn validate_client_format_support(
                 ));
             }
         }
-        ProxyProtocol::Mixed | ProxyProtocol::Naive => {
+        ProxyProtocol::Mixed | ProxyProtocol::Naive | ProxyProtocol::Snell => {
             return Err(ClientExportSupportError::new(
                 "protocol_export_unimplemented",
                 format!(
@@ -1603,6 +1603,7 @@ mod tests {
             | Transport::Kcp
             | Transport::Vmess
             | Transport::Shadowsocks
+            | Transport::Snell
             | Transport::Mixed
             | Transport::WireGuard => None,
             Transport::Trojan | Transport::Hysteria2 | Transport::Tuic | Transport::Naive => {

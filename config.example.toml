@@ -4,6 +4,7 @@
 # For SOCKS4/4A/SOCKS5/HTTP proxy, configure `[mixed]` instead of `users`.
 # For Trojan over TLS, configure `[trojan]` instead of `users`.
 # For Naive over HTTP/2 CONNECT/TLS, configure `[naive]` instead of `users`.
+# For Snell v1 TCP CONNECT, configure `[snell]` instead of `users`.
 
 listen = "0.0.0.0:443"
 
@@ -21,6 +22,7 @@ listen = "0.0.0.0:443"
 #   [mixed]   — SOCKS4/4A + SOCKS5 CONNECT + HTTP forward/CONNECT inbound
 #   [trojan]  — Trojan over TLS TCP/UDP inbound
 #   [naive]   — HTTP/2 CONNECT over TLS with padded framing
+#   [snell]   — Snell v1 TCP CONNECT over raw TCP
 
 # ── REALITY example ────────────────────────────────────────────────────────────
 # [reality]
@@ -117,6 +119,12 @@ listen = "0.0.0.0:443"
 # username = "alice"
 # password = "your-secure-password"
 # email = "user@example.com"
+
+# ── Snell v1 TCP CONNECT example ──────────────────────────────────────────────
+# Use this instead of users/VLESS transports for a Snell listener.
+# [snell]
+# psk = "your-secure-password"
+# version = 1
 
 [[users]]
 id = "00000000-0000-0000-0000-000000000000"

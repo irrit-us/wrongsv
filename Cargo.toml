@@ -16,6 +16,7 @@ members = [
     "crates/reality",
     "crates/anytls",
     "crates/shadowsocks",
+    "crates/snell",
     "crates/websocket",
     "crates/grpc",
     "crates/metrics",
@@ -39,6 +40,7 @@ wrongsv-server = { path = "crates/server" }
 wrongsv-reality = { path = "crates/reality" }
 wrongsv-anytls = { path = "crates/anytls" }
 wrongsv-shadowsocks = { path = "crates/shadowsocks" }
+wrongsv-snell = { path = "crates/snell" }
 wrongsv-websocket = { path = "crates/websocket" }
 wrongsv-grpc = { path = "crates/grpc" }
 wrongsv-metrics = { path = "crates/metrics" }
@@ -55,6 +57,7 @@ blake3 = "1"
 aes-gcm = "0.10"
 aes = "0.8"
 chacha20poly1305 = "0.10"
+argon2 = "0.5"
 hkdf = "0.12"
 sha1 = "0.10"
 base64 = "0.22"
@@ -99,6 +102,7 @@ wrongsv-server.workspace = true
 wrongsv-reality.workspace = true
 wrongsv-anytls.workspace = true
 wrongsv-shadowsocks.workspace = true
+wrongsv-snell.workspace = true
 wrongsv-websocket.workspace = true
 wrongsv-grpc.workspace = true
 bytes.workspace = true

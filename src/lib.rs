@@ -46,9 +46,9 @@ pub struct EndpointInspection {
 
 pub use import_config::{
     ImportAnyTlsConfig, ImportConfig, ImportGrpcConfig, ImportHttpUpgradeConfig, ImportMixedConfig,
-    ImportRealityConfig, ImportResolutionHint, ImportShadowsocksConfig, ImportTlsConfig,
-    ImportTrojanConfig, ImportTrojanUser, ImportUser, ImportWebSocketConfig, ImportXhttpConfig,
-    WrongclClientConfigDocument, WrongclImportSpec, WrongclLocalConfigDocument,
+    ImportRealityConfig, ImportResolutionHint, ImportShadowsocksConfig, ImportSnellConfig,
+    ImportTlsConfig, ImportTrojanConfig, ImportTrojanUser, ImportUser, ImportWebSocketConfig,
+    ImportXhttpConfig, WrongclClientConfigDocument, WrongclImportSpec, WrongclLocalConfigDocument,
     WrongclOuterSecurityDocument, WrongclOuterSecuritySpec, WrongclProxyDocument, WrongclProxySpec,
     WrongclServerConfigDocument, WrongclTransportDocument, WrongclTransportSpec, active_profile_id,
     build_wrongcl_client_config_document, build_wrongcl_import_spec, import_resolution_hint,
@@ -124,6 +124,7 @@ fn resolved_active_profile_id(model: endpoint::EndpointModel) -> String {
         ProxyProtocol::Mixed => "mixed",
         ProxyProtocol::WireGuard => "wireguard",
         ProxyProtocol::Naive => "naive",
+        ProxyProtocol::Snell => "snell",
     }
     .to_string()
 }

@@ -24,6 +24,7 @@ Supported cooperative clusters:
   shadowsocks-aead      shadowsocks AEAD method
   vmess                 vmess
   naive                 naive h2 CONNECT over TLS
+  snell                 snell v1 TCP CONNECT
 
 Component form also works with comma or plus separators, for example:
   --cluster anytls,vision
@@ -89,6 +90,7 @@ enum Inbound {
     Tuic,
     Vmess,
     Naive,
+    Snell,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -255,6 +257,7 @@ impl ComponentSet {
             "tuic" => self.set_inbound(Inbound::Tuic),
             "vmess" => self.set_inbound(Inbound::Vmess),
             "naive" => self.set_inbound(Inbound::Naive),
+            "snell" => self.set_inbound(Inbound::Snell),
             "gecko" => self.set_hysteria_obfs(HysteriaObfs::Gecko),
             "salamander" => self.set_hysteria_obfs(HysteriaObfs::Salamander),
             "raw" | "tcp" => Ok(()),
@@ -372,6 +375,7 @@ impl ComponentSet {
             Inbound::Tuic => "tuic".into(),
             Inbound::Vmess => "vmess".into(),
             Inbound::Naive => "naive".into(),
+            Inbound::Snell => "snell".into(),
             Inbound::Vless => {
                 if let Some(framing) = self.framing {
                     return match framing {
@@ -422,6 +426,7 @@ fn expand_cluster(cluster: &str) -> Result<Vec<String>, String> {
         "tuic" => return Ok(tokens(&["tuic"])),
         "vmess" => return Ok(tokens(&["vmess"])),
         "naive" => return Ok(tokens(&["naive"])),
+        "snell" => return Ok(tokens(&["snell"])),
         "vless-raw" => return Ok(tokens(&["vless"])),
         _ => {}
     }
@@ -466,6 +471,7 @@ fn render_config(
         Inbound::Tuic => render_tuic(args, &mut values),
         Inbound::Vmess => render_vmess_inbound(args, &mut values),
         Inbound::Naive => render_naive(args, &mut values),
+        Inbound::Snell => render_snell(args, &mut values),
     };
     Ok(RenderedConfig {
         filename: format!("{canonical}.toml"),
@@ -644,6 +650,16 @@ fn render_naive(args: &GenerateMainConfigArgs, values: &mut serde_json::Value) -
     )
 }
 
+fn render_snell(args: &GenerateMainConfigArgs, values: &mut serde_json::Value) -> String {
+    let psk = password_url(24);
+    values["psk"] = serde_json::json!(psk);
+    format!(
+        "listen = {}\n\n[snell]\npsk = {}\nversion = 1\n",
+        q(&args.listen),
+        q(&psk)
+    )
+}
+
 fn q(value: &str) -> String {
     serde_json::to_string(value).expect("string serialization should not fail")
 }
@@ -662,6 +678,7 @@ fn inbound_name(inbound: Inbound) -> &'static str {
         Inbound::Tuic => "tuic",
         Inbound::Vmess => "vmess",
         Inbound::Naive => "naive",
+        Inbound::Snell => "snell",
     }
 }
 
@@ -760,6 +777,7 @@ mod tests {
         ("shadowsocks-aead", "shadowsocks-aead"),
         ("vmess", "vmess"),
         ("naive", "naive"),
+        ("snell", "snell"),
     ];
 
     fn args(cluster: &str) -> GenerateMainConfigArgs {
@@ -794,6 +812,7 @@ mod tests {
             ("privateKey", "<REALITY_PRIVATE_KEY>"),
             ("shortId", "<REALITY_SHORT_ID>"),
             ("password", "<PASSWORD>"),
+            ("psk", "<PSK>"),
             ("userPassword", "<USER_PASSWORD>"),
             ("obfsPassword", "<OBFS_PASSWORD>"),
         ] {
@@ -895,6 +914,9 @@ mod tests {
         let naive = render("naive");
         assert_eq!(value(&naive, "username"), "alice");
         assert_url_password_bytes(value(&naive, "password"), 24);
+
+        let snell = render("snell");
+        assert_url_password_bytes(value(&snell, "psk"), 24);
     }
 
     #[test]

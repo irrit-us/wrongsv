@@ -71,6 +71,9 @@ pub(crate) enum EndpointProfile {
     /// Naive (padded HTTP/2 CONNECT over TLS) inbound
     #[clap(name = "naive")]
     Naive,
+    /// Snell v1 AEAD TCP CONNECT inbound
+    #[clap(name = "snell")]
+    Snell,
 }
 
 pub(crate) fn detect_profile(
@@ -98,6 +101,7 @@ pub(crate) fn detect_profile(
         Some(config) if config.mixed.is_some() => EndpointProfile::Mixed,
         Some(config) if config.wireguard.is_some() => EndpointProfile::WireGuard,
         Some(config) if config.naive.is_some() => EndpointProfile::Naive,
+        Some(config) if config.snell.is_some() => EndpointProfile::Snell,
         Some(config) if config.tls.is_some() => EndpointProfile::Tls,
         _ => EndpointProfile::Raw,
     })
@@ -146,6 +150,7 @@ pub(crate) fn resolve_outer_security(
         | EndpointProfile::Kcp
         | EndpointProfile::Vmess
         | EndpointProfile::Shadowsocks
+        | EndpointProfile::Snell
         | EndpointProfile::Mixed
         | EndpointProfile::WireGuard => None,
     }
@@ -278,6 +283,7 @@ fn has_configured_fallback_destination(
         | EndpointProfile::Kcp
         | EndpointProfile::Vmess
         | EndpointProfile::Shadowsocks
+        | EndpointProfile::Snell
         | EndpointProfile::Mixed
         | EndpointProfile::WireGuard => None,
     };

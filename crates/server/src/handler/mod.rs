@@ -78,6 +78,8 @@ pub(crate) mod vmess_handler;
 pub(crate) use vmess_handler::*;
 pub(crate) mod naive;
 pub(crate) use naive::*;
+pub(crate) mod snell;
+pub(crate) use snell::*;
 
 #[derive(Clone, Debug)]
 pub struct ShutdownSignal {
@@ -184,6 +186,7 @@ pub struct InboundServer {
     shadowtls_config: Option<ShadowTlsConfig>,
     vmess_config: Option<VmessHandlerConfig>,
     naive_config: Option<NaiveConfig>,
+    snell_config: Option<SnellHandlerConfig>,
 }
 
 impl InboundServer {
@@ -405,6 +408,14 @@ impl InboundServer {
             }
             None => None,
         };
+        let snell_config = match &config.snell {
+            Some(sc) => {
+                let cfg = parse_snell_config(sc)?;
+                info!("Snell enabled (v{})", cfg.version().as_u8());
+                Some(cfg)
+            }
+            None => None,
+        };
         if let Some(ref rc) = reality_config {
             let rpk_hex: String = rc
                 .cert_material
@@ -479,6 +490,7 @@ impl InboundServer {
             shadowtls_config,
             vmess_config,
             naive_config,
+            snell_config,
         })
     }
 
@@ -634,6 +646,8 @@ impl InboundServer {
             "VMess"
         } else if self.naive_config.is_some() {
             "Naive"
+        } else if self.snell_config.is_some() {
+            "Snell"
         } else if self.hysteria2_config.is_some() {
             "Hysteria2"
         } else if self.tuic_config.is_some() {
@@ -677,6 +691,7 @@ impl InboundServer {
         let shadowtls_config = self.shadowtls_config.clone();
         let vmess_config = self.vmess_config.clone();
         let naive_config = self.naive_config.clone();
+        let snell_config = self.snell_config.clone();
         let hysteria2_enabled = self.hysteria2_config.is_some();
         let tuic_enabled = self.tuic_config.is_some();
         let webtransport_enabled = self.webtransport_config.is_some();
@@ -721,6 +736,7 @@ impl InboundServer {
                     let stc = shadowtls_config.clone();
                     let vmc = vmess_config.clone();
                     let nc = naive_config.clone();
+                    let snc = snell_config.clone();
                     thread::spawn(move || {
                         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                             if let Some(ref rc) = rc {
@@ -762,6 +778,8 @@ impl InboundServer {
                                 handle_vmess_connection(stream, vmc, m)
                             } else if let Some(ref nc) = nc {
                                 handle_naive_connection(stream, nc, m)
+                            } else if let Some(ref snc) = snc {
+                                handle_snell_connection(stream, snc)
                             } else {
                                 handle_connection(stream, v, m)
                             }

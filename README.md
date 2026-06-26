@@ -20,7 +20,7 @@
 
 ---
 
-A minimal, high-performance proxy server with VLESS, XTLS Vision flow, REALITY / AnyTLS / plain TLS / WebSocket / HTTPUpgrade transport layers, VLESS raw UDP / packetaddr UDP / WebSocket Mux.Cool/XUDP UDP relay, Shadowsocks AEAD/AEAD-2022 TCP/UDP inbound, mixed SOCKS4/4A/SOCKS5/HTTP proxy inbound, and Trojan TLS TCP/UDP inbound.
+A minimal, high-performance proxy server with VLESS, XTLS Vision flow, REALITY / AnyTLS / plain TLS / WebSocket / HTTPUpgrade transport layers, VLESS raw UDP / packetaddr UDP / WebSocket Mux.Cool/XUDP UDP relay, Shadowsocks AEAD/AEAD-2022 TCP/UDP inbound, Snell v1 TCP inbound, mixed SOCKS4/4A/SOCKS5/HTTP proxy inbound, and Trojan TLS TCP/UDP inbound.
 
 ## Architecture
 
@@ -30,6 +30,7 @@ wrongsv (binary)
 ├── reality         — REALITY TLS 1.3 authentication with spider fallback
 ├── anytls          — AnyTLS TLS disguise with SHA-256 password auth + fallback
 ├── shadowsocks     — Shadowsocks AEAD/AEAD-2022 TCP/UDP codec and relay
+├── snell           — Snell v1 AEAD TCP CONNECT codec and relay
 ├── mixed proxy     — SOCKS4/4A, SOCKS5 CONNECT, and HTTP forward/CONNECT inbound relay
 ├── trojan          — Trojan over TLS TCP/UDP inbound relay with fallback
 ├── vless           — user validator, XTLS Vision padding/unpadding
@@ -47,6 +48,7 @@ wrongsv (binary)
 - **VLESS WebSocket** — raw WS/TLS+WS carrier with pipelined TCP payloads, raw UDP packets, and Mux.Cool/XUDP UDP over WS
 - **VLESS HTTPUpgrade** — V2Ray/Xray HTTP/1.1 upgrade carrier with raw post-101 VLESS TCP/UDP/packetaddr relay and real-client sing-box/mihomo/xray coverage
 - **Shadowsocks AEAD/AEAD-2022 TCP/UDP** — classic `aes-128-gcm`, `aes-256-gcm`, `chacha20-ietf-poly1305`, plus required `2022-blake3-aes-128-gcm` and `2022-blake3-aes-256-gcm`
+- **Snell v1 TCP inbound** — Snell AEAD stream framing with Argon2id-derived ChaCha20-Poly1305 keys and TCP CONNECT relay
 - **Mixed proxy inbound** — SOCKS4/4A, SOCKS5 CONNECT, HTTP absolute-form forwarding, and HTTP CONNECT; optional shared credentials apply to SOCKS5/HTTP and disable SOCKS4/4A
 - **Trojan TLS TCP/UDP inbound** — SHA224 password authentication, SOCKS5-style destination headers, pipelined TCP payload relay, UDP ASSOCIATE packet relay, and decrypted plaintext fallback
 - **Naive proxy inbound** — HTTP/2 CONNECT over TLS with HTTP Basic auth and padded framing
@@ -125,6 +127,7 @@ Pick an example from [`configs/`](configs/):
 | [`vmess.toml`](configs/vmess.toml) | VMess AEAD | n/a | Standalone VMess AEAD proxy |
 | [`shadowsocks-aead.toml`](configs/shadowsocks-aead.toml) | Shadowsocks AEAD | n/a | TCP/UDP relay for Shadowsocks-compatible clients |
 | [`shadowsocks-2022.toml`](configs/shadowsocks-2022.toml) | Shadowsocks AEAD-2022 | n/a | TCP/UDP relay for sing-box/mihomo/xray Shadowsocks 2022 clients |
+| [`snell.toml`](configs/snell.toml) | Snell v1 | n/a | TCP CONNECT relay for Snell-compatible clients |
 | [`mixed-proxy.toml`](configs/mixed-proxy.toml) | SOCKS4/4A / SOCKS5 / HTTP proxy | n/a | Local/LAN mixed proxy inbound |
 | [`trojan-tls.toml`](configs/trojan-tls.toml) | Trojan over TLS | n/a | TCP/UDP relay for Trojan-compatible clients |
 | [`naive.toml`](configs/naive.toml) | Naive proxy | n/a | HTTP/2 CONNECT over TLS with padded framing |

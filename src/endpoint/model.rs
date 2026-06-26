@@ -22,6 +22,8 @@ pub(crate) enum ProxyProtocol {
     WireGuard,
     #[serde(rename = "naive")]
     Naive,
+    #[serde(rename = "snell")]
+    Snell,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -213,6 +215,15 @@ impl EndpointModel {
                 payload_networks: vec![PayloadNetwork::Tcp],
                 transport: Some(TransportMethod::H2Connect),
                 outer_security: Some(OuterSecurity::Tls),
+                protocol_internal_security: None,
+                base_carriers: vec![BaseCarrier::Tcp],
+                components: EndpointComponents::default(),
+            },
+            Transport::Snell => EndpointModel {
+                protocol: ProxyProtocol::Snell,
+                payload_networks: vec![PayloadNetwork::Tcp],
+                transport: Some(TransportMethod::Raw),
+                outer_security: None,
                 protocol_internal_security: None,
                 base_carriers: vec![BaseCarrier::Tcp],
                 components: EndpointComponents::default(),
