@@ -8,6 +8,7 @@ documentation and maps it to wrongsv implementation status.
 | Protocol | wrongsv status | Upstream overlap |
 | --- | --- | --- |
 | VLESS raw TCP | Implemented | xray, sing-box, mihomo |
+| Fragmented TCP writes | Implemented for raw VLESS tolerance: wrongsv accepts byte-fragmented client request headers, and wrongcl can split selected raw VLESS upstream writes with configurable chunk/delay ranges. | xray finalmask fragment, sing-box fragment |
 | VLESS + TLS | Implemented | xray, sing-box, mihomo |
 | VLESS + REALITY | Implemented | xray, sing-box, mihomo |
 | VLESS + WebSocket | Implemented for raw WS and TLS+WS, including raw VLESS UDP packet relay and Mux.Cool/XUDP UDP relay over WS | xray, sing-box, mihomo |

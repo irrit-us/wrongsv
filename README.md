@@ -44,6 +44,7 @@ wrongsv (binary)
 ## Features
 
 - **VLESS** — stateless proxy with UUID authentication and extensible addons
+- **Fragment tolerance** — raw VLESS accepts byte-fragmented client writes; wrongcl can generate configurable Fragment write-splitting for raw VLESS
 - **VLESS UDP packetaddr** — V2Ray 5+ `sp.packet-addr.v2fly.arpa` packet-address UDP relay across raw TCP, TLS/REALITY/AnyTLS, and WebSocket carriers
 - **VLESS WebSocket** — raw WS/TLS+WS carrier with pipelined TCP payloads, raw UDP packets, and Mux.Cool/XUDP UDP over WS
 - **VLESS HTTPUpgrade** — V2Ray/Xray HTTP/1.1 upgrade carrier with raw post-101 VLESS TCP/UDP/packetaddr relay and real-client sing-box/mihomo/xray coverage
