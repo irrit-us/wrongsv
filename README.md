@@ -49,6 +49,7 @@ wrongsv (binary)
 - **Shadowsocks AEAD/AEAD-2022 TCP/UDP** — classic `aes-128-gcm`, `aes-256-gcm`, `chacha20-ietf-poly1305`, plus required `2022-blake3-aes-128-gcm` and `2022-blake3-aes-256-gcm`
 - **Mixed proxy inbound** — SOCKS4/4A, SOCKS5 CONNECT, HTTP absolute-form forwarding, and HTTP CONNECT; optional shared credentials apply to SOCKS5/HTTP and disable SOCKS4/4A
 - **Trojan TLS TCP/UDP inbound** — SHA224 password authentication, SOCKS5-style destination headers, pipelined TCP payload relay, UDP ASSOCIATE packet relay, and decrypted plaintext fallback
+- **Naive proxy inbound** — HTTP/2 CONNECT over TLS with HTTP Basic auth and padded framing
 - **REALITY** — TLS 1.3 handshake hijacking, X25519 ECDH auth, dynamic certs, spider fallback
 - **AnyTLS** — TLS 1.3 + SHA-256 password auth with configurable padding
 - **Plain TLS** — Standard TLS 1.3, compatible with sing-box/mihomo/xray-core `tls` transport
@@ -126,6 +127,7 @@ Pick an example from [`configs/`](configs/):
 | [`shadowsocks-2022.toml`](configs/shadowsocks-2022.toml) | Shadowsocks AEAD-2022 | n/a | TCP/UDP relay for sing-box/mihomo/xray Shadowsocks 2022 clients |
 | [`mixed-proxy.toml`](configs/mixed-proxy.toml) | SOCKS4/4A / SOCKS5 / HTTP proxy | n/a | Local/LAN mixed proxy inbound |
 | [`trojan-tls.toml`](configs/trojan-tls.toml) | Trojan over TLS | n/a | TCP/UDP relay for Trojan-compatible clients |
+| [`naive.toml`](configs/naive.toml) | Naive proxy | n/a | HTTP/2 CONNECT over TLS with padded framing |
 | [`hysteria2.toml`](configs/hysteria2.toml) | Hysteria2 | n/a | QUIC-based Hysteria2 inbound |
 | [`tuic.toml`](configs/tuic.toml) | TUIC | n/a | QUIC-based TUIC v5 inbound |
 

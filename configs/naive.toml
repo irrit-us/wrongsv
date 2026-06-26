@@ -1,0 +1,19 @@
+# Naive proxy inbound (HTTP/2 CONNECT over TLS with padded framing).
+# Compatible with Naive/naiveproxy-style clients.
+
+listen = "0.0.0.0:443"
+
+[naive]
+padding_header_name = "Padding"
+
+# Public deployments should configure a certificate trusted by clients.
+# A self-signed ECDSA P-256 certificate is generated when omitted.
+[naive.tls]
+# dest = "127.0.0.1:8080"
+# certificate = """-----BEGIN CERTIFICATE-----..."""
+# key = """-----BEGIN PRIVATE KEY-----..."""
+
+[[naive.users]]
+username = "alice"
+password = "change-this-password"
+email = "user@example.com"

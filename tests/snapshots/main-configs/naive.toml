@@ -1,0 +1,12 @@
+listen = "0.0.0.0:443"
+
+[naive]
+padding_header_name = "Padding"
+
+[naive.tls]
+dest = "127.0.0.1:8080"
+
+[[naive.users]]
+username = "alice"
+password = "<PASSWORD>"
+email = "user@example.com"

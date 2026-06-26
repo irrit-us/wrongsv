@@ -3,6 +3,7 @@
 # For Shadowsocks, configure `[shadowsocks]` instead of `users`.
 # For SOCKS4/4A/SOCKS5/HTTP proxy, configure `[mixed]` instead of `users`.
 # For Trojan over TLS, configure `[trojan]` instead of `users`.
+# For Naive over HTTP/2 CONNECT/TLS, configure `[naive]` instead of `users`.
 
 listen = "0.0.0.0:443"
 
@@ -19,6 +20,7 @@ listen = "0.0.0.0:443"
 #   [shadowsocks] — Shadowsocks AEAD/AEAD-2022 TCP/UDP inbound
 #   [mixed]   — SOCKS4/4A + SOCKS5 CONNECT + HTTP forward/CONNECT inbound
 #   [trojan]  — Trojan over TLS TCP/UDP inbound
+#   [naive]   — HTTP/2 CONNECT over TLS with padded framing
 
 # ── REALITY example ────────────────────────────────────────────────────────────
 # [reality]
@@ -99,6 +101,21 @@ listen = "0.0.0.0:443"
 # Multi-user form:
 # [[trojan.users]]
 # password = "another-secure-password"
+# email = "user@example.com"
+
+# ── Naive HTTP/2 CONNECT over TLS example ─────────────────────────────────────
+# Use this instead of users/VLESS transports for a Naive listener.
+# [naive]
+# padding_header_name = "Padding"
+#
+# [naive.tls]
+# dest = "127.0.0.1:8080"
+# certificate = """-----BEGIN CERTIFICATE-----..."""
+# key = """-----BEGIN PRIVATE KEY-----..."""
+#
+# [[naive.users]]
+# username = "alice"
+# password = "your-secure-password"
 # email = "user@example.com"
 
 [[users]]

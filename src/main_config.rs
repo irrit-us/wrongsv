@@ -23,6 +23,7 @@ Supported cooperative clusters:
   shadowsocks-2022      shadowsocks 2022 method
   shadowsocks-aead      shadowsocks AEAD method
   vmess                 vmess
+  naive                 naive h2 CONNECT over TLS
 
 Component form also works with comma or plus separators, for example:
   --cluster anytls,vision
@@ -87,6 +88,7 @@ enum Inbound {
     Hysteria2,
     Tuic,
     Vmess,
+    Naive,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -252,6 +254,7 @@ impl ComponentSet {
             "hysteria2" => self.set_inbound(Inbound::Hysteria2),
             "tuic" => self.set_inbound(Inbound::Tuic),
             "vmess" => self.set_inbound(Inbound::Vmess),
+            "naive" => self.set_inbound(Inbound::Naive),
             "gecko" => self.set_hysteria_obfs(HysteriaObfs::Gecko),
             "salamander" => self.set_hysteria_obfs(HysteriaObfs::Salamander),
             "raw" | "tcp" => Ok(()),
@@ -368,6 +371,7 @@ impl ComponentSet {
             },
             Inbound::Tuic => "tuic".into(),
             Inbound::Vmess => "vmess".into(),
+            Inbound::Naive => "naive".into(),
             Inbound::Vless => {
                 if let Some(framing) = self.framing {
                     return match framing {
@@ -417,6 +421,7 @@ fn expand_cluster(cluster: &str) -> Result<Vec<String>, String> {
         "trojan-tls" => return Ok(tokens(&["trojan"])),
         "tuic" => return Ok(tokens(&["tuic"])),
         "vmess" => return Ok(tokens(&["vmess"])),
+        "naive" => return Ok(tokens(&["naive"])),
         "vless-raw" => return Ok(tokens(&["vless"])),
         _ => {}
     }
@@ -460,6 +465,7 @@ fn render_config(
         Inbound::Hysteria2 => render_hysteria2(components, args, &mut values),
         Inbound::Tuic => render_tuic(args, &mut values),
         Inbound::Vmess => render_vmess_inbound(args, &mut values),
+        Inbound::Naive => render_naive(args, &mut values),
     };
     Ok(RenderedConfig {
         filename: format!("{canonical}.toml"),
@@ -622,6 +628,22 @@ fn render_vmess_inbound(args: &GenerateMainConfigArgs, values: &mut serde_json::
     )
 }
 
+fn render_naive(args: &GenerateMainConfigArgs, values: &mut serde_json::Value) -> String {
+    let username = "alice";
+    let password = password_url(24);
+    values["username"] = serde_json::json!(username);
+    values["password"] = serde_json::json!(password);
+    values["fallbackDest"] = serde_json::json!(args.fallback_dest);
+    format!(
+        "listen = {}\n\n[naive]\npadding_header_name = \"Padding\"\n\n[naive.tls]\ndest = {}\n\n[[naive.users]]\nusername = {}\npassword = {}\nemail = {}\n",
+        q(&args.listen),
+        q(&args.fallback_dest),
+        q(username),
+        q(&password),
+        q(&args.email)
+    )
+}
+
 fn q(value: &str) -> String {
     serde_json::to_string(value).expect("string serialization should not fail")
 }
@@ -639,6 +661,7 @@ fn inbound_name(inbound: Inbound) -> &'static str {
         Inbound::Hysteria2 => "hysteria2",
         Inbound::Tuic => "tuic",
         Inbound::Vmess => "vmess",
+        Inbound::Naive => "naive",
     }
 }
 
@@ -736,6 +759,7 @@ mod tests {
         ("shadowsocks-2022", "shadowsocks-2022"),
         ("shadowsocks-aead", "shadowsocks-aead"),
         ("vmess", "vmess"),
+        ("naive", "naive"),
     ];
 
     fn args(cluster: &str) -> GenerateMainConfigArgs {
@@ -867,6 +891,10 @@ mod tests {
 
         let vmess = render("vmess");
         assert_uuid_v4(value(&vmess, "uuid"));
+
+        let naive = render("naive");
+        assert_eq!(value(&naive, "username"), "alice");
+        assert_url_password_bytes(value(&naive, "password"), 24);
     }
 
     #[test]
