@@ -104,6 +104,8 @@ pub(crate) fn handle_brook_connection(
                 break;
             }
         }
+        let _ = target_clone.shutdown(std::net::Shutdown::Both);
+        let _ = stream_clone.shutdown(std::net::Shutdown::Both);
     });
 
     let mut buf = [0u8; 4096];
@@ -115,6 +117,8 @@ pub(crate) fn handle_brook_connection(
             break;
         }
     }
+    let _ = target.shutdown(std::net::Shutdown::Both);
+    let _ = stream.shutdown(std::net::Shutdown::Both);
 
     t1.join().ok();
     Ok(())
