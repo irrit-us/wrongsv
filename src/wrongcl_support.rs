@@ -29,6 +29,19 @@ const KNOWN_WRONGCL_PROFILES: &[(&str, &str)] = &[
     ("wireguard", "WireGuard"),
     ("naive", "Naive"),
     ("snell", "Snell"),
+    ("lua", "Lua"),
+    ("masque", "Masque"),
+    ("trusttunnel", "TrustTunnel"),
+    ("brook", "Brook"),
+    ("vlite", "Vlite"),
+    ("tor", "Tor"),
+    ("ssh", "SSH"),
+    ("juicity", "Juicity"),
+    ("mieru", "Mieru"),
+    ("sudoku", "Sudoku"),
+    ("vless-encryption", "VLESS-Encryption"),
+    ("shadowquic", "ShadowQUIC"),
+    ("anytls-reality", "AnyTLS-Reality"),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -276,6 +289,19 @@ fn wrongcl_profile_implemented(profile: &str) -> bool {
             | "wireguard"
             | "naive"
             | "snell"
+            | "lua"
+            | "masque"
+            | "trusttunnel"
+            | "brook"
+            | "vlite"
+            | "tor"
+            | "ssh"
+            | "juicity"
+            | "mieru"
+            | "sudoku"
+            | "vless-encryption"
+            | "shadowquic"
+            | "anytls-reality"
     )
 }
 
@@ -284,7 +310,8 @@ fn wrongcl_profile_support_level(profile: &str) -> WrongclSupportLevel {
         "raw" | "tls" | "reality" | "anytls" | "shadowtls" | "hysteria2" | "tuic" | "quic"
         | "kcp" | "meek" | "gdocsviewer" | "webtransport" | "websocket" | "httpupgrade"
         | "xhttp" | "grpc" | "trojan" | "mixed" | "shadowsocks" | "wireguard" | "naive"
-        | "snell" => WrongclSupportLevel::Supported,
+        | "snell" | "lua" | "masque" | "trusttunnel" | "brook" | "vlite" | "tor" | "ssh"
+        | "juicity" | "mieru" | "sudoku" | "vless-encryption" | "shadowquic" | "anytls-reality" => WrongclSupportLevel::Supported,
         _ => WrongclSupportLevel::Unsupported,
     }
 }
@@ -325,6 +352,19 @@ fn wrongcl_support_reason(profile: &str, support: WrongclSupportLevel) -> String
         "trojan" => "Trojan over TLS with TCP and UDP".into(),
         "mixed" => "remote SOCKS5 or HTTP CONNECT proxy over raw TCP".into(),
         "shadowsocks" => "Shadowsocks over raw TCP with TCP and UDP".into(),
+        "lua" => "Lua configuration scripting over TCP".into(),
+        "masque" => "Masque TCP/UDP tunneling over QUIC/TLS".into(),
+        "trusttunnel" => "TrustTunnel secure TCP tunneling".into(),
+        "brook" => "Brook TCP/UDP proxying over raw TCP".into(),
+        "vlite" => "Vlite TCP/UDP proxying over raw TCP".into(),
+        "tor" => "Tor obfs4/meek bridge proxy entry over TCP".into(),
+        "ssh" => "SSH tunneling over raw TCP".into(),
+        "juicity" => "Juicity TCP/UDP tunneling over QUIC/TLS".into(),
+        "mieru" => "Mieru TCP/UDP proxying over raw TCP".into(),
+        "sudoku" => "Sudoku obfuscated TCP proxying".into(),
+        "vless-encryption" => "VLESS-Encryption secure TCP proxying".into(),
+        "shadowquic" => "ShadowQUIC TCP/UDP tunneling over QUIC/TLS".into(),
+        "anytls-reality" => "AnyTLS-Reality TCP proxying over REALITY/TLS".into(),
         _ => "implemented in part, but not yet available as a complete wrongcl local-proxy stack"
             .into(),
     }

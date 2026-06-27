@@ -152,7 +152,22 @@ fn validate_client_format_support(
                 ));
             }
         }
-        ProxyProtocol::Mixed | ProxyProtocol::Naive | ProxyProtocol::Snell => {
+        ProxyProtocol::Mixed
+        | ProxyProtocol::Naive
+        | ProxyProtocol::Snell
+        | ProxyProtocol::Lua
+        | ProxyProtocol::Masque
+        | ProxyProtocol::TrustTunnel
+        | ProxyProtocol::Brook
+        | ProxyProtocol::Vlite
+        | ProxyProtocol::Tor
+        | ProxyProtocol::Ssh
+        | ProxyProtocol::Juicity
+        | ProxyProtocol::Mieru
+        | ProxyProtocol::Sudoku
+        | ProxyProtocol::VlessEncryption
+        | ProxyProtocol::Shadowquic
+        | ProxyProtocol::AnytlsReality => {
             return Err(ClientExportSupportError::new(
                 "protocol_export_unimplemented",
                 format!(
@@ -1605,7 +1620,20 @@ mod tests {
             | Transport::Shadowsocks
             | Transport::Snell
             | Transport::Mixed
-            | Transport::WireGuard => None,
+            | Transport::WireGuard
+            | Transport::Lua
+            | Transport::Masque
+            | Transport::TrustTunnel
+            | Transport::Brook
+            | Transport::Vlite
+            | Transport::Tor
+            | Transport::Ssh
+            | Transport::Juicity
+            | Transport::Mieru
+            | Transport::Sudoku
+            | Transport::VlessEncryption
+            | Transport::Shadowquic
+            | Transport::AnytlsReality => None,
             Transport::Trojan | Transport::Hysteria2 | Transport::Tuic | Transport::Naive => {
                 Some(OuterSecurity::Tls)
             }

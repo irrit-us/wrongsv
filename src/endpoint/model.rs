@@ -24,6 +24,32 @@ pub(crate) enum ProxyProtocol {
     Naive,
     #[serde(rename = "snell")]
     Snell,
+    #[serde(rename = "lua")]
+    Lua,
+    #[serde(rename = "masque")]
+    Masque,
+    #[serde(rename = "trusttunnel")]
+    TrustTunnel,
+    #[serde(rename = "brook")]
+    Brook,
+    #[serde(rename = "vlite")]
+    Vlite,
+    #[serde(rename = "tor")]
+    Tor,
+    #[serde(rename = "ssh")]
+    Ssh,
+    #[serde(rename = "juicity")]
+    Juicity,
+    #[serde(rename = "mieru")]
+    Mieru,
+    #[serde(rename = "sudoku")]
+    Sudoku,
+    #[serde(rename = "vless-encryption")]
+    VlessEncryption,
+    #[serde(rename = "shadowquic")]
+    Shadowquic,
+    #[serde(rename = "anytls-reality")]
+    AnytlsReality,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -332,6 +358,123 @@ impl EndpointModel {
                     ..EndpointComponents::default()
                 },
             ),
+            Transport::Lua => EndpointModel {
+                protocol: ProxyProtocol::Lua,
+                payload_networks: vec![PayloadNetwork::Tcp],
+                transport: Some(TransportMethod::Raw),
+                outer_security: None,
+                protocol_internal_security: None,
+                base_carriers: vec![BaseCarrier::Tcp],
+                components: EndpointComponents::default(),
+            },
+            Transport::Masque => EndpointModel {
+                protocol: ProxyProtocol::Masque,
+                payload_networks: vec![PayloadNetwork::Tcp, PayloadNetwork::Udp],
+                transport: Some(TransportMethod::Quic),
+                outer_security: Some(OuterSecurity::Tls),
+                protocol_internal_security: None,
+                base_carriers: vec![BaseCarrier::Udp],
+                components: EndpointComponents::default(),
+            },
+            Transport::TrustTunnel => EndpointModel {
+                protocol: ProxyProtocol::TrustTunnel,
+                payload_networks: vec![PayloadNetwork::Tcp],
+                transport: Some(TransportMethod::Raw),
+                outer_security: None,
+                protocol_internal_security: None,
+                base_carriers: vec![BaseCarrier::Tcp],
+                components: EndpointComponents::default(),
+            },
+            Transport::Brook => EndpointModel {
+                protocol: ProxyProtocol::Brook,
+                payload_networks: vec![PayloadNetwork::Tcp, PayloadNetwork::Udp],
+                transport: Some(TransportMethod::Raw),
+                outer_security: None,
+                protocol_internal_security: None,
+                base_carriers: vec![BaseCarrier::Tcp, BaseCarrier::Udp],
+                components: EndpointComponents::default(),
+            },
+            Transport::Vlite => EndpointModel {
+                protocol: ProxyProtocol::Vlite,
+                payload_networks: vec![PayloadNetwork::Tcp, PayloadNetwork::Udp],
+                transport: Some(TransportMethod::Raw),
+                outer_security: None,
+                protocol_internal_security: None,
+                base_carriers: vec![BaseCarrier::Tcp, BaseCarrier::Udp],
+                components: EndpointComponents::default(),
+            },
+            Transport::Tor => EndpointModel {
+                protocol: ProxyProtocol::Tor,
+                payload_networks: vec![PayloadNetwork::Tcp],
+                transport: Some(TransportMethod::Raw),
+                outer_security: None,
+                protocol_internal_security: None,
+                base_carriers: vec![BaseCarrier::Tcp],
+                components: EndpointComponents::default(),
+            },
+            Transport::Ssh => EndpointModel {
+                protocol: ProxyProtocol::Ssh,
+                payload_networks: vec![PayloadNetwork::Tcp],
+                transport: Some(TransportMethod::Raw),
+                outer_security: None,
+                protocol_internal_security: None,
+                base_carriers: vec![BaseCarrier::Tcp],
+                components: EndpointComponents::default(),
+            },
+            Transport::Juicity => EndpointModel {
+                protocol: ProxyProtocol::Juicity,
+                payload_networks: vec![PayloadNetwork::Tcp, PayloadNetwork::Udp],
+                transport: Some(TransportMethod::Quic),
+                outer_security: Some(OuterSecurity::Tls),
+                protocol_internal_security: None,
+                base_carriers: vec![BaseCarrier::Udp],
+                components: EndpointComponents::default(),
+            },
+            Transport::Mieru => EndpointModel {
+                protocol: ProxyProtocol::Mieru,
+                payload_networks: vec![PayloadNetwork::Tcp, PayloadNetwork::Udp],
+                transport: Some(TransportMethod::Raw),
+                outer_security: None,
+                protocol_internal_security: None,
+                base_carriers: vec![BaseCarrier::Tcp, BaseCarrier::Udp],
+                components: EndpointComponents::default(),
+            },
+            Transport::Sudoku => EndpointModel {
+                protocol: ProxyProtocol::Sudoku,
+                payload_networks: vec![PayloadNetwork::Tcp],
+                transport: Some(TransportMethod::Raw),
+                outer_security: None,
+                protocol_internal_security: None,
+                base_carriers: vec![BaseCarrier::Tcp],
+                components: EndpointComponents::default(),
+            },
+            Transport::VlessEncryption => EndpointModel {
+                protocol: ProxyProtocol::VlessEncryption,
+                payload_networks: vec![PayloadNetwork::Tcp],
+                transport: Some(TransportMethod::Raw),
+                outer_security: None,
+                protocol_internal_security: None,
+                base_carriers: vec![BaseCarrier::Tcp],
+                components: EndpointComponents::default(),
+            },
+            Transport::Shadowquic => EndpointModel {
+                protocol: ProxyProtocol::Shadowquic,
+                payload_networks: vec![PayloadNetwork::Tcp, PayloadNetwork::Udp],
+                transport: Some(TransportMethod::Quic),
+                outer_security: Some(OuterSecurity::Tls),
+                protocol_internal_security: None,
+                base_carriers: vec![BaseCarrier::Udp],
+                components: EndpointComponents::default(),
+            },
+            Transport::AnytlsReality => EndpointModel {
+                protocol: ProxyProtocol::AnytlsReality,
+                payload_networks: vec![PayloadNetwork::Tcp],
+                transport: Some(TransportMethod::Raw),
+                outer_security: Some(OuterSecurity::Reality),
+                protocol_internal_security: None,
+                base_carriers: vec![BaseCarrier::Tcp],
+                components: EndpointComponents::default(),
+            },
         }
     }
 

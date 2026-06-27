@@ -74,6 +74,45 @@ pub(crate) enum EndpointProfile {
     /// Snell v1 AEAD TCP CONNECT inbound
     #[clap(name = "snell")]
     Snell,
+    /// Lua configuration
+    #[clap(name = "lua")]
+    Lua,
+    /// Masque configuration
+    #[clap(name = "masque")]
+    Masque,
+    /// TrustTunnel configuration
+    #[clap(name = "trusttunnel")]
+    TrustTunnel,
+    /// Brook configuration
+    #[clap(name = "brook")]
+    Brook,
+    /// Vlite configuration
+    #[clap(name = "vlite")]
+    Vlite,
+    /// Tor configuration
+    #[clap(name = "tor")]
+    Tor,
+    /// SSH configuration
+    #[clap(name = "ssh")]
+    Ssh,
+    /// Juicity configuration
+    #[clap(name = "juicity")]
+    Juicity,
+    /// Mieru configuration
+    #[clap(name = "mieru")]
+    Mieru,
+    /// Sudoku configuration
+    #[clap(name = "sudoku")]
+    Sudoku,
+    /// VLESS-Encryption configuration
+    #[clap(name = "vless-encryption")]
+    VlessEncryption,
+    /// ShadowQUIC configuration
+    #[clap(name = "shadowquic")]
+    Shadowquic,
+    /// AnyTLS-Reality configuration
+    #[clap(name = "anytls-reality")]
+    AnytlsReality,
 }
 
 pub(crate) fn detect_profile(
@@ -102,6 +141,19 @@ pub(crate) fn detect_profile(
         Some(config) if config.wireguard.is_some() => EndpointProfile::WireGuard,
         Some(config) if config.naive.is_some() => EndpointProfile::Naive,
         Some(config) if config.snell.is_some() => EndpointProfile::Snell,
+        Some(config) if config.lua.is_some() => EndpointProfile::Lua,
+        Some(config) if config.masque.is_some() => EndpointProfile::Masque,
+        Some(config) if config.trusttunnel.is_some() => EndpointProfile::TrustTunnel,
+        Some(config) if config.brook.is_some() => EndpointProfile::Brook,
+        Some(config) if config.vlite.is_some() => EndpointProfile::Vlite,
+        Some(config) if config.tor.is_some() => EndpointProfile::Tor,
+        Some(config) if config.ssh.is_some() => EndpointProfile::Ssh,
+        Some(config) if config.juicity.is_some() => EndpointProfile::Juicity,
+        Some(config) if config.mieru.is_some() => EndpointProfile::Mieru,
+        Some(config) if config.sudoku.is_some() => EndpointProfile::Sudoku,
+        Some(config) if config.vless_encryption.is_some() => EndpointProfile::VlessEncryption,
+        Some(config) if config.shadowquic.is_some() => EndpointProfile::Shadowquic,
+        Some(config) if config.anytls_reality.is_some() => EndpointProfile::AnytlsReality,
         Some(config) if config.tls.is_some() => EndpointProfile::Tls,
         _ => EndpointProfile::Raw,
     })
@@ -152,7 +204,20 @@ pub(crate) fn resolve_outer_security(
         | EndpointProfile::Shadowsocks
         | EndpointProfile::Snell
         | EndpointProfile::Mixed
-        | EndpointProfile::WireGuard => None,
+        | EndpointProfile::WireGuard
+        | EndpointProfile::Lua
+        | EndpointProfile::Masque
+        | EndpointProfile::TrustTunnel
+        | EndpointProfile::Brook
+        | EndpointProfile::Vlite
+        | EndpointProfile::Tor
+        | EndpointProfile::Ssh
+        | EndpointProfile::Juicity
+        | EndpointProfile::Mieru
+        | EndpointProfile::Sudoku
+        | EndpointProfile::VlessEncryption
+        | EndpointProfile::Shadowquic
+        | EndpointProfile::AnytlsReality => None,
     }
 }
 
@@ -285,7 +350,20 @@ fn has_configured_fallback_destination(
         | EndpointProfile::Shadowsocks
         | EndpointProfile::Snell
         | EndpointProfile::Mixed
-        | EndpointProfile::WireGuard => None,
+        | EndpointProfile::WireGuard
+        | EndpointProfile::Lua
+        | EndpointProfile::Masque
+        | EndpointProfile::TrustTunnel
+        | EndpointProfile::Brook
+        | EndpointProfile::Vlite
+        | EndpointProfile::Tor
+        | EndpointProfile::Ssh
+        | EndpointProfile::Juicity
+        | EndpointProfile::Mieru
+        | EndpointProfile::Sudoku
+        | EndpointProfile::VlessEncryption
+        | EndpointProfile::Shadowquic
+        | EndpointProfile::AnytlsReality => None,
     };
     dest.is_some_and(|value| !value.trim().is_empty())
 }

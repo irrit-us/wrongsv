@@ -112,6 +112,45 @@ pub struct Config {
     /// AEAD TCP CONNECT proxy traffic instead of VLESS.
     #[serde(default)]
     pub snell: Option<SnellServerConfig>,
+    /// Lua configuration
+    #[serde(default)]
+    pub lua: Option<LuaServerConfig>,
+    /// Masque configuration
+    #[serde(default)]
+    pub masque: Option<MasqueServerConfig>,
+    /// TrustTunnel configuration
+    #[serde(default)]
+    pub trusttunnel: Option<TrustTunnelServerConfig>,
+    /// Brook configuration
+    #[serde(default)]
+    pub brook: Option<BrookServerConfig>,
+    /// Vlite configuration
+    #[serde(default)]
+    pub vlite: Option<VliteServerConfig>,
+    /// Tor configuration
+    #[serde(default)]
+    pub tor: Option<TorServerConfig>,
+    /// SSH configuration
+    #[serde(default)]
+    pub ssh: Option<SshServerConfig>,
+    /// Juicity configuration
+    #[serde(default)]
+    pub juicity: Option<JuicityServerConfig>,
+    /// Mieru configuration
+    #[serde(default)]
+    pub mieru: Option<MieruServerConfig>,
+    /// Sudoku configuration
+    #[serde(default)]
+    pub sudoku: Option<SudokuServerConfig>,
+    /// VLESS-Encryption configuration
+    #[serde(default)]
+    pub vless_encryption: Option<VlessEncryptionServerConfig>,
+    /// ShadowQUIC configuration
+    #[serde(default)]
+    pub shadowquic: Option<ShadowquicServerConfig>,
+    /// AnyTLS-Reality configuration
+    #[serde(default)]
+    pub anytls_reality: Option<AnytlsRealityServerConfig>,
     /// Optional metrics endpoint. When set, an HTTP listener exposes a
     /// Prometheus-format `/metrics` endpoint with per-user (by email) byte
     /// counters and system stats. Off by default.
@@ -813,6 +852,72 @@ pub struct ShadowTlsServerConfig {
     pub key: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct LuaServerConfig {
+    pub script_path: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MasqueServerConfig {
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TrustTunnelServerConfig {
+    pub key: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BrookServerConfig {
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VliteServerConfig {
+    pub key: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TorServerConfig {
+    pub bridge_line: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SshServerConfig {
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JuicityServerConfig {
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MieruServerConfig {
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SudokuServerConfig {
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VlessEncryptionServerConfig {
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ShadowquicServerConfig {
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AnytlsRealityServerConfig {
+    pub password: String,
+    pub private_key: String,
+}
+
 pub(crate) fn is_strict_uuid_text(s: &str) -> bool {
     let mut hex_len = 0usize;
     for ch in s.chars() {
@@ -1135,6 +1240,19 @@ impl Config {
             self.wireguard.is_some(),
             self.naive.is_some(),
             self.snell.is_some(),
+            self.lua.is_some(),
+            self.masque.is_some(),
+            self.trusttunnel.is_some(),
+            self.brook.is_some(),
+            self.vlite.is_some(),
+            self.tor.is_some(),
+            self.ssh.is_some(),
+            self.juicity.is_some(),
+            self.mieru.is_some(),
+            self.sudoku.is_some(),
+            self.vless_encryption.is_some(),
+            self.shadowquic.is_some(),
+            self.anytls_reality.is_some(),
         ]
         .into_iter()
         .filter(|&e| e)
@@ -1736,6 +1854,19 @@ flow = "xtls-rprx-vision"
             vmess: None,
             naive: None,
             snell: None,
+            lua: None,
+            masque: None,
+            trusttunnel: None,
+            brook: None,
+            vlite: None,
+            tor: None,
+            ssh: None,
+            juicity: None,
+            mieru: None,
+            sudoku: None,
+            vless_encryption: None,
+            shadowquic: None,
+            anytls_reality: None,
             metrics: None,
         };
         assert!(config.validate().is_err());
@@ -1776,6 +1907,19 @@ flow = "xtls-rprx-vision"
             vmess: None,
             naive: None,
             snell: None,
+            lua: None,
+            masque: None,
+            trusttunnel: None,
+            brook: None,
+            vlite: None,
+            tor: None,
+            ssh: None,
+            juicity: None,
+            mieru: None,
+            sudoku: None,
+            vless_encryption: None,
+            shadowquic: None,
+            anytls_reality: None,
             metrics: None,
         };
         assert!(config.validate().is_err());

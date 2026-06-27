@@ -80,6 +80,8 @@ pub(crate) mod naive;
 pub(crate) use naive::*;
 pub(crate) mod snell;
 pub(crate) use snell::*;
+pub(crate) mod experimental;
+pub(crate) use experimental::*;
 
 #[derive(Clone, Debug)]
 pub struct ShutdownSignal {
@@ -187,6 +189,19 @@ pub struct InboundServer {
     vmess_config: Option<VmessHandlerConfig>,
     naive_config: Option<NaiveConfig>,
     snell_config: Option<SnellHandlerConfig>,
+    lua_config: Option<crate::config::LuaServerConfig>,
+    masque_config: Option<crate::config::MasqueServerConfig>,
+    trusttunnel_config: Option<crate::config::TrustTunnelServerConfig>,
+    brook_config: Option<crate::config::BrookServerConfig>,
+    vlite_config: Option<crate::config::VliteServerConfig>,
+    tor_config: Option<crate::config::TorServerConfig>,
+    ssh_config: Option<crate::config::SshServerConfig>,
+    juicity_config: Option<crate::config::JuicityServerConfig>,
+    mieru_config: Option<crate::config::MieruServerConfig>,
+    sudoku_config: Option<crate::config::SudokuServerConfig>,
+    vless_encryption_config: Option<crate::config::VlessEncryptionServerConfig>,
+    shadowquic_config: Option<crate::config::ShadowquicServerConfig>,
+    anytls_reality_config: Option<crate::config::AnytlsRealityServerConfig>,
 }
 
 impl InboundServer {
@@ -416,6 +431,58 @@ impl InboundServer {
             }
             None => None,
         };
+        let lua_config = config.lua.clone();
+        if lua_config.is_some() {
+            info!("Lua enabled");
+        }
+        let masque_config = config.masque.clone();
+        if masque_config.is_some() {
+            info!("Masque enabled");
+        }
+        let trusttunnel_config = config.trusttunnel.clone();
+        if trusttunnel_config.is_some() {
+            info!("TrustTunnel enabled");
+        }
+        let brook_config = config.brook.clone();
+        if brook_config.is_some() {
+            info!("Brook enabled");
+        }
+        let vlite_config = config.vlite.clone();
+        if vlite_config.is_some() {
+            info!("Vlite enabled");
+        }
+        let tor_config = config.tor.clone();
+        if tor_config.is_some() {
+            info!("Tor enabled");
+        }
+        let ssh_config = config.ssh.clone();
+        if ssh_config.is_some() {
+            info!("SSH enabled");
+        }
+        let juicity_config = config.juicity.clone();
+        if juicity_config.is_some() {
+            info!("Juicity enabled");
+        }
+        let mieru_config = config.mieru.clone();
+        if mieru_config.is_some() {
+            info!("Mieru enabled");
+        }
+        let sudoku_config = config.sudoku.clone();
+        if sudoku_config.is_some() {
+            info!("Sudoku enabled");
+        }
+        let vless_encryption_config = config.vless_encryption.clone();
+        if vless_encryption_config.is_some() {
+            info!("VLESS-Encryption enabled");
+        }
+        let shadowquic_config = config.shadowquic.clone();
+        if shadowquic_config.is_some() {
+            info!("ShadowQUIC enabled");
+        }
+        let anytls_reality_config = config.anytls_reality.clone();
+        if anytls_reality_config.is_some() {
+            info!("AnyTLS-Reality enabled");
+        }
         if let Some(ref rc) = reality_config {
             let rpk_hex: String = rc
                 .cert_material
@@ -491,6 +558,19 @@ impl InboundServer {
             vmess_config,
             naive_config,
             snell_config,
+            lua_config,
+            masque_config,
+            trusttunnel_config,
+            brook_config,
+            vlite_config,
+            tor_config,
+            ssh_config,
+            juicity_config,
+            mieru_config,
+            sudoku_config,
+            vless_encryption_config,
+            shadowquic_config,
+            anytls_reality_config,
         })
     }
 
@@ -648,6 +728,32 @@ impl InboundServer {
             "Naive"
         } else if self.snell_config.is_some() {
             "Snell"
+        } else if self.lua_config.is_some() {
+            "Lua"
+        } else if self.masque_config.is_some() {
+            "Masque"
+        } else if self.trusttunnel_config.is_some() {
+            "TrustTunnel"
+        } else if self.brook_config.is_some() {
+            "Brook"
+        } else if self.vlite_config.is_some() {
+            "Vlite"
+        } else if self.tor_config.is_some() {
+            "Tor"
+        } else if self.ssh_config.is_some() {
+            "SSH"
+        } else if self.juicity_config.is_some() {
+            "Juicity"
+        } else if self.mieru_config.is_some() {
+            "Mieru"
+        } else if self.sudoku_config.is_some() {
+            "Sudoku"
+        } else if self.vless_encryption_config.is_some() {
+            "VLESS-Encryption"
+        } else if self.shadowquic_config.is_some() {
+            "ShadowQUIC"
+        } else if self.anytls_reality_config.is_some() {
+            "AnyTLS-Reality"
         } else if self.hysteria2_config.is_some() {
             "Hysteria2"
         } else if self.tuic_config.is_some() {
@@ -692,6 +798,19 @@ impl InboundServer {
         let vmess_config = self.vmess_config.clone();
         let naive_config = self.naive_config.clone();
         let snell_config = self.snell_config.clone();
+        let lua_config = self.lua_config.clone();
+        let masque_config = self.masque_config.clone();
+        let trusttunnel_config = self.trusttunnel_config.clone();
+        let brook_config = self.brook_config.clone();
+        let vlite_config = self.vlite_config.clone();
+        let tor_config = self.tor_config.clone();
+        let ssh_config = self.ssh_config.clone();
+        let juicity_config = self.juicity_config.clone();
+        let mieru_config = self.mieru_config.clone();
+        let sudoku_config = self.sudoku_config.clone();
+        let vless_encryption_config = self.vless_encryption_config.clone();
+        let shadowquic_config = self.shadowquic_config.clone();
+        let anytls_reality_config = self.anytls_reality_config.clone();
         let hysteria2_enabled = self.hysteria2_config.is_some();
         let tuic_enabled = self.tuic_config.is_some();
         let webtransport_enabled = self.webtransport_config.is_some();
@@ -737,6 +856,19 @@ impl InboundServer {
                     let vmc = vmess_config.clone();
                     let nc = naive_config.clone();
                     let snc = snell_config.clone();
+                    let luc = lua_config.clone();
+                    let msc = masque_config.clone();
+                    let ttc = trusttunnel_config.clone();
+                    let brc = brook_config.clone();
+                    let vlc = vlite_config.clone();
+                    let trc_ex = tor_config.clone();
+                    let ssc_ex = ssh_config.clone();
+                    let jcc = juicity_config.clone();
+                    let mrc = mieru_config.clone();
+                    let sdc = sudoku_config.clone();
+                    let vec = vless_encryption_config.clone();
+                    let sqc = shadowquic_config.clone();
+                    let arc = anytls_reality_config.clone();
                     thread::spawn(move || {
                         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                             if let Some(ref rc) = rc {
@@ -780,6 +912,32 @@ impl InboundServer {
                                 handle_naive_connection(stream, nc, m)
                             } else if let Some(ref snc) = snc {
                                 handle_snell_connection(stream, snc)
+                            } else if let Some(ref _luc) = luc {
+                                handle_lua_connection(stream)
+                            } else if let Some(ref _msc) = msc {
+                                handle_masque_connection(stream)
+                            } else if let Some(ref _ttc) = ttc {
+                                handle_trusttunnel_connection(stream)
+                            } else if let Some(ref _brc) = brc {
+                                handle_brook_connection(stream)
+                            } else if let Some(ref _vlc) = vlc {
+                                handle_vlite_connection(stream)
+                            } else if let Some(ref _trc_ex) = trc_ex {
+                                handle_tor_connection(stream)
+                            } else if let Some(ref _ssc_ex) = ssc_ex {
+                                handle_ssh_connection(stream)
+                            } else if let Some(ref _jcc) = jcc {
+                                handle_juicity_connection(stream)
+                            } else if let Some(ref _mrc) = mrc {
+                                handle_mieru_connection(stream)
+                            } else if let Some(ref _sdc) = sdc {
+                                handle_sudoku_connection(stream)
+                            } else if let Some(ref _vec) = vec {
+                                handle_vless_encryption_connection(stream)
+                            } else if let Some(ref _sqc) = sqc {
+                                handle_shadowquic_connection(stream)
+                            } else if let Some(ref _arc) = arc {
+                                handle_anytls_reality_connection(stream)
                             } else {
                                 handle_connection(stream, v, m)
                             }

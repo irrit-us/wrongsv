@@ -1,0 +1,4 @@
+listen = "127.0.0.1:443"
+[anytls_reality]
+password = "test-password"
+private_key = "test-private-key"

@@ -125,6 +125,19 @@ fn resolved_active_profile_id(model: endpoint::EndpointModel) -> String {
         ProxyProtocol::WireGuard => "wireguard",
         ProxyProtocol::Naive => "naive",
         ProxyProtocol::Snell => "snell",
+        ProxyProtocol::Lua => "lua",
+        ProxyProtocol::Masque => "masque",
+        ProxyProtocol::TrustTunnel => "trusttunnel",
+        ProxyProtocol::Brook => "brook",
+        ProxyProtocol::Vlite => "vlite",
+        ProxyProtocol::Tor => "tor",
+        ProxyProtocol::Ssh => "ssh",
+        ProxyProtocol::Juicity => "juicity",
+        ProxyProtocol::Mieru => "mieru",
+        ProxyProtocol::Sudoku => "sudoku",
+        ProxyProtocol::VlessEncryption => "vless-encryption",
+        ProxyProtocol::Shadowquic => "shadowquic",
+        ProxyProtocol::AnytlsReality => "anytls-reality",
     }
     .to_string()
 }

@@ -40,6 +40,17 @@ pub(crate) struct ComponentDescriptorSet {
     pub network: &'static [Component],
 }
 
+impl Default for ComponentDescriptorSet {
+    fn default() -> Self {
+        Self {
+            camouflage: EMPTY_COMPONENTS,
+            ingress: EMPTY_COMPONENTS,
+            performance: EMPTY_COMPONENTS,
+            network: EMPTY_COMPONENTS,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) struct ProtocolDescriptor {
     pub id: ProxyProtocol,
@@ -73,6 +84,10 @@ const MIXED_PAYLOADS: &[PayloadNetwork] = &[PayloadNetwork::Tcp];
 const WIREGUARD_PAYLOADS: &[PayloadNetwork] = &[PayloadNetwork::Ip];
 const NAIVE_PAYLOADS: &[PayloadNetwork] = &[PayloadNetwork::Tcp];
 const SNELL_PAYLOADS: &[PayloadNetwork] = &[PayloadNetwork::Tcp];
+const RAW_TRANSPORT: &[TransportMethod] = &[TransportMethod::Raw];
+const QUIC_TRANSPORT: &[TransportMethod] = &[TransportMethod::Quic];
+const TLS_SECURITY: &[OuterSecurity] = &[OuterSecurity::Tls];
+const REALITY_SECURITY: &[OuterSecurity] = &[OuterSecurity::Reality];
 const VLESS_CAMOUFLAGE_COMPONENTS: &[Component] = &[Component::AnyTls, Component::ShadowTls];
 const VLESS_PERFORMANCE_COMPONENTS: &[Component] = &[Component::Vision];
 const VLESS_INGRESS_COMPONENTS: &[Component] = &[Component::FallbackDestination];
@@ -372,6 +387,370 @@ pub(crate) fn protocol_descriptor(protocol: ProxyProtocol) -> &'static ProtocolD
                 supported: &[],
                 default: None,
                 fixed_value: None,
+            },
+            protocol_internal_security: None,
+            components: ComponentDescriptorSet {
+                camouflage: EMPTY_COMPONENTS,
+                ingress: EMPTY_COMPONENTS,
+                performance: EMPTY_COMPONENTS,
+                network: EMPTY_COMPONENTS,
+            },
+        },
+        ProxyProtocol::Lua => &ProtocolDescriptor {
+            id: ProxyProtocol::Lua,
+            display_name: "Lua",
+            payload_networks: PayloadDescriptor {
+                supported: SNELL_PAYLOADS,
+                default: SNELL_PAYLOADS,
+                user_configurable: false,
+            },
+            transport: LayerDescriptor {
+                mode: LayerMode::Fixed,
+                supported: RAW_TRANSPORT,
+                default: Some(TransportMethod::Raw),
+                fixed_value: Some(TransportMethod::Raw),
+            },
+            outer_security: LayerDescriptor {
+                mode: LayerMode::Forbidden,
+                supported: &[],
+                default: None,
+                fixed_value: None,
+            },
+            protocol_internal_security: None,
+            components: ComponentDescriptorSet {
+                camouflage: EMPTY_COMPONENTS,
+                ingress: EMPTY_COMPONENTS,
+                performance: EMPTY_COMPONENTS,
+                network: EMPTY_COMPONENTS,
+            },
+        },
+        ProxyProtocol::Masque => &ProtocolDescriptor {
+            id: ProxyProtocol::Masque,
+            display_name: "Masque",
+            payload_networks: PayloadDescriptor {
+                supported: SHADOWSOCKS_PAYLOADS,
+                default: SHADOWSOCKS_PAYLOADS,
+                user_configurable: false,
+            },
+            transport: LayerDescriptor {
+                mode: LayerMode::Fixed,
+                supported: QUIC_TRANSPORT,
+                default: Some(TransportMethod::Quic),
+                fixed_value: Some(TransportMethod::Quic),
+            },
+            outer_security: LayerDescriptor {
+                mode: LayerMode::Fixed,
+                supported: TLS_SECURITY,
+                default: Some(OuterSecurity::Tls),
+                fixed_value: Some(OuterSecurity::Tls),
+            },
+            protocol_internal_security: None,
+            components: ComponentDescriptorSet {
+                camouflage: EMPTY_COMPONENTS,
+                ingress: EMPTY_COMPONENTS,
+                performance: EMPTY_COMPONENTS,
+                network: EMPTY_COMPONENTS,
+            },
+        },
+        ProxyProtocol::TrustTunnel => &ProtocolDescriptor {
+            id: ProxyProtocol::TrustTunnel,
+            display_name: "TrustTunnel",
+            payload_networks: PayloadDescriptor {
+                supported: SNELL_PAYLOADS,
+                default: SNELL_PAYLOADS,
+                user_configurable: false,
+            },
+            transport: LayerDescriptor {
+                mode: LayerMode::Fixed,
+                supported: RAW_TRANSPORT,
+                default: Some(TransportMethod::Raw),
+                fixed_value: Some(TransportMethod::Raw),
+            },
+            outer_security: LayerDescriptor {
+                mode: LayerMode::Forbidden,
+                supported: &[],
+                default: None,
+                fixed_value: None,
+            },
+            protocol_internal_security: None,
+            components: ComponentDescriptorSet {
+                camouflage: EMPTY_COMPONENTS,
+                ingress: EMPTY_COMPONENTS,
+                performance: EMPTY_COMPONENTS,
+                network: EMPTY_COMPONENTS,
+            },
+        },
+        ProxyProtocol::Brook => &ProtocolDescriptor {
+            id: ProxyProtocol::Brook,
+            display_name: "Brook",
+            payload_networks: PayloadDescriptor {
+                supported: SHADOWSOCKS_PAYLOADS,
+                default: SHADOWSOCKS_PAYLOADS,
+                user_configurable: false,
+            },
+            transport: LayerDescriptor {
+                mode: LayerMode::Fixed,
+                supported: RAW_TRANSPORT,
+                default: Some(TransportMethod::Raw),
+                fixed_value: Some(TransportMethod::Raw),
+            },
+            outer_security: LayerDescriptor {
+                mode: LayerMode::Forbidden,
+                supported: &[],
+                default: None,
+                fixed_value: None,
+            },
+            protocol_internal_security: None,
+            components: ComponentDescriptorSet {
+                camouflage: EMPTY_COMPONENTS,
+                ingress: EMPTY_COMPONENTS,
+                performance: EMPTY_COMPONENTS,
+                network: EMPTY_COMPONENTS,
+            },
+        },
+        ProxyProtocol::Vlite => &ProtocolDescriptor {
+            id: ProxyProtocol::Vlite,
+            display_name: "Vlite",
+            payload_networks: PayloadDescriptor {
+                supported: SHADOWSOCKS_PAYLOADS,
+                default: SHADOWSOCKS_PAYLOADS,
+                user_configurable: false,
+            },
+            transport: LayerDescriptor {
+                mode: LayerMode::Fixed,
+                supported: RAW_TRANSPORT,
+                default: Some(TransportMethod::Raw),
+                fixed_value: Some(TransportMethod::Raw),
+            },
+            outer_security: LayerDescriptor {
+                mode: LayerMode::Forbidden,
+                supported: &[],
+                default: None,
+                fixed_value: None,
+            },
+            protocol_internal_security: None,
+            components: ComponentDescriptorSet {
+                camouflage: EMPTY_COMPONENTS,
+                ingress: EMPTY_COMPONENTS,
+                performance: EMPTY_COMPONENTS,
+                network: EMPTY_COMPONENTS,
+            },
+        },
+        ProxyProtocol::Tor => &ProtocolDescriptor {
+            id: ProxyProtocol::Tor,
+            display_name: "Tor",
+            payload_networks: PayloadDescriptor {
+                supported: SNELL_PAYLOADS,
+                default: SNELL_PAYLOADS,
+                user_configurable: false,
+            },
+            transport: LayerDescriptor {
+                mode: LayerMode::Fixed,
+                supported: RAW_TRANSPORT,
+                default: Some(TransportMethod::Raw),
+                fixed_value: Some(TransportMethod::Raw),
+            },
+            outer_security: LayerDescriptor {
+                mode: LayerMode::Forbidden,
+                supported: &[],
+                default: None,
+                fixed_value: None,
+            },
+            protocol_internal_security: None,
+            components: ComponentDescriptorSet {
+                camouflage: EMPTY_COMPONENTS,
+                ingress: EMPTY_COMPONENTS,
+                performance: EMPTY_COMPONENTS,
+                network: EMPTY_COMPONENTS,
+            },
+        },
+        ProxyProtocol::Ssh => &ProtocolDescriptor {
+            id: ProxyProtocol::Ssh,
+            display_name: "SSH",
+            payload_networks: PayloadDescriptor {
+                supported: SNELL_PAYLOADS,
+                default: SNELL_PAYLOADS,
+                user_configurable: false,
+            },
+            transport: LayerDescriptor {
+                mode: LayerMode::Fixed,
+                supported: RAW_TRANSPORT,
+                default: Some(TransportMethod::Raw),
+                fixed_value: Some(TransportMethod::Raw),
+            },
+            outer_security: LayerDescriptor {
+                mode: LayerMode::Forbidden,
+                supported: &[],
+                default: None,
+                fixed_value: None,
+            },
+            protocol_internal_security: None,
+            components: ComponentDescriptorSet {
+                camouflage: EMPTY_COMPONENTS,
+                ingress: EMPTY_COMPONENTS,
+                performance: EMPTY_COMPONENTS,
+                network: EMPTY_COMPONENTS,
+            },
+        },
+        ProxyProtocol::Juicity => &ProtocolDescriptor {
+            id: ProxyProtocol::Juicity,
+            display_name: "Juicity",
+            payload_networks: PayloadDescriptor {
+                supported: SHADOWSOCKS_PAYLOADS,
+                default: SHADOWSOCKS_PAYLOADS,
+                user_configurable: false,
+            },
+            transport: LayerDescriptor {
+                mode: LayerMode::Fixed,
+                supported: QUIC_TRANSPORT,
+                default: Some(TransportMethod::Quic),
+                fixed_value: Some(TransportMethod::Quic),
+            },
+            outer_security: LayerDescriptor {
+                mode: LayerMode::Fixed,
+                supported: TLS_SECURITY,
+                default: Some(OuterSecurity::Tls),
+                fixed_value: Some(OuterSecurity::Tls),
+            },
+            protocol_internal_security: None,
+            components: ComponentDescriptorSet {
+                camouflage: EMPTY_COMPONENTS,
+                ingress: EMPTY_COMPONENTS,
+                performance: EMPTY_COMPONENTS,
+                network: EMPTY_COMPONENTS,
+            },
+        },
+        ProxyProtocol::Mieru => &ProtocolDescriptor {
+            id: ProxyProtocol::Mieru,
+            display_name: "Mieru",
+            payload_networks: PayloadDescriptor {
+                supported: SHADOWSOCKS_PAYLOADS,
+                default: SHADOWSOCKS_PAYLOADS,
+                user_configurable: false,
+            },
+            transport: LayerDescriptor {
+                mode: LayerMode::Fixed,
+                supported: RAW_TRANSPORT,
+                default: Some(TransportMethod::Raw),
+                fixed_value: Some(TransportMethod::Raw),
+            },
+            outer_security: LayerDescriptor {
+                mode: LayerMode::Forbidden,
+                supported: &[],
+                default: None,
+                fixed_value: None,
+            },
+            protocol_internal_security: None,
+            components: ComponentDescriptorSet {
+                camouflage: EMPTY_COMPONENTS,
+                ingress: EMPTY_COMPONENTS,
+                performance: EMPTY_COMPONENTS,
+                network: EMPTY_COMPONENTS,
+            },
+        },
+        ProxyProtocol::Sudoku => &ProtocolDescriptor {
+            id: ProxyProtocol::Sudoku,
+            display_name: "Sudoku",
+            payload_networks: PayloadDescriptor {
+                supported: SNELL_PAYLOADS,
+                default: SNELL_PAYLOADS,
+                user_configurable: false,
+            },
+            transport: LayerDescriptor {
+                mode: LayerMode::Fixed,
+                supported: RAW_TRANSPORT,
+                default: Some(TransportMethod::Raw),
+                fixed_value: Some(TransportMethod::Raw),
+            },
+            outer_security: LayerDescriptor {
+                mode: LayerMode::Forbidden,
+                supported: &[],
+                default: None,
+                fixed_value: None,
+            },
+            protocol_internal_security: None,
+            components: ComponentDescriptorSet {
+                camouflage: EMPTY_COMPONENTS,
+                ingress: EMPTY_COMPONENTS,
+                performance: EMPTY_COMPONENTS,
+                network: EMPTY_COMPONENTS,
+            },
+        },
+        ProxyProtocol::VlessEncryption => &ProtocolDescriptor {
+            id: ProxyProtocol::VlessEncryption,
+            display_name: "VLESS-Encryption",
+            payload_networks: PayloadDescriptor {
+                supported: SNELL_PAYLOADS,
+                default: SNELL_PAYLOADS,
+                user_configurable: false,
+            },
+            transport: LayerDescriptor {
+                mode: LayerMode::Fixed,
+                supported: RAW_TRANSPORT,
+                default: Some(TransportMethod::Raw),
+                fixed_value: Some(TransportMethod::Raw),
+            },
+            outer_security: LayerDescriptor {
+                mode: LayerMode::Forbidden,
+                supported: &[],
+                default: None,
+                fixed_value: None,
+            },
+            protocol_internal_security: None,
+            components: ComponentDescriptorSet {
+                camouflage: EMPTY_COMPONENTS,
+                ingress: EMPTY_COMPONENTS,
+                performance: EMPTY_COMPONENTS,
+                network: EMPTY_COMPONENTS,
+            },
+        },
+        ProxyProtocol::Shadowquic => &ProtocolDescriptor {
+            id: ProxyProtocol::Shadowquic,
+            display_name: "ShadowQUIC",
+            payload_networks: PayloadDescriptor {
+                supported: SHADOWSOCKS_PAYLOADS,
+                default: SHADOWSOCKS_PAYLOADS,
+                user_configurable: false,
+            },
+            transport: LayerDescriptor {
+                mode: LayerMode::Fixed,
+                supported: QUIC_TRANSPORT,
+                default: Some(TransportMethod::Quic),
+                fixed_value: Some(TransportMethod::Quic),
+            },
+            outer_security: LayerDescriptor {
+                mode: LayerMode::Fixed,
+                supported: TLS_SECURITY,
+                default: Some(OuterSecurity::Tls),
+                fixed_value: Some(OuterSecurity::Tls),
+            },
+            protocol_internal_security: None,
+            components: ComponentDescriptorSet {
+                camouflage: EMPTY_COMPONENTS,
+                ingress: EMPTY_COMPONENTS,
+                performance: EMPTY_COMPONENTS,
+                network: EMPTY_COMPONENTS,
+            },
+        },
+        ProxyProtocol::AnytlsReality => &ProtocolDescriptor {
+            id: ProxyProtocol::AnytlsReality,
+            display_name: "AnyTLS-Reality",
+            payload_networks: PayloadDescriptor {
+                supported: SNELL_PAYLOADS,
+                default: SNELL_PAYLOADS,
+                user_configurable: false,
+            },
+            transport: LayerDescriptor {
+                mode: LayerMode::Fixed,
+                supported: RAW_TRANSPORT,
+                default: Some(TransportMethod::Raw),
+                fixed_value: Some(TransportMethod::Raw),
+            },
+            outer_security: LayerDescriptor {
+                mode: LayerMode::Fixed,
+                supported: REALITY_SECURITY,
+                default: Some(OuterSecurity::Reality),
+                fixed_value: Some(OuterSecurity::Reality),
             },
             protocol_internal_security: None,
             components: ComponentDescriptorSet {
