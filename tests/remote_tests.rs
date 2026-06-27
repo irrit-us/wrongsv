@@ -12,9 +12,10 @@ fn test_remote_shadowsocks_end_to_end() {
     let password = "shadowsocks-password";
 
     let ss_config = wrongsv_shadowsocks::ServerConfig::new(method, password).unwrap();
-    
+
     // Connect to the remote wrongsv server running on tencentde
-    let stream = TcpStream::connect(server_addr).expect("Failed to connect to remote wrongsv server");
+    let stream =
+        TcpStream::connect(server_addr).expect("Failed to connect to remote wrongsv server");
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
@@ -27,7 +28,8 @@ fn test_remote_shadowsocks_end_to_end() {
         Port(80),
     );
     // Send a standard HTTP GET request
-    request.extend_from_slice(b"GET /ip HTTP/1.1\r\nHost: httpbin.org\r\nConnection: close\r\n\r\n");
+    request
+        .extend_from_slice(b"GET /ip HTTP/1.1\r\nHost: httpbin.org\r\nConnection: close\r\n\r\n");
 
     let writer_stream = stream.try_clone().unwrap();
     let mut writer =
@@ -35,8 +37,7 @@ fn test_remote_shadowsocks_end_to_end() {
     writer.write_chunk(&request).unwrap();
     writer.get_mut().shutdown(Shutdown::Write).unwrap();
 
-    let mut reader =
-        wrongsv_shadowsocks::ShadowsocksReader::new(stream, &ss_config).unwrap();
+    let mut reader = wrongsv_shadowsocks::ShadowsocksReader::new(stream, &ss_config).unwrap();
     let mut response = Vec::new();
     while let Ok(chunk) = reader.read_chunk() {
         if chunk.is_empty() {

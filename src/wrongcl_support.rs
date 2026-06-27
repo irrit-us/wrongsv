@@ -311,7 +311,9 @@ fn wrongcl_profile_support_level(profile: &str) -> WrongclSupportLevel {
         | "kcp" | "meek" | "gdocsviewer" | "webtransport" | "websocket" | "httpupgrade"
         | "xhttp" | "grpc" | "trojan" | "mixed" | "shadowsocks" | "wireguard" | "naive"
         | "snell" | "lua" | "masque" | "trusttunnel" | "brook" | "vlite" | "tor" | "ssh"
-        | "juicity" | "mieru" | "sudoku" | "vless-encryption" | "shadowquic" | "anytls-reality" => WrongclSupportLevel::Supported,
+        | "juicity" | "mieru" | "sudoku" | "vless-encryption" | "shadowquic" | "anytls-reality" => {
+            WrongclSupportLevel::Supported
+        }
         _ => WrongclSupportLevel::Unsupported,
     }
 }

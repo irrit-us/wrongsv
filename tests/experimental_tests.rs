@@ -28,7 +28,9 @@ private_key = "test-private-key"
 
 fn verify_echo(listen: &str) {
     let mut stream = TcpStream::connect(listen).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
     let msg = b"hello experimental protocol";
     stream.write_all(msg).unwrap();
     let mut buf = [0u8; 100];

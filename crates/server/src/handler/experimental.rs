@@ -12,13 +12,17 @@ pub(crate) fn handle_lua_connection(stream: TcpStream) -> Result<(), Box<dyn std
     echo_relay(stream)
 }
 
-pub(crate) fn handle_masque_connection(stream: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn handle_masque_connection(
+    stream: TcpStream,
+) -> Result<(), Box<dyn std::error::Error>> {
     let peer = stream.peer_addr()?;
     info!("{peer} Masque connection");
     echo_relay(stream)
 }
 
-pub(crate) fn handle_trusttunnel_connection(stream: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn handle_trusttunnel_connection(
+    stream: TcpStream,
+) -> Result<(), Box<dyn std::error::Error>> {
     let peer = stream.peer_addr()?;
     info!("{peer} TrustTunnel connection");
     echo_relay(stream)
@@ -48,7 +52,9 @@ pub(crate) fn handle_ssh_connection(stream: TcpStream) -> Result<(), Box<dyn std
     echo_relay(stream)
 }
 
-pub(crate) fn handle_juicity_connection(stream: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn handle_juicity_connection(
+    stream: TcpStream,
+) -> Result<(), Box<dyn std::error::Error>> {
     let peer = stream.peer_addr()?;
     info!("{peer} Juicity connection");
     echo_relay(stream)
@@ -60,25 +66,33 @@ pub(crate) fn handle_mieru_connection(stream: TcpStream) -> Result<(), Box<dyn s
     echo_relay(stream)
 }
 
-pub(crate) fn handle_sudoku_connection(stream: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn handle_sudoku_connection(
+    stream: TcpStream,
+) -> Result<(), Box<dyn std::error::Error>> {
     let peer = stream.peer_addr()?;
     info!("{peer} Sudoku connection");
     echo_relay(stream)
 }
 
-pub(crate) fn handle_vless_encryption_connection(stream: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn handle_vless_encryption_connection(
+    stream: TcpStream,
+) -> Result<(), Box<dyn std::error::Error>> {
     let peer = stream.peer_addr()?;
     info!("{peer} VLESS-Encryption connection");
     echo_relay(stream)
 }
 
-pub(crate) fn handle_shadowquic_connection(stream: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn handle_shadowquic_connection(
+    stream: TcpStream,
+) -> Result<(), Box<dyn std::error::Error>> {
     let peer = stream.peer_addr()?;
     info!("{peer} ShadowQUIC connection");
     echo_relay(stream)
 }
 
-pub(crate) fn handle_anytls_reality_connection(stream: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn handle_anytls_reality_connection(
+    stream: TcpStream,
+) -> Result<(), Box<dyn std::error::Error>> {
     let peer = stream.peer_addr()?;
     info!("{peer} AnyTLS-Reality connection");
     echo_relay(stream)
@@ -93,7 +107,10 @@ fn echo_relay(mut stream: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
             Ok(n) => {
                 stream.write_all(&buf[..n])?;
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
                 break;
             }
             Err(e) => return Err(e.into()),

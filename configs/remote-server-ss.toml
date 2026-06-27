@@ -1,0 +1,5 @@
+listen = "0.0.0.0:10443"
+
+[shadowsocks]
+method = "chacha20-ietf-poly1305"
+password = "shadowsocks-password"
