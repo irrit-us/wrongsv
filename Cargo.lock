@@ -3110,6 +3110,7 @@ dependencies = [
  "hmac",
  "http",
  "kcp",
+ "md-5",
  "pem",
  "quinn",
  "rand 0.8.6",

@@ -916,10 +916,10 @@ impl InboundServer {
                                 handle_lua_connection(stream)
                             } else if let Some(ref _msc) = msc {
                                 handle_masque_connection(stream)
-                            } else if let Some(ref _ttc) = ttc {
-                                handle_trusttunnel_connection(stream)
-                            } else if let Some(ref _brc) = brc {
-                                handle_brook_connection(stream)
+                            } else if let Some(ref ttc) = ttc {
+                                handle_trusttunnel_connection(stream, ttc)
+                            } else if let Some(ref brc) = brc {
+                                handle_brook_connection(stream, brc)
                             } else if let Some(ref _vlc) = vlc {
                                 handle_vlite_connection(stream)
                             } else if let Some(ref _trc_ex) = trc_ex {
@@ -930,8 +930,8 @@ impl InboundServer {
                                 handle_juicity_connection(stream)
                             } else if let Some(ref _mrc) = mrc {
                                 handle_mieru_connection(stream)
-                            } else if let Some(ref _sdc) = sdc {
-                                handle_sudoku_connection(stream)
+                            } else if let Some(ref sdc) = sdc {
+                                handle_sudoku_connection(stream, sdc)
                             } else if let Some(ref _vec) = vec {
                                 handle_vless_encryption_connection(stream)
                             } else if let Some(ref _sqc) = sqc {
