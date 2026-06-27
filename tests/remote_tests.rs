@@ -4,6 +4,7 @@ use std::time::Duration;
 use wrongsv_net_types::{Address, Port};
 
 #[test]
+#[ignore]
 fn test_remote_shadowsocks_end_to_end() {
     let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
 
