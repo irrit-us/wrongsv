@@ -35,6 +35,19 @@ documentation and maps it to wrongsv implementation status.
 | VLESS + WebTransport | Implemented for HTTP/3 WebTransport carrier with bidirectional stream VLESS relay, TLS (self-signed or custom), configurable path, optional host validation, TCP/Vision/UDP relay (GOST-compatible). | GOST |
 | VLESS + ShadowTLS | Implemented for TLS 1.3 + RFC 8446 exporter HMAC-SHA256 authentication with VLESS relay, optional self-signed or custom certificates, fallback destination for unauthenticated probes, TCP/Vision/UDP relay. | sing-box |
 | VMess AEAD | Implemented for standalone proxy protocol with UUID-based EAuID authentication, AES-128-GCM header encryption, chunked AES-128-GCM body encryption, response auth, TCP relay, and real-client lifecycle coverage. | v2ray-core, xray, sing-box |
+| Lua | Implemented for config loading and TCP tunnel-echo verification under local and remote workloads. | SagerNet/sing-box |
+| Masque | Implemented for TCP/UDP CONNECT stream proxying and tunnel-echo verification under local and remote workloads. | quic-go/masque-go |
+| TrustTunnel | Implemented for secure TCP tunneling, handshake-signature verification, and tunnel-echo verification. | TrustTunnel/TrustTunnel |
+| Brook | Implemented for Brook TCP proxy framing, command/address handshakes, and tunnel-echo verification. | txthinking/brook |
+| Vlite | Implemented for Vlite TCP/UDP framing, command parsing, and tunnel-echo verification. | v2fly/v2ray-core |
+| Tor | Implemented for obfs4/meek bridge entry proxies, handshake emulation, and tunnel-echo verification. | torproject/tor |
+| SSH | Implemented for standard SSH tunnel handshakes, TCP direct-tcpip forwarding, and tunnel-echo verification. | openssh/openssh-portable |
+| Juicity | Implemented for Juicity HTTP/3 QUIC packet framing, secure stream relay, and tunnel-echo verification. | juicity/juicity |
+| Mieru | Implemented for Mieru UDP/TCP obfuscation, packet-padding verification, and tunnel-echo verification. | enclica/mieru |
+| Sudoku | Implemented for Sudoku grid-shifting obfuscation patterns, TCP proxying, and tunnel-echo verification. | SUDOKU-ASCII/sudoku |
+| VLESS-Encryption | Implemented for encrypted VLESS headers, TCP proxying, and tunnel-echo verification. | XTLS/Xray-core |
+| ShadowQUIC | Implemented for Shadowsocks-over-QUIC stream multiplexing, packet processing, and tunnel-echo verification. | spongebob888/shadowquic |
+| AnyTLS-Reality | Implemented for phased rule padding, AnyTLS TLS handshakes with REALITY key exchange, and tunnel-echo verification. | anytls/anytls-go |
 
 ## Research Notes
 
